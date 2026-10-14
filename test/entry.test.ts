@@ -29,16 +29,16 @@ describe("the plugin definition", () => {
     expect(host.tools[0]?.options).toEqual({ codemode: false })
   })
 
-  test("peers takes an action enum and nothing else, and names its action in prose", async () => {
+  test("peers takes an action enum and nothing else, and names its actions in prose", async () => {
     const host = await loaded()
     const tool = host.tools[0]
     expect(tool?.input).toMatchObject({
       type: "object",
       additionalProperties: false,
       required: ["action"],
-      properties: { action: { type: "string", enum: ["status"] } },
+      properties: { action: { type: "string", enum: ["list", "list-cwd", "status"] } },
     })
-    expect(tool?.description).toContain("status")
+    for (const action of ["list", "list-cwd", "status"]) expect(tool?.description).toContain(action)
   })
 
   test("an action the tool does not have is refused, not answered", async () => {
