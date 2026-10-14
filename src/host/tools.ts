@@ -43,13 +43,44 @@ export function toolRegistrar(tool: Pick<Plugin.Context["tool"], "transform">): 
           options: { codemode: false },
           async execute(input, call) {
             const result = await spec.handle(input, { sessionID: call.sessionID, signal: call.signal })
+            const metadata = deliverable(result.details) as Readonly<Record<string, unknown>>
             return {
               content: [{ type: "text" as const, text: result.text }],
-              metadata: result.details,
+              metadata,
             }
           },
         })
       })
     },
   }
+}
+
+/**
+ * `undefined` has no place in tool metadata: measured on opencode 2.0.29, a
+ * result whose metadata carries one is never delivered at all — the call stays
+ * running and the model sees no output (`docs/research/tool-result-metadata-undefined.md`).
+ * JSON's own rule is applied here, at the one place a result leaves the plugin,
+ * so no action has to remember it: an `undefined` property is dropped, an
+ * `undefined` array element becomes `null`, and plain objects and arrays are
+ * walked to any depth. Anything that is not plain data — a `Date`, a class
+ * instance — is passed through untouched.
+ */
+function deliverable(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => (entry === undefined ? null : deliverable(entry)))
+  }
+  if (!isPlainObject(value)) return value
+
+  const clean: Record<string, unknown> = {}
+  for (const [key, entry] of Object.entries(value)) {
+    if (entry === undefined) continue
+    clean[key] = deliverable(entry)
+  }
+  return clean
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null) return false
+  const prototype: unknown = Object.getPrototypeOf(value)
+  return prototype === Object.prototype || prototype === null
 }
