@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { expectationsMet, renderReport, type HarnessReport } from "../scripts/harness/report.ts"
+import { explain, expectationsMet, renderReport, type HarnessReport } from "../scripts/harness/report.ts"
 
 function report(overrides: Partial<HarnessReport> = {}): HarnessReport {
   return {
@@ -77,8 +77,22 @@ describe("report shape", () => {
   })
 })
 
-describe("report rendering", () => {
-  const text = renderReport(report())
+describe("explain", () => {
+  test("errors, bare strings and unknown values all read as one line", () => {
+    expect(explain(new Error("the port was taken"))).toBe("the port was taken")
+    expect(explain(new TypeError("bad shape"))).toBe("bad shape")
+    expect(explain("plain text")).toBe("plain text")
+    expect(explain({ code: "ENOENT" })).toBe('{"code":"ENOENT"}')
+  })
+
+  test("an error with no message still names itself", () => {
+    const named = new Error("")
+    named.name = "Session.NotFoundError"
+    expect(explain(named)).toBe("Session.NotFoundError")
+  })
+})
+
+describe("report rendering", () => {  const text = renderReport(report())
 
   test("names both sessions and both directories", () => {
     expect(text).toContain("ses_a")
@@ -109,8 +123,22 @@ describe("report rendering", () => {
     expect(rendered).toContain("observed B: failed (provider.auth)")
   })
 
-  test("structural mode and a kept scratch directory read as intended", () => {
-    const structural = report({
+  test("a plugin with no entrypoint reads as not asserted, not as not loaded", () => {
+    const rendered = renderReport(
+      report({
+        plugin: {
+          path: "/repo/plugin",
+          installedIn: ["project-a/.opencode/opencode.json"],
+          loaded: false,
+          locations: ["/scratch/project-a", "/scratch/project-b"],
+        },
+      }),
+    )
+    expect(rendered).toContain("loaded     not asserted (no entrypoint yet)")
+    expect(rendered).toContain("locations: /scratch/project-a, /scratch/project-b")
+  })
+
+  test("structural mode and a kept scratch directory read as intended", () => {    const structural = report({
       mode: "structural",
       cleanup: { ...report().cleanup, scratchRemoved: false, scratchKept: true },
     })

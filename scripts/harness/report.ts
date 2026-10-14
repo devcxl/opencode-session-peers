@@ -83,6 +83,16 @@ export function expectationsMet(expectations: readonly Expectation[]): boolean {
   return expectations.every((expectation) => expectation.met)
 }
 
+/**
+ * An unknown thrown value as one line of an `observed` field. Errors thrown by
+ * the host with an empty message (a named Effect failure) still have to say
+ * something, so their name carries the meaning.
+ */
+export function explain(error: unknown): string {
+  if (error instanceof Error) return error.message.length === 0 ? error.name : error.message
+  return typeof error === "string" ? error : JSON.stringify(error)
+}
+
 export function renderReport(report: HarnessReport): string {
   const lines: string[] = []
   lines.push(`session-peers harness — ${report.mode === "drive" ? "model-driven" : "structural"} mode`)
@@ -106,9 +116,7 @@ export function renderReport(report: HarnessReport): string {
   lines.push(`  entrypoint ${plugin.entrypoint ?? "missing (no index.ts / server.ts)"}`)
   lines.push(`  installed  ${plugin.installedIn.length === 0 ? "(not installed)" : plugin.installedIn.join(", ")}`)
   lines.push(
-    `  loaded     ${plugin.loaded ? "yes" : "no"}${
-      plugin.locations.length === 0 ? "" : ` — locations: ${plugin.locations.join(", ")}`
-    }`,
+    `  loaded     ${loadedState(plugin)}${plugin.locations.length === 0 ? "" : ` — locations: ${plugin.locations.join(", ")}`}`,
   )
   lines.push("")
 
@@ -163,4 +171,13 @@ export function renderReport(report: HarnessReport): string {
 function oneLine(text: string, limit = 120): string {
   const flat = text.replace(/\s+/g, " ").trim()
   return flat.length <= limit ? flat : `${flat.slice(0, limit)}...`
+}
+
+/**
+ * A plugin with no entrypoint is not loaded *or* unloaded: nothing is asserted
+ * about it, and the report must not read as if a check had failed.
+ */
+function loadedState(plugin: PluginSummary): string {
+  if (plugin.entrypoint === undefined) return "not asserted (no entrypoint yet)"
+  return plugin.loaded ? "yes" : "no"
 }

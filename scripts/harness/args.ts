@@ -55,6 +55,11 @@ directories, its own database and its own port. The developer's auth.json is
 copied into its data directory for the run and deleted at teardown. The
 developer's live service is never touched; its service.json is hashed before and
 after the run and the two digests are compared.
+
+Driven turns use --model when it is given, and the instance's own choice
+otherwise. A host whose built-in default model is no longer served by its
+provider fails those turns with the provider's own reason in the report; pass
+--model with a model the host serves to run them.
 `
 
 export function wantsHelp(argv: readonly string[]): boolean {

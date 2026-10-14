@@ -28,7 +28,6 @@ export interface ScratchContents {
   /** Copied into the instance's data dir for the run; never committed, never printed. */
   authSource?: string
 }
-
 /** Lay out the scratch directories and write every config the instance reads. */
 export function prepareScratch(layout: ScratchLayout, contents: ScratchContents): void {
   mkdirSync(join(layout.data, "opencode"), { recursive: true })
@@ -52,14 +51,42 @@ export function credentialsPath(layout: ScratchLayout): string {
   return layout.authFile
 }
 
+/**
+ * The environment the instance runs in.
+ *
+ * The harness is itself a child of the developer's live opencode service, so
+ * its own environment carries that service's identity — a password, a session
+ * id, and on some setups a database or config override. The instance must be
+ * throwaway, so every `OPENCODE_*` variable is dropped and the four XDG
+ * directories and the password are set to values that exist only in scratch.
+ */
+export function instanceEnvironment(
+  layout: ScratchLayout,
+  password: string,
+  base: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  const inherited: NodeJS.ProcessEnv = {}
+  for (const [key, value] of Object.entries(base)) {
+    if (key.startsWith("OPENCODE")) continue
+    inherited[key] = value
+  }
+  return {
+    ...inherited,
+    XDG_DATA_HOME: layout.data,
+    XDG_STATE_HOME: layout.state,
+    XDG_CACHE_HOME: layout.cache,
+    XDG_CONFIG_HOME: layout.config,
+    OPENCODE_SERVER_PASSWORD: password,
+    [PROBE_LOG_ENV]: layout.probeLog,
+  }
+}
+
 export interface StartOptions {
   layout: ScratchLayout
   password: string
   opencodeBin: string
   bootTimeoutMs: number
   env: NodeJS.ProcessEnv
-  /** Called once the process exists, so a caller can clean up if boot fails. */
-  onSpawn?: (pid: number) => void
 }
 
 export interface InstanceHandle {
@@ -96,7 +123,7 @@ export async function startInstance(options: StartOptions): Promise<InstanceHand
       ["serve", "--hostname", HOSTNAME, "--port", String(port), "--print-logs", "--log-level", "info"],
       {
         cwd: layout.root,
-        env: { ...options.env, [PROBE_LOG_ENV]: layout.probeLog },
+        env: instanceEnvironment(layout, password, options.env),
         stdio: ["ignore", logFd, logFd],
         detached: true,
       },
@@ -107,9 +134,7 @@ export async function startInstance(options: StartOptions): Promise<InstanceHand
 
   const pid = child.pid
   if (pid === undefined) throw new Error("the opencode server process did not start")
-  options.onSpawn?.(pid)
 
-  const exits = exitOf(child)
   const handle: InstanceHandle = {
     pid,
     port,
@@ -121,9 +146,17 @@ export async function startInstance(options: StartOptions): Promise<InstanceHand
     stop: () => stopProcess(pid, port),
   }
 
-  await waitForBoot({ url, password, child, exits, bootTimeoutMs, log: handle.log })
-  if (!existsSync(layout.database)) {
-    throw new Error(`the instance answered but created no database at ${layout.database}`)
+  try {
+    await waitForBoot({ url, password, child, bootTimeoutMs, log: handle.log })
+    if (!existsSync(layout.database)) {
+      throw new Error(`the instance answered but created no database at ${layout.database}`)
+    }
+  } catch (error) {
+    // A process that failed halfway through boot is still a process this
+    // harness started, so it is stopped before the failure is reported.
+    const stopped = await stopProcess(pid, port)
+    const reason = error instanceof Error ? error.message : String(error)
+    throw new Error(`${reason}; the instance process was stopped (${stopped.observed})`, { cause: error })
   }
   return { ...handle, databaseCreated: true }
 }
@@ -132,7 +165,6 @@ interface BootWait {
   url: string
   password: string
   child: ChildProcess
-  exits: Promise<number | null>
   bootTimeoutMs: number
   log: () => string
 }
@@ -236,10 +268,6 @@ export async function isPortOpen(port: number): Promise<boolean> {
     socket.on("timeout", () => finish(false))
     socket.on("error", () => finish(false))
   })
-}
-
-export function exitOf(child: ChildProcess): Promise<number | null> {
-  return new Promise((resolve) => child.on("exit", (code) => resolve(code)))
 }
 
 function readLog(path: string): string {
