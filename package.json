@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "@devcxl/opencode-session-peers",
+  "version": "0.1.0",
+  "description": "OpenCode v2 plugin that lets sessions on the same machine message each other: list peers, send, ask and wait for a reply, hand over context.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "session",
+    "peers",
+    "messaging",
+    "intercom"
+  ],
+  "engines": {
+    "bun": ">=1.2.0"
+  },
+  "devDependencies": {
+    "@opencode/plugin": "2.0.16",
+    "@types/bun": "^1.3.13",
+    "typescript": "^5.8.2"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  }
+}

@@ -15,7 +15,10 @@ attachments (`file` / `snippet` / `context`); scope partitioning; the subagent s
 
 Out of scope, deliberately: cross-machine relay, any human-facing UI, broadcast, message revocation
 (`supersedes` / `retryOf`), the extension bus / outbox, structured interviews, `herdr` / tmux /
-project-pane integration.
+project-pane integration, and a standalone CLI. The original ships a CLI, but the host already provides
+that surface — `opencode session list`, `opencode run --session <id> "<text>"`, `opencode api` — using
+its own credentials; a CLI of our own would have to reach into either `service.json` or the host's
+internal store, which ADR-0001 and ADR-0004 reject.
 
 ## Module boundaries and dependency direction
 
@@ -38,8 +41,11 @@ src/ask/handshake.ts     pending asks, reply routing, timeouts, late-reply degra
 src/actions/*.ts         one module per action; each returns result text plus details
 src/handover/generate.ts model-written handover through `ctx.session.generate`
 src/skill.ts             model-facing usage text
-src/cli/*                command-line client (see Open question 1)
 ```
+
+Scripts and humans reach this plugin through the host's own CLI (`opencode session list`,
+`opencode run --session <id> "<text>"`, `opencode api`) rather than a CLI of our own; see the scope note
+above.
 
 Dependency rule: `actions -> (peers, ask, handover) -> host -> domain`, and `index -> config + the
 rest`. `domain` never imports `host`. A unit test asserts that rule by scanning imports, so the
@@ -78,13 +84,13 @@ Each milestone ends at a gate that must be observed, not assumed.
 
 | # | Deliverable | Gate |
 | --- | --- | --- |
-| M1 | `domain/` + `config.ts` with unit tests | `bun test` green; import-boundary test green |
+| M1 | `domain/` + `config.ts` with unit tests, CI workflow, lockfile | `bun test` green locally and in CI; import-boundary test green |
 | M2 | `host/` + roster; dev loading via this repo's `.opencode/opencode.json` | two sessions in two directories see each other in an isolated instance |
 | M3 | `send` + inbound policy | a message sent from directory A arrives in directory B's session and lands mid-turn when busy |
 | M4 | `ask` / `reply` + routing + timeout | cross-instance ask returns the reply; timeout wording matches; a late reply degrades to an ordinary message |
 | M5 | `handover`, attachments, scope | handover sections present; scoped sessions cannot see across the boundary |
 | M6 | supervisor channel + skill text | foreground-spawned child fails fast; `background: true` child gets a real reply |
-| M7 | CI + publish readiness | CI green (typecheck + tests); README / SECURITY / CHANGELOG written |
+| M7 | publish readiness | README / SECURITY / CHANGELOG written; `npm pack` contents reviewed; typecheck and tests green |
 
 ## Verification
 
@@ -103,6 +109,9 @@ Each milestone ends at a gate that must be observed, not assumed.
 3. Where `steer` actually lands when the recipient is mid-turn — the safe boundary in practice.
 4. Reliability of parked detection: which message records expose a running tool call.
 5. Reclamation of stale roster entries after a session or instance disappears.
+6. Where a `send` to a peer that has gone away waits: in the sender's instance (simple, but the queue
+   dies with the sender) or in `ctx.storage` (outlives the sender, as the original's broker did, at the
+   cost of pruning and a claim so two instances cannot deliver the same message twice). Decide at M3.
 
 ## Risks
 
