@@ -12,6 +12,7 @@ import type { Delivery } from "./types.ts"
 
 export type ErrorCode =
   | "E_DISABLED"
+  | "E_NOT_CONNECTED"
   | "E_MESSAGE_EMPTY"
   | "E_ATTACHMENT_INVALID"
   | "E_SELF_TARGET"
@@ -48,6 +49,8 @@ function reasonFor(code: ErrorCode, detail: string): string {
   switch (code) {
     case "E_DISABLED":
       return "Session peers is disabled by configuration."
+    case "E_NOT_CONNECTED":
+      return `Session peers is not connected${detail.length > 0 ? `: ${detail}` : ""}.`
     case "E_MESSAGE_EMPTY":
       return "A message needs text or at least one attachment."
     case "E_ATTACHMENT_INVALID":
@@ -67,4 +70,14 @@ function reasonFor(code: ErrorCode, detail: string): string {
     case "E_NO_PENDING_ASK":
       return "No pending ask matches that reply."
   }
+}
+
+/**
+ * A one-line reason for a thrown value, for interpolation into a failure text.
+ * Host errors carry their meaning in `name` when the message is empty — a
+ * missing session arrives as `Session.NotFoundError` with no message.
+ */
+export function describeError(error: unknown): string {
+  if (error instanceof Error) return error.message.trim().length > 0 ? error.message : error.name
+  return String(error)
 }
