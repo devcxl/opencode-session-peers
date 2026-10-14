@@ -52,7 +52,11 @@ function peerRecord(overrides: Partial<Peer> & { sessionID: string }): Peer {
   }
 }
 
-/** What the result details say about a peer, written out field by field. */
+/**
+ * What the result details say about a peer, written out field by field. Absent
+ * facts are left out because a single `undefined` in tool metadata makes the
+ * real host drop the whole result (`test/fake-host.ts` refuses one).
+ */
 function peerDetails(
   session: { id: string; title?: string },
   directory: string,
@@ -62,9 +66,7 @@ function peerDetails(
     sessionID: session.id,
     title: session.title,
     directory,
-    model: undefined,
-    status,
-    parentID: undefined,
+    ...(status === undefined ? {} : { status }),
   }
 }
 

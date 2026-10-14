@@ -10,6 +10,9 @@
  * locations of one machine: the host's storage is shared per plugin id, while
  * everything else is per instance.
  *
+ * It also pins the one host quirk this build ran into: a tool result whose
+ * metadata holds an `undefined` value is never delivered (see `rejectUndefined`).
+ *
  * The assertions live in the tests; this file knows nothing about the plugin's
  * internals.
  */
@@ -204,8 +207,25 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
       const tool = tools.find((candidate) => candidate.name === name)
       if (tool === undefined) throw new Error(`No tool named "${name}" is registered`)
       const result = await tool.execute(input, toolCall(sessionID))
+      rejectUndefined(result.metadata, "metadata")
       return { text: textOf(result), details: result.metadata }
     },
+  }
+}
+
+/**
+ * opencode 2.0.29 never delivers a tool result whose metadata holds an
+ * `undefined` value: the call stays running and the model sees no output. The
+ * fake refuses one loudly instead, so the belief is pinned where CI can see it.
+ */
+function rejectUndefined(value: unknown, path: string): void {
+  if (value === undefined) throw new Error(`Tool result ${path} is undefined, which the host would drop`)
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => rejectUndefined(item, `${path}[${index}]`))
+    return
+  }
+  if (typeof value === "object" && value !== null) {
+    for (const [key, entry] of Object.entries(value)) rejectUndefined(entry, `${path}.${key}`)
   }
 }
 

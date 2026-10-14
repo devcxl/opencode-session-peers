@@ -32,17 +32,25 @@ export function rowFor(peer: Peer, view: RosterView, tags: { self: boolean; same
   return rosterRow(peer, { ...tags, prefix: shortestUniquePrefix(peer.sessionID, view.peers) })
 }
 
-/** What a row carries into the tool result's details, for a caller that reads them. */
+/**
+ * What a row carries into the tool result's details, for a caller that reads them.
+ *
+ * Absent fields are left out rather than set to `undefined`: opencode 2.0.29
+ * never delivers a tool result whose metadata holds an `undefined` value — the
+ * call stays running and the model sees no output at all — and `test/fake-host.ts`
+ * refuses one, so this cannot come back.
+ */
 export function peerDetails(peer: Peer, selfID: SessionID): Readonly<Record<string, unknown>> {
-  return {
+  const details: Record<string, unknown> = {
     sessionID: peer.sessionID,
     title: peer.title,
     directory: peer.directory,
-    model: peer.model,
-    status: peer.status,
-    parentID: peer.parentID,
     self: peer.sessionID === selfID,
   }
+  if (peer.model !== undefined) details.model = peer.model
+  if (peer.status !== undefined) details.status = peer.status
+  if (peer.parentID !== undefined) details.parentID = peer.parentID
+  return details
 }
 
 export function failed(code: ErrorCode, detail = ""): ActionResult {
