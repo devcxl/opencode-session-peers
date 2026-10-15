@@ -1,5 +1,14 @@
 # opencode-session-peers
 
+## Working rules
+
+- **Write only inside the worktree you were given.** The main checkout at
+  `/home/devcxl/Projects/OpenCodePlugins/opencode-session-peers` is loaded by a live session, which
+  hot-reloads whatever appears in it — so a stray write there is not a harmless edit, it changes the
+  plugin a person is running. A tool that resolves a relative path can land there without saying so:
+  check the absolute path before every write, and if it points anywhere outside your worktree, stop and
+  correct it rather than continuing.
+
 ## Agent skills
 
 ### Issue tracker
