@@ -5,12 +5,12 @@ md5 `6653617a3eb61ea49192fbd7325d4d3a` — the same binary as `tool-result-metad
 `ask-reply-handshake.md`. Prior notes: `subagent-lifecycle.md` (a foreground `subagent` call parks the
 parent), `subagent-background-mode.md` (`background: true` does not).
 
-Method: three fully isolated opencode instances (own `XDG_DATA_HOME`/`XDG_STATE_HOME`/`XDG_CACHE_HOME`/
-`XDG_CONFIG_HOME`, own database, dedicated port, own `OPENCODE_SERVER_PASSWORD`), the plugin under test
-installed from the project's `.opencode/opencode.json`, the developer's provider plugin and `auth.json`
-copied in for the runs and deleted at teardown. One instance additionally carried a throwaway probe
-plugin whose tool read the caller's parent transcript from *inside* the child session. Every claim below
-is **[ran]**.
+Method: throwaway opencode instances (own `XDG_DATA_HOME`/`XDG_STATE_HOME`/`XDG_CACHE_HOME`/
+`XDG_CONFIG_HOME`, own database, a free port each, own `OPENCODE_SERVER_PASSWORD`), the plugin under
+test installed from the project's `.opencode/opencode.json`, the developer's provider plugin and
+`auth.json` copied in for the runs and deleted at teardown. One instance additionally carried a
+throwaway probe plugin whose tool read the caller's parent transcript from *inside* the child session.
+Every claim below is **[ran]**.
 
 ## 0. What this note corrects
 
@@ -152,12 +152,16 @@ No file has to exist at `path`; only a `path` whose basename is `SKILL.md` trigg
 
 ## 6. Disclosures and artifacts
 
-- **Touched:** three throwaway `opencode serve` instances on ports 45229 / 44929 / 35135 (+ one boot
-  that answered 503 and was stopped by the harness), each with its own XDG dirs and database under
-  `/tmp/opencode/t8-supervisor/`; all SIGTERMed, ports closed, isolated databases left in scratch. The
-  provider plugin copy and `auth.json` copy were deleted at teardown.
+- **Touched:** six throwaway `opencode serve` processes across the runs (ports 45229, 44929 and 35135
+  recorded; the others picked their own free port), each with its own XDG dirs and database under
+  `/tmp/opencode/t8-supervisor/`. One booted instance answered 503 on `/api/session` and was stopped by
+  the harness without serving a turn. All were SIGTERMed (or never served), every port is closed, and
+  no `opencode serve` process belonging to these runs is alive. The provider plugin copy and the
+  `auth.json` copy were deleted at teardown.
 - **`~/.local/state/opencode/service.json`** is byte-identical before and after every run
   (md5 `bc39454dae86f66d7c99293cf4197a34`); the live service was never signalled or queried.
 - Scratch: `/tmp/opencode/t8-supervisor/` — `live.ts` (acceptance pair), `signal.ts` + `probe/`
   (the two plugin-side reads), `skill-check.ts`, `evidence/` and `signal-evidence/` (raw JSON captures
   quoted above), `live-run.log`.
+- The `session-peers-harness-*` servers visible on this machine during the runs belong to other work
+  (the repository's own harness CLI, run elsewhere); they were neither started nor stopped here.
