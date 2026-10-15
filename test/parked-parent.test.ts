@@ -6,6 +6,11 @@
  * asserted is what the model reads back, and what the plugin asked the host to
  * do — never how the probe is wired inside. The parent's parked-ness is posed as
  * a transcript, which is exactly the evidence the rule reads.
+ *
+ * The rule reads a `subagent` call that has not returned, not a call that names
+ * the asking child: on opencode 2.0.29 a running call carries no child id at all
+ * (`docs/research/subagent-lifecycle.md` §1.2 expected one in the input or in
+ * the progress metadata; measured empty — see the PR body for the raw rows).
  */
 
 import { describe, expect, test } from "bun:test"
@@ -20,23 +25,16 @@ const CHILD: FakeSession = { id: "ses_cccc0002", title: "Fibre probe", parentID:
 const NEIGHBOUR: FakeSession = { id: "ses_nnnn0003", title: "Neighbour" }
 
 const REFUSAL =
-  `"Main task" is your parent session and is blocked waiting for you to finish, ` +
-  `so it cannot answer inside this turn. ` +
+  `"Main task" is your parent session and cannot answer inside this turn: ` +
+  `it is inside a subagent call that has not returned. ` +
   `Use "send" to hand it the question together with your recommendation, or raise it in your final report.`
 
-/** The `subagent` call a parent sits inside: running, and naming the child it spawned. */
-function subagentCall(named: "input" | "metadata", childID: string): ToolCallRecord {
-  return {
-    name: "subagent",
-    status: "running",
-    input: named === "input" ? { sessionID: childID, agent: "general" } : { agent: "general" },
-    metadata: named === "metadata" ? { sessionID: childID, status: "running" } : {},
-  }
+/** A call as the parent's transcript shows it while it sits inside the tool. */
+function toolCall(name: string, status: string): ToolCallRecord {
+  return { name, status: status as ToolCallRecord["status"] }
 }
 
-function call(overrides: Partial<ToolCallRecord>): ToolCallRecord {
-  return { name: "subagent", status: "running", input: {}, metadata: {}, ...overrides }
-}
+const RUNNING_SUBAGENT = toolCall("subagent", "running")
 
 /**
  * One location serving a parent and a child it spawned, both published. `parent`
@@ -111,46 +109,42 @@ async function unload(instance: Family): Promise<void> {
 
 describe("the parked-parent rule", () => {
   test("a session no subagent spawned has no supervisor channel", () => {
-    expect(parentParking({ parentID: undefined, childID: CHILD.id, calls: [] })).toBe("not-parent")
+    expect(parentParking({ parentID: undefined, calls: [] })).toBe("not-parent")
   })
 
   test("a parent whose transcript cannot be read is not called parked", () => {
-    expect(parentParking({ parentID: PARENT.id, childID: CHILD.id, calls: undefined })).toBe("unknown")
+    expect(parentParking({ parentID: PARENT.id, calls: undefined })).toBe("unknown")
   })
 
-  test("a parent inside the subagent call that names this child is parked", () => {
-    expect(
-      parentParking({ parentID: PARENT.id, childID: CHILD.id, calls: [subagentCall("input", CHILD.id)] }),
-    ).toBe("parked")
-    // A new spawn carries no session id in its input; the tool records the child
-    // it created as progress metadata (docs/research/subagent-lifecycle.md §1.2).
-    expect(
-      parentParking({ parentID: PARENT.id, childID: CHILD.id, calls: [subagentCall("metadata", CHILD.id)] }),
-    ).toBe("parked")
+  test("a parent inside a subagent call that has not returned is parked", () => {
+    expect(parentParking({ parentID: PARENT.id, calls: [RUNNING_SUBAGENT] })).toBe("parked")
   })
 
   test("a parent is not parked for anything short of that", () => {
-    const other = "ses_other0009"
     expect(
       parentParking({
         parentID: PARENT.id,
-        childID: CHILD.id,
         calls: [
-          call({ status: "completed", input: { sessionID: CHILD.id } }),
-          call({ status: "running", input: { sessionID: other } }),
-          call({ name: "shell", status: "running", input: { command: "sleep 60" } }),
-          call({ status: "running", input: {} }),
-          call({ status: "running", input: {}, metadata: { sessionID: other } }),
+          toolCall("subagent", "completed"),
+          toolCall("subagent", "streaming"),
+          toolCall("subagent", "error"),
+          toolCall("shell", "running"),
+          toolCall("peers", "running"),
+          toolCall("read", "completed"),
         ],
       }),
     ).toBe("answerable")
+  })
+
+  test("a status this build does not know is not a running call", () => {
+    expect(parentParking({ parentID: PARENT.id, calls: [toolCall("subagent", "paused")] })).toBe("answerable")
   })
 })
 
 describe("a child asking its parked parent", () => {
   test("is refused at once, with the question still in its hands", async () => {
     const instance = await family({
-      parent: { toolCalls: [subagentCall("metadata", CHILD.id)] },
+      parent: { toolCalls: [RUNNING_SUBAGENT] },
       // The 10-minute default wait is never reached: a probe that failed would
       // hang this call, and bun's own test timeout is what catches that.
       pluginOptions: { askTimeoutMs: 600_000 },
@@ -175,8 +169,22 @@ describe("a child asking its parked parent", () => {
     // for the one moment it cannot read it.
     expect(instance.host.prompts).toEqual([])
     expect(await stored(instance.host.storage, "v1/asks/")).toEqual([])
-    // The parent's own transcript is what proved it, and only that one was read.
+    // The parent's own transcript is what decided, and only that one was read.
     expect(instance.host.transcriptReads).toEqual([PARENT.id])
+
+    await unload(instance)
+  })
+
+  test("is refused while the parent sits in a sibling's subagent call too", async () => {
+    // The parent is parked in a call that is not this child's. It still cannot
+    // drain its inbox, so the ask would stall just the same — measured on the
+    // real host, where the running call names no child at all.
+    const instance = await family({ parent: { toolCalls: [RUNNING_SUBAGENT] } })
+
+    const result = await instance.host.call("peers", { action: "ask", to: PARENT.id, message: "Yours?" }, CHILD.id)
+
+    expect(result.details).toMatchObject({ delivered: false, code: "E_TARGET_UNREACHABLE", parentProbe: "parked" })
+    expect(instance.host.prompts).toEqual([])
 
     await unload(instance)
   })
@@ -198,25 +206,27 @@ describe("a child asking an answerable parent", () => {
     await unload(instance)
   })
 
-  test("a parent parked on a different child is asked, not refused", async () => {
-    const instance = await family({ parent: { toolCalls: [subagentCall("input", "ses_other0009")] } })
+  test("a parent that finished its subagent call is asked, not refused", async () => {
+    const instance = await family({
+      parent: { toolCalls: [toolCall("subagent", "completed"), toolCall("subagent", "error")] },
+    })
 
-    const asking = instance.host.call("peers", { action: "ask", to: PARENT.id, message: "Yours?" }, CHILD.id)
+    const asking = instance.host.call("peers", { action: "ask", to: PARENT.id, message: "Still there?" }, CHILD.id)
     await waitForMessage(instance.host)
     expect(instance.host.prompts[0]?.sessionID).toBe(PARENT.id)
 
-    await instance.host.call("peers", { action: "reply", message: "Not mine." }, PARENT.id)
-    expect((await asking).text).toBe("**Reply from Main task:**\nNot mine.")
+    await instance.host.call("peers", { action: "reply", message: "Here." }, PARENT.id)
+    expect((await asking).text).toBe("**Reply from Main task:**\nHere.")
 
     await unload(instance)
   })
 
-  test("a session with no parent is never refused, even when the target's transcript names it", async () => {
+  test("a session with no parent is never refused, even when the target's transcript looks parked", async () => {
     const stranger: FakeSession = {
       id: "ses_ssss0004",
       title: "Stranger",
       // Evidence that would prove a parked parent — for someone else's child.
-      toolCalls: [subagentCall("metadata", NEIGHBOUR.id)],
+      toolCalls: [RUNNING_SUBAGENT],
     }
     const instance = await family({ caller: NEIGHBOUR, extra: [stranger] })
 
@@ -239,15 +249,11 @@ describe("a child asking an answerable parent", () => {
     }
     try {
       const instance = await family({
-        parent: { toolCalls: [subagentCall("metadata", CHILD.id)] },
+        parent: { toolCalls: [RUNNING_SUBAGENT] },
         contextRefuses: [PARENT.id],
       })
 
-      const asking = instance.host.call(
-        "peers",
-        { action: "ask", to: PARENT.id, message: "Unreadable?" },
-        CHILD.id,
-      )
+      const asking = instance.host.call("peers", { action: "ask", to: PARENT.id, message: "Unreadable?" }, CHILD.id)
       await waitForMessage(instance.host)
       // The message went out: an unprovable probe must not take the decision
       // away from a parent that might still answer.
@@ -266,7 +272,7 @@ describe("a child asking an answerable parent", () => {
 
 describe("a child reporting progress to its parent", () => {
   test("reaches a parked parent, and says when it will be read", async () => {
-    const instance = await family({ parent: { toolCalls: [subagentCall("metadata", CHILD.id)] } })
+    const instance = await family({ parent: { toolCalls: [RUNNING_SUBAGENT] } })
 
     const result = await instance.host.call(
       "peers",
@@ -275,7 +281,7 @@ describe("a child reporting progress to its parent", () => {
     )
 
     expect(result.text).toBe(
-      "Message sent to Main task; it is blocked waiting for this run to end, so it will read the message then.",
+      "Message sent to Main task; its turn is inside a subagent call that has not returned, so it will read the message when that call returns.",
     )
     expect(result.details).toEqual({
       delivered: true,
@@ -296,7 +302,11 @@ describe("a child reporting progress to its parent", () => {
   test("says nothing extra to a parent that can read it now", async () => {
     const instance = await family({ parent: { toolCalls: [] } })
 
-    const result = await instance.host.call("peers", { action: "send", to: PARENT.id, message: "Starting now." }, CHILD.id)
+    const result = await instance.host.call(
+      "peers",
+      { action: "send", to: PARENT.id, message: "Starting now." },
+      CHILD.id,
+    )
 
     expect(result.text).toBe("Message sent to Main task")
     expect(result.details).not.toHaveProperty("parentProbe")
@@ -315,7 +325,7 @@ describe("the parent-side text", () => {
     expect(skill.id).toBe("session-peers-supervisor")
     expect(skill.description).toContain("background: true")
     expect(skill.content).toContain("`background: true`")
-    expect(skill.content).toContain("peers({ action: \"send\", ... })")
+    expect(skill.content).toContain('peers({ action: "send", ... })')
     // The text exists at the path the host is told, so the model can find it.
     expect(skill.path).toBe(new URL("../src/skill.ts", import.meta.url).pathname)
   })

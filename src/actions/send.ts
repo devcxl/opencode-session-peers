@@ -93,13 +93,12 @@ export async function sendAction(deps: SendDeps, call: ToolCall, input: unknown)
   })
   if (attempt.kind === "refused") return attempt.refusal
 
-  // A progress report to a parent that is parked in the `subagent` call that
-  // started this session is admitted now and read when the run ends — the one
-  // thing a child cannot see for itself, and the honest answer to "did it arrive".
+  // A progress report to a parent that is inside a `subagent` call is admitted
+  // now and read when that call returns — the one thing a child cannot see for
+  // itself, and the honest answer to "did it arrive".
   const probe = await probeParent({
     sessions: deps.sessions,
     parentID: view.self.parentID,
-    callerID: call.sessionID,
     targetID: peer.sessionID,
     warn: deps.warn,
   })
@@ -107,7 +106,7 @@ export async function sendAction(deps: SendDeps, call: ToolCall, input: unknown)
 
   return {
     text: parked
-      ? `Message sent to ${peer.title}; it is blocked waiting for this run to end, so it will read the message then.`
+      ? `Message sent to ${peer.title}; its turn is inside a subagent call that has not returned, so it will read the message when that call returns.`
       : `Message sent to ${peer.title}`,
     details: {
       delivered: true,

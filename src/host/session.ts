@@ -82,12 +82,7 @@ export function sessionLookup(
         if (message.type !== "assistant") continue
         for (const part of message.content) {
           if (part.type !== "tool") continue
-          calls.push({
-            name: part.name,
-            status: toolCallStatus(part.state.status),
-            input: readObject(part.state.input),
-            metadata: readObject("metadata" in part.state ? part.state.metadata : undefined),
-          })
+          calls.push({ name: part.name, status: toolCallStatus(part.state.status) })
         }
       }
       return calls
@@ -109,11 +104,4 @@ function toolCallStatus(status: string): ToolCallStatus {
     default:
       return "unknown"
   }
-}
-
-/** Tool input and metadata are host JSON; anything that is not an object is nothing to read. */
-function readObject(value: unknown): Readonly<Record<string, unknown>> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {}
 }

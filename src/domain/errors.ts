@@ -93,7 +93,7 @@ function reasonFor(code: ErrorCode, detail: string): string {
     case "E_DELIVERY_FAILED":
       return `Message to "${detail}" was not delivered: the host no longer runs that session. Use "list" to see who is still connected.`
     case "E_TARGET_UNREACHABLE":
-      return `"${detail}" is your parent session and is blocked waiting for you to finish, so it cannot answer inside this turn. Use "send" to hand it the question together with your recommendation, or raise it in your final report.`
+      return `"${detail}" is your parent session and cannot answer inside this turn: it is inside a subagent call that has not returned. Use "send" to hand it the question together with your recommendation, or raise it in your final report.`
     case "E_ASK_IN_FLIGHT":
       return "Already waiting for a reply; one ask at a time."
     case "E_MUTUAL_ASK":

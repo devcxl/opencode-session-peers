@@ -46,15 +46,14 @@ export interface FakeSession {
 }
 
 /**
- * One tool call in a session's transcript, as the host reports it: the call the
- * model wrote (`input`), how it stands, and the progress metadata the tool
- * recorded while running.
+ * One tool call in a session's transcript, as the host reports it. Only name and
+ * status are posed: measured on opencode 2.0.29, a running call's input holds no
+ * child session id and its metadata stays empty, which is all the parked rule
+ * could read either way.
  */
 export interface FakeToolCall {
   readonly name: string
   readonly status?: string
-  readonly input?: Readonly<Record<string, unknown>>
-  readonly metadata?: Readonly<Record<string, unknown>>
 }
 
 /** One skill the plugin registered with the host. */
@@ -390,11 +389,7 @@ function transcript(session: Partial<FakeSession>): unknown[] {
         type: "tool",
         id: `call_fake_${index}`,
         name: call.name,
-        state: {
-          status: call.status ?? "completed",
-          input: call.input ?? {},
-          metadata: call.metadata ?? {},
-        },
+        state: { status: call.status ?? "completed", input: {}, metadata: {} },
       })),
     },
   ]

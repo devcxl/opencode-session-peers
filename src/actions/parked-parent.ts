@@ -3,8 +3,8 @@
  * `src/domain/parked-parent.ts` (ADR-0002).
  *
  * `ask` and `send` both address a session that may be the caller's own parent,
- * and both need the same answer: is that parent inside the `subagent` call that
- * started this child? Only the host can say. A probe that cannot read the parent
+ * and both need the same answer: is that parent inside a `subagent` call that
+ * has not returned? Only the host can say. A probe that cannot read the parent
  * is reported as `unknown` — never as parked — because the refusal it feeds must
  * be provable; the failure itself is handed to the caller to report, so it does
  * not disappear.
@@ -25,7 +25,6 @@ export interface ParentProbeInput {
   readonly sessions: SessionLookup
   /** The caller's parent, as the caller's own roster row declares it. */
   readonly parentID?: SessionID
-  readonly callerID: SessionID
   /** The session the call addresses. */
   readonly targetID: SessionID
   /** Reports a probe that could not run; the message itself continues either way. */
@@ -47,5 +46,5 @@ export async function probeParent(input: ParentProbeInput): Promise<ParentProbe>
     return { parking: "unknown", error: detail }
   }
 
-  return { parking: parentParking({ parentID, childID: input.callerID, calls }) }
+  return { parking: parentParking({ parentID, calls }) }
 }

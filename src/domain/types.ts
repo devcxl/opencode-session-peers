@@ -31,17 +31,15 @@ export type ToolCallStatus = "streaming" | "running" | "completed" | "error" | "
 /**
  * One tool call as a session's own transcript shows it.
  *
- * The parked-parent rule (ADR-0002) reads these to find the `subagent` call a
- * parent is currently inside. `input` is the call as the model wrote it and
- * `metadata` is what the tool reported while it ran; either may be empty, and
- * the host layer maps the transcript into this shape so the rule stays free of
- * host types.
+ * The parked-parent rule (ADR-0002) reads these to see whether a parent is
+ * currently inside its `subagent` call. Nothing else about the call travels:
+ * measured on opencode 2.0.29, a running `subagent` call names no child — a new
+ * spawn is given no session id, and its progress metadata stays empty until the
+ * call returns — so the name and the status are the whole observable signal.
  */
 export interface ToolCallRecord {
   readonly name: string
   readonly status: ToolCallStatus
-  readonly input: Readonly<Record<string, unknown>>
-  readonly metadata: Readonly<Record<string, unknown>>
 }
 
 /**

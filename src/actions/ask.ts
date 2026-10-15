@@ -74,15 +74,14 @@ export async function askAction(deps: AskDeps, call: ToolCall, input: unknown): 
   const admission = admitInbound({ declared: peer.inboundTrigger, exchange: true })
   if (!admission.ok) return refusal(failure(admission.code, target), { sessionID: peer.sessionID })
 
-  // The supervisor channel (ADR-0002): if this peer is the session that spawned
-  // the caller and it is parked in that `subagent` call, the question cannot be
-  // answered until the caller's own run ends — and the wait for it ends the same
-  // way. Refuse before anything is written or delivered, and say what to do
-  // with the question instead. An unreadable parent is asked, not refused.
+  // The supervisor channel (ADR-0002): a parent inside a `subagent` call that
+  // has not returned cannot drain its inbox, so the question would reach it only
+  // after the wait for it had ended. Refuse before anything is written or
+  // delivered, and say what to do with the question instead. A parent whose
+  // transcript cannot be read is asked, not refused.
   const probe = await probeParent({
     sessions: deps.sessions,
     parentID: view.self.parentID,
-    callerID: call.sessionID,
     targetID: peer.sessionID,
     warn: deps.warn,
   })
