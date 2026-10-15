@@ -36,16 +36,3 @@ export function resolvePeer(target: string, peers: readonly Peer[], selfID: Sess
 
   return { kind: "not-found" }
 }
-
-/**
- * The shortest prefix of `id` that no other peer shares, so a roster can show
- * something short enough to type without ever showing an ambiguous one.
- */
-export function shortestUniquePrefix(id: SessionID, peers: readonly Peer[], minimum = 8): string {
-  const others = peers.filter((peer) => peer.sessionID !== id).map((peer) => peer.sessionID)
-  for (let length = Math.max(minimum, 1); length < id.length; length += 1) {
-    const candidate = id.slice(0, length)
-    if (!others.some((other) => other.startsWith(candidate))) return candidate
-  }
-  return id
-}

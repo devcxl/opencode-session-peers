@@ -61,7 +61,8 @@ boundary cannot rot silently.
    its roster record** and is enforced by the sender (ADR-0005). A send is not queued.
 2. **Roster.** Each plugin instance publishes the sessions it serves to `ctx.storage` with a heartbeat,
    reads the whole registry, and filters by scope. Rows are formatted like the original's
-   (`name (id-prefix) — cwd (model · status)`), with the shortest unique id prefix. Module-level state
+   (`name (session id) — cwd (model · status)`), with the whole id rather than a prefix, so a row can be
+   pasted into anything else. Module-level state
    cannot be used: the plugin is instantiated once per location, with a fresh module instance.
 3. **Ask / reply routing.** An ask publishes `ask/<askId>` (asker, target, question, expiry) and then
    prompts the target. The target's agent answers with `peers({action:"reply"})`; the instance serving

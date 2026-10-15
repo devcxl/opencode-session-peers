@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 
-import { resolvePeer, shortestUniquePrefix } from "../src/domain/addressing.ts"
+import { resolvePeer } from "../src/domain/addressing.ts"
 import type { Peer } from "../src/domain/types.ts"
 
 function peer(sessionID: string, title: string, overrides: Partial<Peer> = {}): Peer {
@@ -66,24 +66,5 @@ describe("resolvePeer", () => {
   test("treats an unknown target and a blank target as not found", () => {
     expect(resolvePeer("nowhere", [peer("ses_aaaaaaaaaaaa1111", "one")], SELF)).toEqual({ kind: "not-found" })
     expect(resolvePeer("   ", [], SELF)).toEqual({ kind: "not-found" })
-  })
-})
-
-describe("shortestUniquePrefix", () => {
-  test("is never shorter than the minimum, even when the id is unique", () => {
-    const only = peer("ses_abcdefghijklmnop", "one")
-    expect(shortestUniquePrefix(only.sessionID, [only], 8)).toBe("ses_abcd")
-  })
-
-  test("extends until it no longer collides with another peer", () => {
-    const first = peer("ses_aaaaaaaaaaaa1111", "one")
-    const second = peer("ses_aaaaaaaaaaaa2222", "two")
-    expect(shortestUniquePrefix(first.sessionID, [first, second], 8)).toBe("ses_aaaaaaaaaaaa1")
-  })
-
-  test("falls back to the whole id when no shorter prefix is unique", () => {
-    const first = peer("ses_same", "one")
-    const second = peer("ses_same2", "two")
-    expect(shortestUniquePrefix(first.sessionID, [first, second], 1)).toBe("ses_same")
   })
 })

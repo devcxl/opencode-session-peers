@@ -12,8 +12,6 @@ import type { AskRecord, Attachment, MessageBody, Peer } from "./types.ts"
 export interface RosterRowOptions {
   self: boolean
   sameDirectory: boolean
-  /** Shortest unique id prefix, so a reader can address this peer unambiguously. */
-  prefix: string
 }
 
 export function rosterRow(peer: Peer, options: RosterRowOptions): string {
@@ -27,7 +25,10 @@ export function rosterRow(peer: Peer, options: RosterRowOptions): string {
   if (options.sameDirectory) tags.push("same cwd")
   const suffix = tags.length > 0 ? ` [${tags.join(", ")}]` : ""
 
-  return `• ${peer.title} (${options.prefix}) — ${peer.directory}${parenthetical}${suffix}`
+  // The id is the whole id, not a prefix: a row is read by a person as often as
+  // by a model, and only the whole id can be pasted into anything else — the
+  // host's own CLI, a log, a listing from another scope.
+  return `• ${peer.title} (${peer.sessionID}) — ${peer.directory}${parenthetical}${suffix}`
 }
 
 export function formatAttachments(attachments: readonly Attachment[]): string {

@@ -134,7 +134,7 @@ describe("publishing", () => {
     await settle()
 
     const result = await alpha.host.call("peers", { action: "list" })
-    expect(result.text).toContain(`• Sibling work (ses_ssss) — /work/alpha (busy) [same cwd]`)
+    expect(result.text).toContain(`• Sibling work (ses_ssss1111) — /work/alpha (busy) [same cwd]`)
 
     // The stream is not filtered by location: the session's own directory decides.
     alpha.host.emit("session.created", { sessionID: BETA.id })
@@ -230,10 +230,10 @@ describe("reading the roster", () => {
     expect(result.text).toBe(
       [
         "**Current session:**",
-        "• Docs site (ses_bbbb) — /work/beta [self]",
+        "• Docs site (ses_bbbb2222) — /work/beta [self]",
         "",
         "**Other sessions:**",
-        "• Payments API (ses_aaaa) — /work/alpha",
+        "• Payments API (ses_aaaa1111) — /work/alpha",
       ].join("\n"),
     )
     expect(result.details).toEqual({
@@ -275,7 +275,7 @@ describe("reading the roster", () => {
     expect(here.text).toBe(
       [
         "**Other sessions (cwd: /work/alpha):**",
-        "• Sibling work (ses_ssss) — /work/alpha (idle)",
+        "• Sibling work (ses_ssss1111) — /work/alpha (idle)",
       ].join("\n"),
     )
     expect(here.details).toEqual({
