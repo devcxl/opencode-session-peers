@@ -42,22 +42,25 @@ async function settle(): Promise<void> {
 /**
  * Two locations on one machine: alpha in one directory, beta in the other, both
  * published so each can address the other. Extra fake-host options (a refusal,
- * a config) apply to the sending side, which is where a send is issued.
+ * a config) apply to the side that is named, the sending side by default.
  */
-async function twoDirectories(alphaOptions: FakeHostOptions = {}) {
+async function twoDirectories(
+  options: { alpha?: FakeHostOptions; beta?: FakeHostOptions } = {},
+) {
   const storage = fakeStorage()
   const alpha = await loaded({
     location: "/work/alpha",
     caller: ALPHA.id,
     storage,
     sessions: [ALPHA],
-    ...alphaOptions,
+    ...options.alpha,
   })
   const beta = await loaded({
     location: "/work/beta",
     caller: BETA.id,
     storage,
     sessions: [BETA],
+    ...options.beta,
   })
 
   // Beta has been created and has not started anything: idle, so a message to
@@ -89,6 +92,9 @@ function peerRecord(overrides: Partial<Peer> & { sessionID: string }): Peer {
     title: "peer session",
     directory: "/work/elsewhere",
     scope: "default",
+    // Every live instance publishes a declaration, so a crafted record carries
+    // one unless a test is about a record that predates the field.
+    inboundTrigger: "always",
     instanceID: "instance-other",
     updatedAt: Date.now(),
     ...overrides,
@@ -160,7 +166,7 @@ describe("delivering a message", () => {
   })
 
   test("leaves the reply hint out when the sender's configuration asks it to", async () => {
-    const { alpha, beta } = await twoDirectories({ options: { replyHint: false } })
+    const { alpha, beta } = await twoDirectories({ alpha: { options: { replyHint: false } } })
 
     await alpha.host.call("peers", { action: "send", to: BETA.id, message: "no hint please" })
 
@@ -215,7 +221,7 @@ describe("the delivery decision", () => {
   })
 
   test("uses the configured busy delivery when the recipient is mid-turn", async () => {
-    const { alpha, beta } = await twoDirectories({ options: { busyDelivery: "queue" } })
+    const { alpha, beta } = await twoDirectories({ alpha: { options: { busyDelivery: "queue" } } })
     beta.host.emit("session.execution.started", { sessionID: BETA.id })
     await settle()
 
@@ -239,6 +245,89 @@ describe("the delivery decision", () => {
     const result = await alpha.host.call("peers", { action: "send", to: BETA.id, message: "ping" })
 
     expect(result.details).toMatchObject({ delivered: true, delivery: "steer" })
+
+    await unloadAll(alpha, beta)
+  })
+})
+
+describe("the recipient's declared policy", () => {
+  test("a peer that declares never is not sent to, and its record says so", async () => {
+    const { alpha, beta, storage } = await twoDirectories({ beta: { options: { trigger: "never" } } })
+    // The declaration travels: it is on the record the sending instance read.
+    expect(recordFor(storage, BETA.id)?.inboundTrigger).toBe("never")
+
+    const result = await alpha.host.call("peers", { action: "send", to: "Docs site", message: "ping" })
+
+    const reason = `Session "Docs site" does not accept peer messages.`
+    expect(result.text).toBe(reason)
+    expect(result.details).toEqual({
+      delivered: false,
+      code: "E_TARGET_REFUSES",
+      reason,
+      retryable: false,
+      sessionID: BETA.id,
+    })
+    expect(alpha.host.prompts).toEqual([])
+
+    await unloadAll(alpha, beta)
+  })
+
+  test("a peer that declares replies refuses a plain message", async () => {
+    const { alpha, beta, storage } = await twoDirectories({ beta: { options: { trigger: "replies" } } })
+    expect(recordFor(storage, BETA.id)?.inboundTrigger).toBe("replies")
+
+    const result = await alpha.host.call("peers", { action: "send", to: "Docs site", message: "ping" })
+
+    const reason = `Session "Docs site" accepts peer messages only as answers to its own questions, and this is a new message.`
+    expect(result.text).toBe(reason)
+    expect(result.details).toEqual({
+      delivered: false,
+      code: "E_TARGET_REPLIES_ONLY",
+      reason,
+      retryable: false,
+      sessionID: BETA.id,
+    })
+    expect(alpha.host.prompts).toEqual([])
+
+    await unloadAll(alpha, beta)
+  })
+
+  test("a peer that declares always is delivered to as usual", async () => {
+    const { alpha, beta, storage } = await twoDirectories({ beta: { options: { trigger: "always" } } })
+    expect(recordFor(storage, BETA.id)?.inboundTrigger).toBe("always")
+
+    const result = await alpha.host.call("peers", { action: "send", to: BETA.id, message: "ping" })
+
+    expect(result.details).toMatchObject({ delivered: true, delivery: "queue" })
+    expect(alpha.host.prompts).toHaveLength(1)
+
+    await unloadAll(alpha, beta)
+  })
+
+  test("a record that carries no declaration is refused, not assumed open", async () => {
+    const { alpha, beta, storage } = await twoDirectories()
+    // What a record written before the roster carried the field looks like.
+    await storage.set(peerKey(TWIN.id), {
+      sessionID: TWIN.id,
+      title: "Old build",
+      directory: "/work/beta",
+      scope: "default",
+      instanceID: "instance-old",
+      updatedAt: Date.now(),
+    })
+
+    const result = await alpha.host.call("peers", { action: "send", to: "Old build", message: "ping" })
+
+    const reason = `Session "Old build" has not declared what it accepts from peers, so this message is refused. It may still be running an older build.`
+    expect(result.text).toBe(reason)
+    expect(result.details).toEqual({
+      delivered: false,
+      code: "E_TARGET_POLICY_UNKNOWN",
+      reason,
+      retryable: false,
+      sessionID: TWIN.id,
+    })
+    expect(alpha.host.prompts).toEqual([])
 
     await unloadAll(alpha, beta)
   })
@@ -368,7 +457,7 @@ describe("a recipient that has gone away", () => {
   test("a refused delivery is reported as undelivered, with the host's reason kept", async () => {
     // The roster record is still fresh — the sender resolves the target — but
     // the host no longer runs that session, as when it exits between the two.
-    const { alpha, beta } = await twoDirectories({ promptRefuses: [BETA.id] })
+    const { alpha, beta } = await twoDirectories({ alpha: { promptRefuses: [BETA.id] } })
 
     const result = await alpha.host.call("peers", { action: "send", to: "Docs site", message: "anyone there?" })
 

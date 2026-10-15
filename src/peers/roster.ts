@@ -215,6 +215,9 @@ class LiveRoster implements Roster {
       model: session.modelID,
       status: this.index.statusOf(session.id),
       scope: this.deps.config.scope,
+      // Only this instance can read its own options, so its sessions declare
+      // here what they accept: every sender honours the declaration it reads.
+      inboundTrigger: this.deps.config.inbound.trigger,
       parentID: session.parentID,
       instanceID: this.instanceID,
       updatedAt: Date.now(),

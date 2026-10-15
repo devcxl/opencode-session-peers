@@ -22,6 +22,16 @@ export interface ActionResult {
 export type Delivery = "steer" | "queue"
 
 /**
+ * What a session accepts from peers.
+ *
+ * The receiving side is the only side that can decide this, and this plugin has
+ * no hook there, so a session publishes its trigger on its own roster record and
+ * every sender honours what it finds. A record written before the field existed
+ * carries none, which a sender treats as a refusal, not as permission.
+ */
+export type InboundTrigger = "always" | "replies" | "never"
+
+/**
  * Content carried along with a message. The original keeps these inline in the
  * message body rather than referring to files, so a peer can read them without
  * sharing a filesystem view.
@@ -55,6 +65,8 @@ export interface Peer {
   status?: string
   /** Visibility partition; peers only resolve within their own scope. */
   scope: string
+  /** What this session accepts from peers, as it declared it. Absent on a record that predates the field. */
+  inboundTrigger?: InboundTrigger
   /** Parent session, for sessions spawned as subagents. */
   parentID?: SessionID
   instanceID: string

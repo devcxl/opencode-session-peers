@@ -16,7 +16,7 @@
 import { describeError, failure, type Failure } from "../domain/errors.ts"
 import { resolvePeer } from "../domain/addressing.ts"
 import { inboundMessage } from "../domain/format.ts"
-import { deliveryFor } from "../domain/policy.ts"
+import { admitInbound, deliveryFor } from "../domain/policy.ts"
 import type { ActionResult, Attachment } from "../domain/types.ts"
 import type { Config } from "../config.ts"
 import type { SessionLookup } from "../host/session.ts"
@@ -57,6 +57,14 @@ export async function sendAction(deps: SendDeps, call: ToolCall, input: unknown)
   const peer = resolution.peer
   // The same check catches a target that names the caller by title or prefix.
   if (peer.sessionID === call.sessionID) return refusal(failure("E_SELF_TARGET"))
+
+  // The recipient declared what it accepts on its own roster record; this
+  // instance is only the messenger. `send` is never part of an ask/reply
+  // exchange, so the exchange flag is false until the ask action exists.
+  const admission = admitInbound({ declared: peer.inboundTrigger, exchange: false })
+  if (!admission.ok) {
+    return refusal(failure(admission.code, parsed.request.target), { sessionID: peer.sessionID })
+  }
 
   // The roster is everything this instance knows about the target; a status it
   // never saw counts as "not idle", so a message never starts a turn on a guess.

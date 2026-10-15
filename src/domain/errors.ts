@@ -18,6 +18,9 @@ export type ErrorCode =
   | "E_SELF_TARGET"
   | "E_TARGET_NOT_FOUND"
   | "E_TARGET_AMBIGUOUS"
+  | "E_TARGET_REFUSES"
+  | "E_TARGET_REPLIES_ONLY"
+  | "E_TARGET_POLICY_UNKNOWN"
   | "E_DELIVERY_FAILED"
   | "E_TARGET_UNREACHABLE"
   | "E_ASK_IN_FLIGHT"
@@ -62,6 +65,15 @@ function reasonFor(code: ErrorCode, detail: string): string {
       return `Session "${detail}" is not connected. Blocking asks are not queued; use "send" or retry once it reconnects.`
     case "E_TARGET_AMBIGUOUS":
       return `Multiple sessions match "${detail}". Address one by the session id shown in parentheses by "list".`
+    // The recipient's own declaration, honoured by the sender: the original
+    // enforced it on the receiving side, which this host gives no hook for, so
+    // the refusal has to name the policy that caused it.
+    case "E_TARGET_REFUSES":
+      return `Session "${detail}" does not accept peer messages.`
+    case "E_TARGET_REPLIES_ONLY":
+      return `Session "${detail}" accepts peer messages only as answers to its own questions, and this is a new message.`
+    case "E_TARGET_POLICY_UNKNOWN":
+      return `Session "${detail}" has not declared what it accepts from peers, so this message is refused. It may still be running an older build.`
     case "E_DELIVERY_FAILED":
       return `Message to "${detail}" was not delivered: the host no longer runs that session. Use "list" to see who is still connected.`
     case "E_TARGET_UNREACHABLE":

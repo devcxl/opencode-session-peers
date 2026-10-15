@@ -90,6 +90,7 @@ describe("publishing", () => {
       directory: "/work/alpha",
       projectID: "proj_fake",
       scope: "default",
+      inboundTrigger: "always",
     })
     // Which instance wrote a record is what lets a reload tell its own rows apart.
     expect(records[0]?.instanceID).not.toBe(records[1]?.instanceID)
@@ -97,6 +98,25 @@ describe("publishing", () => {
 
     await alpha.unload()
     await beta.unload()
+  })
+
+  test("publishes the inbound trigger this instance was configured with", async () => {
+    const storage = fakeStorage()
+    const alpha = await loaded({
+      location: "/work/alpha",
+      caller: ALPHA.id,
+      storage,
+      options: { trigger: "replies" },
+      sessions: [ALPHA],
+    })
+
+    await alpha.host.call("peers", { action: "list" })
+
+    // A session's declaration has to travel: the sender is the only instance
+    // that can read it, and it reads it from here.
+    expect(peerRecords(storage).find((peer) => peer.sessionID === ALPHA.id)?.inboundTrigger).toBe("replies")
+
+    await alpha.unload()
   })
 
   test("takes in a session an event announces in this directory, with its status", async () => {
@@ -146,8 +166,7 @@ describe("publishing", () => {
 })
 
 describe("reading the roster", () => {
-  test("a record whose heartbeats stopped is no peer after the TTL", async () => {
-    const storage = fakeStorage()
+  test("a record whose heartbeats stopped is no peer after the TTL", async () => {    const storage = fakeStorage()
     const ttl = 5_000
     const alpha = await loaded({
       location: "/work/alpha",

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 
-import { canStartAsk, deliveryFor, shouldDeliver } from "../src/domain/policy.ts"
+import { admitInbound, canStartAsk, deliveryFor } from "../src/domain/policy.ts"
 import type { InboundPolicy } from "../src/domain/policy.ts"
 
 const ALWAYS_STEER: InboundPolicy = { trigger: "always", busyDelivery: "steer" }
@@ -16,22 +16,34 @@ describe("deliveryFor", () => {
   })
 })
 
-describe("shouldDeliver", () => {
-  test("always admits both questions and plain messages", () => {
-    expect(shouldDeliver({ expectsReply: true, policy: ALWAYS_STEER })).toBe(true)
-    expect(shouldDeliver({ expectsReply: false, policy: ALWAYS_STEER })).toBe(true)
+describe("admitInbound", () => {
+  test("a peer that declares always takes any message", () => {
+    expect(admitInbound({ declared: "always", exchange: false })).toEqual({ ok: true })
+    expect(admitInbound({ declared: "always", exchange: true })).toEqual({ ok: true })
   })
 
-  test("replies admits only answers to an ask", () => {
-    const policy: InboundPolicy = { trigger: "replies", busyDelivery: "steer" }
-    expect(shouldDeliver({ expectsReply: true, policy })).toBe(true)
-    expect(shouldDeliver({ expectsReply: false, policy })).toBe(false)
+  test("replies admits only the two directions of an exchange", () => {
+    expect(admitInbound({ declared: "replies", exchange: true })).toEqual({ ok: true })
+    expect(admitInbound({ declared: "replies", exchange: false })).toEqual({
+      ok: false,
+      code: "E_TARGET_REPLIES_ONLY",
+    })
   })
 
   test("never admits nothing", () => {
-    const policy: InboundPolicy = { trigger: "never", busyDelivery: "steer" }
-    expect(shouldDeliver({ expectsReply: true, policy })).toBe(false)
-    expect(shouldDeliver({ expectsReply: false, policy })).toBe(false)
+    expect(admitInbound({ declared: "never", exchange: true })).toEqual({ ok: false, code: "E_TARGET_REFUSES" })
+    expect(admitInbound({ declared: "never", exchange: false })).toEqual({ ok: false, code: "E_TARGET_REFUSES" })
+  })
+
+  test("a record that carries no declaration fails closed", () => {
+    expect(admitInbound({ declared: undefined, exchange: false })).toEqual({
+      ok: false,
+      code: "E_TARGET_POLICY_UNKNOWN",
+    })
+    expect(admitInbound({ declared: undefined, exchange: true })).toEqual({
+      ok: false,
+      code: "E_TARGET_POLICY_UNKNOWN",
+    })
   })
 })
 
