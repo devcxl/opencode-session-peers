@@ -113,6 +113,13 @@ Behaviour worth knowing before you rely on it:
   sessions cannot ask each other simultaneously, and while a session holds an unanswered question a
   `send` to anyone but the asker is refused.
 - **Peers expire.** A session whose host stopped running disappears from `list` after `rosterTtlMs`.
+- **A peer appears once its host has noticed it.** An instance can only learn that a session exists from an
+  event about it — being created counts — or from one call that reads the roster by that session itself:
+  `list`, `list-cwd`, `send`, `ask`, `reply` or `handover`. (`status`, `pending` and `cancel` do not publish
+  the caller, so a session that only checks its own status stays invisible to everyone else.) A session
+  that has been idle since its location's instance started is therefore simply not on the roster yet, even
+  though the tool is available inside it; the fix is one turn. This is why an empty `list` usually means
+  "nobody has done anything yet", not "nothing is running".
 
 ## Subagents
 
