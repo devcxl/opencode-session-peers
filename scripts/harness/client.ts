@@ -45,6 +45,12 @@ export interface SessionToolPart {
     content?: readonly SessionTextPart[]
     metadata?: Readonly<Record<string, unknown>>
   }
+  /** When the host ran the call; `completed - ran` is the time spent inside it. */
+  time?: {
+    created?: number
+    ran?: number
+    completed?: number
+  }
 }
 
 export interface SessionMessage {

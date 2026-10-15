@@ -97,15 +97,22 @@ export function pluginEntrypoint(directory: string): string | undefined {
 }
 
 /**
+ * One entry of a project's `plugins` array: a bare directory, or a package with
+ * the options the plugin reads from `ctx.options`. The offline pass uses the
+ * second form to configure the ask timeout under test.
+ */
+export type PluginEntry = string | { readonly package: string; readonly options: Record<string, unknown> }
+
+/**
  * A project-scoped config. Both the plugin under test and the probe are
  * declared here, which is the installation mechanism every later ticket uses.
  */
-export function projectConfigText(pluginDirectories: readonly string[]): string {
+export function projectConfigText(plugins: readonly PluginEntry[]): string {
   return `${JSON.stringify(
     {
       $schema: "https://opencode.ai/config.json",
       share: "disabled",
-      plugins: [...pluginDirectories],
+      plugins: [...plugins],
     },
     null,
     2,

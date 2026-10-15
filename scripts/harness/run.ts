@@ -17,7 +17,13 @@ import { checkAuth, checkIsolation, checkNoCredentials, checkPluginLoading, chec
 import { createClient } from "./client.ts"
 import { prepareScratch, startInstance, type InstanceHandle } from "./instance.ts"
 import { isProcessAlive, readLiveService } from "./isolation.ts"
-import { PROBE_PLUGIN_DIR, scratchLayout, serviceJsonPath, type ScratchLayout } from "./paths.ts"
+import {
+  PROBE_PLUGIN_DIR,
+  scratchLayout,
+  serviceJsonPath,
+  type PluginEntry,
+  type ScratchLayout,
+} from "./paths.ts"
 import {
   explain,
   expectationsMet,
@@ -36,6 +42,7 @@ import {
   readTranscripts,
   summarizeSession,
 } from "./sessions.ts"
+import { STUB_ASK_PLAN } from "./stub/ask.ts"
 import { driveStubPass } from "./stub/drive.ts"
 import { startStubModel, type StubHandle } from "./stub/model-server.ts"
 import { teardown } from "./teardown.ts"
@@ -91,8 +98,13 @@ export async function runHarness(options: HarnessOptions): Promise<HarnessReport
           "(loopback only, no hosted model, no credentials); it is stopped at teardown",
       )
     }
+    // The offline pass is the only one that needs a plugin option: the short
+    // ask timeout it then asserts the ask chain against.
+    const plugins: PluginEntry[] = options.stub
+      ? [{ package: options.pluginPath, options: { askTimeoutMs: STUB_ASK_PLAN.timeoutMs } }, PROBE_PLUGIN_DIR]
+      : [options.pluginPath, PROBE_PLUGIN_DIR]
     prepareScratch(layout, {
-      pluginDirectories: [options.pluginPath, PROBE_PLUGIN_DIR],
+      plugins,
       ...(authSource === undefined ? {} : { authSource }),
       ...(options.stub ? { stub: true } : {}),
     })

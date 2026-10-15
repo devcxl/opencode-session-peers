@@ -5,20 +5,24 @@
  * model, and the pass asserts what the structural pass cannot: a message sent
  * from the session in one directory appears in the session in the other — as a
  * plain body, with no reply instruction a receiver could not act on (issue
- * #24). Nothing here leaves loopback and no credential is read.
+ * #24) — and an `ask` comes back, with the answer when the peer replies and
+ * with the timeout text when it does not. Nothing here leaves loopback and no
+ * credential is read.
  *
  * The stub is a script, not a model, so the transcript is checked rather than
- * the answers being judged: A's `peers` tool result must say the message was
- * delivered, and the token the harness wrote into the prompt must be there in
- * B's transcript afterwards.
+ * the answers being judged: A's `peers` tool result must say what the call did,
+ * and the tokens the harness wrote into the prompt must be there in B's
+ * transcript afterwards.
  */
 
 import { drivenModel, modelLabel, type HarnessOptions } from "../args.ts"
-import type { HarnessClient, SessionMessage, SessionToolPart } from "../client.ts"
+import type { HarnessClient } from "../client.ts"
 import { sleep } from "../instance.ts"
 import type { Expectation, SessionSummary } from "../report.ts"
 import { requireModel, messageText } from "../sessions.ts"
+import { driveAskPass, STUB_ASK_PLAN, type AskPlan } from "./ask.ts"
 import { LIST_PROMPT, sendPrompt } from "./model-server.ts"
+import { oneLine, promptForResult } from "./transcript.ts"
 
 /**
  * The token the harness sends. Fixed, so two runs of the pass produce the same
@@ -43,20 +47,18 @@ export const REPLY_HINT = `To reply: peers({ action: "reply", message: "..." })`
 const ROSTER_WAIT_MS = 20_000
 const POLL_MS = 500
 
-/** One tool call from a transcript, with its result. */
-interface ToolCall {
-  name: string
-  input: unknown
-  text: string
-  metadata: Readonly<Record<string, unknown>>
-}
-
+/**
+ * The plan is a parameter because the instance is booted with it: the unit
+ * tests run the same phases under a shorter timeout instead of waiting the
+ * configured one out.
+ */
 export async function driveStubPass(
   client: HarnessClient,
   options: HarnessOptions,
   sessions: readonly SessionSummary[],
   expectations: Expectation[],
   disclosures: string[],
+  plan: AskPlan = STUB_ASK_PLAN,
 ): Promise<SessionSummary[]> {
   const model = drivenModel(options)
   if (model === undefined) throw new Error("the offline pass needs the stub model, but none is configured")
@@ -75,9 +77,15 @@ export async function driveStubPass(
 
   await waitForCrossing(client, options, sessionA, sessionB, expectations)
 
+  await driveAskPass(client, options, sessionA, sessionB, expectations, plan)
+
   disclosures.push(
     `the offline pass drove every turn through the harness's stub model (${modelLabel(model)}); ` +
       "no hosted model and no credential were involved",
+  )
+  disclosures.push(
+    `the offline pass configured the plugin under test with askTimeoutMs ${plan.timeoutMs} ms ` +
+      "in both project configs, so the timeout it asserts is the configured one, not the default",
   )
   return [...sessions]
 }
@@ -102,7 +110,7 @@ export async function driveStubPass(
 
   while (Date.now() < deadline) {
     attempts += 1
-    const call = await promptForTool(client, options, sessionA.id, LIST_PROMPT)
+    const call = await promptForResult(client, options, sessionA.id, LIST_PROMPT)
     last = call.text
     if (last.includes(sessionA.id) && last.includes(sessionB.id)) {
       expectations.push({
@@ -137,7 +145,7 @@ async function sendAndCheckDelivery(
   try {
     // The directive names the peer by title, so the stub can write the tool call
     // the way a model would: a target the harness created and knows.
-    const call = await promptForTool(client, options, sessionA.id, sendPrompt(sessionB.title, CROSSING_TOKEN))
+    const call = await promptForResult(client, options, sessionA.id, sendPrompt(sessionB.title, CROSSING_TOKEN))
     const asked = call.input as { action?: unknown; to?: unknown } | undefined
     // The name and the input are checked too: a turn that produced some other
     // tool result must not read as a delivered message.
@@ -223,46 +231,3 @@ function hintCheck(sessionB: SessionSummary, body: string): Expectation {
   }
 }
 
-/**
- * Ask a session to run one scripted turn and return the tool call it produced.
- * The wait is on the transcript, not on the session's `outcome`: a session that
- * already succeeded keeps that outcome, so the only reliable signal for *this*
- * turn is one more tool result than there was before.
- */
-async function promptForTool(
-  client: HarnessClient,
-  options: HarnessOptions,
-  sessionID: string,
-  prompt: string,
-): Promise<ToolCall> {
-  const before = toolCalls(await client.context(sessionID)).length
-  await client.prompt(sessionID, prompt)
-  const deadline = Date.now() + options.turnTimeoutMs
-
-  for (;;) {
-    const calls = toolCalls(await client.context(sessionID))
-    if (calls.length > before) return calls.at(-1)!
-    if (Date.now() >= deadline) {
-      throw new Error(`the stub turn in ${sessionID} produced no tool call within ${options.turnTimeoutMs} ms`)
-    }
-    await sleep(POLL_MS)
-  }
-}
-
-function toolCalls(messages: readonly SessionMessage[]): ToolCall[] {
-  return messages.flatMap((message) =>
-    (message.content ?? [])
-      .filter((part): part is SessionToolPart => part.type === "tool")
-      .map((part) => ({
-        name: part.name,
-        input: part.state?.input,
-        text: (part.state?.content ?? []).map((entry) => entry.text ?? "").join(""),
-        metadata: part.state?.metadata ?? {},
-      })),
-  )
-}
-
-function oneLine(text: string, limit = 200): string {
-  const flat = text.replace(/\s+/g, " ").trim()
-  return flat.length <= limit ? flat : `${flat.slice(0, limit)}...`
-}
