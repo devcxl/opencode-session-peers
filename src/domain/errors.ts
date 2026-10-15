@@ -34,11 +34,14 @@ export type ErrorCode =
  * How a blocked ask stopped waiting without an answer.
  *
  * Not an `ErrorCode`: nothing was refused and nothing failed to be delivered —
- * the question reached the recipient and stayed answerable. The text for each
- * is built by the function beside it, because it carries the target, the
- * question id and — for a timeout — how long the wait was.
+ * the question reached the recipient and stayed answerable.
  */
 export type AskStopCode = "E_ASK_TIMEOUT" | "E_ASK_INTERRUPTED"
+
+export interface AskStop {
+  readonly code: AskStopCode
+  readonly reason: string
+}
 
 export interface Failure {
   delivered: false
@@ -120,30 +123,34 @@ function reasonFor(code: ErrorCode, detail: string): string {
  * question stays in the recipient's hands, so an answer arriving afterwards is
  * still delivered — as an ordinary message, since nobody is waiting for it.
  */
-export function askTimeoutReason(input: {
+export function askTimeout(input: {
   readonly target: string
   readonly askID: string
   readonly timeoutMs: number
   readonly delivery: Delivery
-}): string {
+}): AskStop {
   const minutes = input.timeoutMs / 60_000
   const within =
     input.timeoutMs % 60_000 === 0
       ? `${minutes} ${minutes === 1 ? "minute" : "minutes"}`
       : `${input.timeoutMs}ms`
-  return (
-    `No reply from ${quote(input.target)} for message ${input.askID} within ${within}. ` +
-    `Last known delivery state: ${input.delivery}. ` +
-    `This waiter timeout is not cancellation; the delivered message may still be queued or actionable in the recipient session.`
-  )
+  return {
+    code: "E_ASK_TIMEOUT",
+    reason:
+      `No reply from ${quote(input.target)} for message ${input.askID} within ${within}. ` +
+      `Last known delivery state: ${input.delivery}. ` +
+      `This waiter timeout is not cancellation; the delivered message may still be queued or actionable in the recipient session.`,
+  }
 }
 
 /** What the model reads when the turn waiting for an answer was interrupted. */
-export function askInterruptedReason(input: { readonly target: string; readonly askID: string }): string {
-  return (
-    `Waiting for a reply from ${quote(input.target)} for message ${input.askID} was interrupted. ` +
-    `The question was delivered; an answer that arrives later will arrive as an ordinary message.`
-  )
+export function askInterrupted(input: { readonly target: string; readonly askID: string }): AskStop {
+  return {
+    code: "E_ASK_INTERRUPTED",
+    reason:
+      `Waiting for a reply from ${quote(input.target)} for message ${input.askID} was interrupted. ` +
+      `The question was delivered; an answer that arrives later will arrive as an ordinary message.`,
+  }
 }
 
 /** A session title inside the texts above, quoted so a title with a quote cannot break them. */

@@ -13,6 +13,7 @@ before relying on it.
 | `subagent-lifecycle.md` | The built-in subagent tool parks the parent with no timeout; a child's message to a parked parent is deferred; waiting on it deadlocks | host `2.0.27` |
 | `subagent-background-mode.md` | `background: true` keeps the parent answerable; plugin-created children; the HTTP route to unblock a parked call | host `2.0.27` |
 | `tool-result-metadata-undefined.md` | A tool result whose `metadata` contains `undefined` is dropped and the calling turn hangs | host `2.0.29` |
+| `ask-reply-handshake.md` | A tool call can block for seconds inside a turn; an answer written by another instance's `reply` reaches the blocked call through storage | host `2.0.29` |
 
 ## Host drift
 

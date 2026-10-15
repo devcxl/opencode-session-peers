@@ -16,7 +16,7 @@
 
 import { randomUUID } from "node:crypto"
 
-import { describeError, failure, askInterruptedReason, askTimeoutReason } from "../domain/errors.ts"
+import { askInterrupted, askTimeout, describeError, failure } from "../domain/errors.ts"
 import { replyResult } from "../domain/format.ts"
 import { resolvePeer } from "../domain/addressing.ts"
 import { admitInbound, canStartAsk, outstandingAsksFrom, pendingAsksFor } from "../domain/policy.ts"
@@ -26,7 +26,7 @@ import type { SessionLookup } from "../host/session.ts"
 import type { PluginStorage } from "../host/storage.ts"
 import type { ToolCall } from "../host/tools.ts"
 import type { Roster } from "../peers/roster.ts"
-import { readAsks, replyPollMs, waitForReply } from "../ask/handshake.ts"
+import { readAsks, replyPollMs, waitForReply, type ReplyWait } from "../ask/handshake.ts"
 import { deliverTo, refusal } from "./delivery.ts"
 import { readMessage, readText } from "./input.ts"
 import { readRoster, peerDetails, type RosterView } from "./roster-view.ts"
@@ -119,13 +119,35 @@ export async function askAction(deps: AskDeps, call: ToolCall, input: unknown): 
     return withDetail(attempt.refusal, "cleanupError", cleanupError)
   }
 
-  const wait = await waitForReply({
-    replies: storage.replies,
-    askID,
-    expiresAt: ask.expiresAt,
-    pollMs: replyPollMs(deps.config.askTimeoutMs),
-    signal: call.signal,
-  })
+  let wait: ReplyWait
+  try {
+    wait = await waitForReply({
+      replies: storage.replies,
+      askID,
+      expiresAt: ask.expiresAt,
+      pollMs: replyPollMs(deps.config.askTimeoutMs),
+      signal: call.signal,
+    })
+  } catch (error) {
+    // The host stopped answering our reads of the reply slot. The question is
+    // delivered, so the wait ends the way a timeout does: nobody is listening
+    // any more, so a late answer has to arrive as an ordinary message.
+    const recordError = await endWait(storage, ask)
+    const stopped = failure("E_NOT_CONNECTED", describeError(error))
+    return {
+      text: stopped.reason,
+      details: {
+        answered: false,
+        delivered: true,
+        delivery: attempt.delivery,
+        code: stopped.code,
+        reason: stopped.reason,
+        askID,
+        ...(recordError === undefined ? {} : { recordError }),
+        ...peerDetails(peer, call.sessionID),
+      },
+    }
+  }
 
   if (wait.kind === "replied") {
     const cleanupError = await clearRecords(storage, askID)
@@ -143,20 +165,20 @@ export async function askAction(deps: AskDeps, call: ToolCall, input: unknown): 
   }
 
   if (wait.kind === "timeout") {
-    const reason = askTimeoutReason({
+    const stop = askTimeout({
       target: peer.title,
       askID,
       timeoutMs: deps.config.askTimeoutMs,
       delivery: attempt.delivery,
     })
     return {
-      text: reason,
+      text: stop.reason,
       details: {
         answered: false,
         delivered: true,
         delivery: attempt.delivery,
-        code: "E_ASK_TIMEOUT",
-        reason,
+        code: stop.code,
+        reason: stop.reason,
         retryable: false,
         askID,
         ...peerDetails(peer, call.sessionID),
@@ -167,15 +189,15 @@ export async function askAction(deps: AskDeps, call: ToolCall, input: unknown): 
   // Interrupted: the wait is over, so the record must stop saying otherwise —
   // a reply that arrives afterwards is delivered as an ordinary message.
   const recordError = await endWait(storage, ask)
-  const reason = askInterruptedReason({ target: peer.title, askID })
+  const stop = askInterrupted({ target: peer.title, askID })
   return {
-    text: reason,
+    text: stop.reason,
     details: {
       answered: false,
       delivered: true,
       delivery: attempt.delivery,
-      code: "E_ASK_INTERRUPTED",
-      reason,
+      code: stop.code,
+      reason: stop.reason,
       askID,
       ...(recordError === undefined ? {} : { recordError }),
       ...peerDetails(peer, call.sessionID),

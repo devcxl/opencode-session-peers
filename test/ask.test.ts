@@ -1,18 +1,18 @@
 /**
- * Asking a peer, and answering one.
+ * Asking a peer, and waiting for the answer.
  *
- * Seam 2 again: fake hosts that share one storage, standing in for two or three
+ * Seam 2: fake hosts that share one storage, standing in for two or three
  * locations of one machine. The ask call is started and *not* awaited — that is
  * what blocking means — and what is asserted is what the model reads on each
  * side, and what the plugin asked the host to hand to which session. The
  * instance that answers is deliberately a different one from the instance that
- * is blocked, because that is the route storage has to carry.
+ * is blocked, because that is the route storage has to carry. The responder's
+ * side — who is answering whom — lives in `test/reply.test.ts`.
  */
 
 import { describe, expect, test } from "bun:test"
 
-import { askKey } from "../src/host/storage.ts"
-import { askTimeoutReason } from "../src/domain/errors.ts"
+import { askTimeout } from "../src/domain/errors.ts"
 import type { AskRecord } from "../src/domain/types.ts"
 import plugin from "../src/index.ts"
 import { fakeHost, fakeStorage, type FakeHostOptions, type FakeStorage } from "./fake-host.ts"
@@ -60,13 +60,13 @@ async function threeDirectories(
   options: { alpha?: FakeHostOptions; beta?: FakeHostOptions; gamma?: FakeHostOptions } = {},
 ) {
   const storage = fakeStorage()
-  const timeout = { options: { askTimeoutMs: 2_000 } }
+  const askTimeoutMs = 2_000
   const alpha = await loaded({
     location: "/work/alpha",
     caller: ALPHA.id,
     storage,
     sessions: [ALPHA],
-    ...timeout,
+    options: { askTimeoutMs },
     ...options.alpha,
   })
   const beta = await loaded({
@@ -74,7 +74,7 @@ async function threeDirectories(
     caller: BETA.id,
     storage,
     sessions: [BETA],
-    ...timeout,
+    options: { askTimeoutMs },
     ...options.beta,
   })
   const gamma = await loaded({
@@ -82,14 +82,13 @@ async function threeDirectories(
     caller: GAMMA.id,
     storage,
     sessions: [GAMMA],
-    ...timeout,
+    options: { askTimeoutMs },
     ...options.gamma,
   })
 
   const instances = [alpha, beta, gamma]
   for (const instance of instances) instance.host.emit("session.created", { sessionID: instance.id })
   await settle()
-  // Both sides are addressable only once they are on the roster.
   for (const instance of instances) await instance.host.call("peers", { action: "list" })
   return { alpha, beta, gamma, storage }
 }
@@ -115,21 +114,6 @@ async function askRecordFor(storage: FakeStorage): Promise<AskRecord> {
   const [record] = await stored(storage, "v1/asks/")
   if (record === undefined) throw new Error("no ask record is stored")
   return record as unknown as AskRecord
-}
-
-/** A record as another instance would have written it. */
-function askRecord(overrides: Partial<AskRecord> & { askID: string }): AskRecord {
-  const now = Date.now()
-  return {
-    askerSessionID: ALPHA.id,
-    askerInstanceID: "instance-other",
-    askerTitle: ALPHA.title,
-    targetSessionID: BETA.id,
-    question: "Is the payments API frozen?",
-    createdAt: now - 1_000,
-    expiresAt: now + 60_000,
-    ...overrides,
-  }
 }
 
 describe("a question that is answered", () => {
@@ -252,6 +236,23 @@ describe("a question that is answered", () => {
 
     await unloadAll(alpha, beta)
   })
+
+  test("an ask reaches a peer that declares it accepts only replies", async () => {
+    const { alpha, beta } = await threeDirectories({ beta: { options: { trigger: "replies", askTimeoutMs: 2_000 } } })
+
+    const asking = alpha.host.call("peers", { action: "ask", to: BETA.id, message: "Exchange only, please." })
+    await waitFor("the question to be delivered", () => alpha.host.prompts.length === 1)
+
+    // The same declaration refuses a plain message, so the exchange flag is
+    // what admitted the question (see test/send.test.ts for the refusal).
+    const plain = await alpha.host.call("peers", { action: "send", to: BETA.id, message: "a plain message" })
+    expect(plain.details).toMatchObject({ code: "E_TARGET_REPLIES_ONLY" })
+
+    await beta.host.call("peers", { action: "reply", message: "Admitted as an exchange." })
+    expect((await asking).text).toBe("**Reply from Docs site:**\nAdmitted as an exchange.")
+
+    await unloadAll(alpha, beta)
+  })
 })
 
 describe("admission", () => {
@@ -334,60 +335,21 @@ describe("admission", () => {
     await unloadAll(alpha, beta, gamma)
   })
 
-  test("an ask reaches a peer that declares it accepts only replies", async () => {
-    const { alpha, beta } = await threeDirectories({ beta: { options: { trigger: "replies", askTimeoutMs: 2_000 } } })
-
-    const asking = alpha.host.call("peers", { action: "ask", to: BETA.id, message: "Exchange only, please." })
-    await waitFor("the question to be delivered", () => alpha.host.prompts.length === 1)
-
-    // The same declaration refuses a plain message, so the exchange flag is
-    // what admitted the question (see test/send.test.ts for the refusal).
-    const plain = await alpha.host.call("peers", { action: "send", to: BETA.id, message: "a plain message" })
-    expect(plain.details).toMatchObject({ code: "E_TARGET_REPLIES_ONLY" })
-
-    await beta.host.call("peers", { action: "reply", message: "Admitted as an exchange." })
-    expect((await asking).text).toBe("**Reply from Docs site:**\nAdmitted as an exchange.")
-
-    await unloadAll(alpha, beta)
-  })
-
   test("a peer that declares never is not asked", async () => {
     const { alpha, beta } = await threeDirectories({ beta: { options: { trigger: "never" } } })
 
     const result = await alpha.host.call("peers", { action: "ask", to: "Docs site", message: "anyone?" })
 
-    expect(result.text).toBe(`Session "Docs site" does not accept peer messages.`)
+    const reason = `Session "Docs site" does not accept peer messages.`
+    expect(result.text).toBe(reason)
     expect(result.details).toEqual({
       delivered: false,
       code: "E_TARGET_REFUSES",
-      reason: `Session "Docs site" does not accept peer messages.`,
+      reason,
       retryable: false,
       sessionID: BETA.id,
     })
     expect(alpha.host.prompts).toEqual([])
-
-    await unloadAll(alpha, beta)
-  })
-
-  test("a late answer whose asker has gone away is refused, and nothing is delivered", async () => {
-    const { alpha, beta, storage } = await threeDirectories()
-
-    const ask = askRecord({ askID: "ask_gone", askerSessionID: "ses_gone", expiresAt: Date.now() - 1_000 })
-    await storage.set(askKey(ask.askID), ask)
-    await settle()
-
-    const answered = await beta.host.call("peers", { action: "reply", message: "to nobody in particular" })
-
-    const reason = `Session "Payments API" is not connected. Blocking asks are not queued; use "send" or retry once it reconnects.`
-    expect(answered.text).toBe(reason)
-    expect(answered.details).toEqual({
-      delivered: false,
-      code: "E_TARGET_NOT_FOUND",
-      reason,
-      retryable: false,
-      sessionID: "ses_gone",
-    })
-    expect(beta.host.prompts).toEqual([])
 
     await unloadAll(alpha, beta)
   })
@@ -410,7 +372,7 @@ describe("admission", () => {
 })
 
 describe("a wait that ends without an answer", () => {
-  test("returns the ported timeout text and stays answerable", async () => {
+  test("returns the ported timeout text and leaves the question answerable", async () => {
     const { alpha, beta } = await threeDirectories({ alpha: { options: { askTimeoutMs: 60 } } })
 
     const result = await alpha.host.call("peers", { action: "ask", to: "Docs site", message: "Still there?" })
@@ -481,29 +443,6 @@ describe("a wait that ends without an answer", () => {
     await unloadAll(alpha, beta)
   })
 
-  test("a late answer to a peer that accepts only replies is admitted", async () => {
-    const { alpha, beta, storage } = await threeDirectories({ alpha: { options: { trigger: "replies" } } })
-
-    // The asker's wait ended long ago; its instance is gone; nothing is left
-    // but the record — exactly the state a live timeout leaves behind.
-    const ask = askRecord({ askID: "ask_expired", expiresAt: Date.now() - 1_000, question: "Old question" })
-    await storage.set(askKey(ask.askID), ask)
-    await settle()
-
-    const answered = await beta.host.call("peers", { action: "reply", message: "An answer after the fact." })
-    expect(answered.text).toContain("(late:")
-    expect(beta.host.prompts).toHaveLength(1)
-
-    // A plain send to the same session is still refused: the answer was admitted
-    // because it is one side of an exchange, not because the policy was ignored.
-    const plain = await beta.host.call("peers", { action: "send", to: "Payments API", message: "a plain message" })
-    const reason = `Session "Payments API" accepts peer messages only as answers to its own questions, and this is a new message.`
-    expect(plain.text).toBe(reason)
-    expect(plain.details).toMatchObject({ delivered: false, code: "E_TARGET_REPLIES_ONLY" })
-
-    await unloadAll(alpha, beta)
-  })
-
   test("an interrupted wait returns, and the answer it may still get arrives as a message", async () => {
     const { alpha, beta } = await threeDirectories()
     const call = new AbortController()
@@ -549,184 +488,10 @@ describe("a wait that ends without an answer", () => {
 
   test("the ported timeout text spells whole minutes as minutes", () => {
     expect(
-      askTimeoutReason({ target: "Docs site", askID: "ask_1", timeoutMs: 600_000, delivery: "steer" }),
+      askTimeout({ target: "Docs site", askID: "ask_1", timeoutMs: 600_000, delivery: "steer" }).reason,
     ).toContain(`No reply from "Docs site" for message ask_1 within 10 minutes.`)
     expect(
-      askTimeoutReason({ target: "Docs site", askID: "ask_1", timeoutMs: 60_000, delivery: "queue" }),
+      askTimeout({ target: "Docs site", askID: "ask_1", timeoutMs: 60_000, delivery: "queue" }).reason,
     ).toContain("within 1 minute.")
-  })
-})
-
-describe("pending questions", () => {
-  test("lists what is waiting here, oldest first, with a preview a reply can name", async () => {
-    const { alpha, beta, gamma } = await threeDirectories()
-
-    const empty = await beta.host.call("peers", { action: "pending" })
-    expect(empty.text).toBe("No unresolved inbound asks.")
-    expect(empty.details).toEqual({ pending: 0 })
-
-    const fromAlpha = alpha.host.call("peers", { action: "ask", to: BETA.id, message: "First question,\n  with whitespace" })
-    await waitFor("alpha's question to be delivered", () => alpha.host.prompts.length === 1)
-    const fromGamma = gamma.host.call("peers", { action: "ask", to: BETA.id, message: "Second question" })
-    await waitFor("gamma's question to be delivered", () => gamma.host.prompts.length === 1)
-
-    const listed = await beta.host.call("peers", { action: "pending" })
-    const asks = (listed.details as { asks: { askID: string; title: string }[] }).asks
-    expect(asks.map((ask) => ask.title)).toEqual(["Payments API", "Release notes"])
-    expect(listed.text).toBe(
-      [
-        "**Pending asks:**",
-        `- Payments API · ${asks[0]!.askID} · 0s ago · First question, with whitespace`,
-        `- Release notes · ${asks[1]!.askID} · 0s ago · Second question`,
-      ].join("\n"),
-    )
-    expect(listed.details).toMatchObject({ pending: 2 })
-
-    // Naming the asker is what resolves the line above.
-    await beta.host.call("peers", { action: "reply", to: "Release notes", message: "Answer for gamma" })
-    await beta.host.call("peers", { action: "reply", to: "Payments API", message: "Answer for alpha" })
-    expect((await fromAlpha).text).toBe("**Reply from Docs site:**\nAnswer for alpha")
-    expect((await fromGamma).text).toBe("**Reply from Docs site:**\nAnswer for gamma")
-
-    await unloadAll(alpha, beta, gamma)
-  })
-
-  test("refuses to guess between two waiting questions", async () => {
-    const { alpha, beta, gamma } = await threeDirectories()
-
-    const fromAlpha = alpha.host.call("peers", { action: "ask", to: BETA.id, message: "Question one" })
-    await waitFor("alpha's question to be delivered", () => alpha.host.prompts.length === 1)
-    const fromGamma = gamma.host.call("peers", { action: "ask", to: BETA.id, message: "Question two" })
-    await waitFor("gamma's question to be delivered", () => gamma.host.prompts.length === 1)
-
-    const refused = await beta.host.call("peers", { action: "reply", message: "an answer with no target" })
-    const reason =
-      `More than one peer is waiting for a reply: Payments API, Release notes. ` +
-      `Name the one you are answering with "to", or its question with "replyTo".`
-    expect(refused.text).toBe(reason)
-    expect(refused.details).toMatchObject({
-      delivered: false,
-      code: "E_REPLY_AMBIGUOUS",
-      reason,
-      candidates: [
-        { sessionID: ALPHA.id, title: "Payments API" },
-        { sessionID: GAMMA.id, title: "Release notes" },
-      ],
-    })
-    expect(beta.host.prompts).toEqual([])
-
-    // replyTo names the question itself, and answers the asker who wrote it.
-    const asks = (await beta.host.call("peers", { action: "pending" })).details as {
-      asks: { askID: string; title: string }[]
-    }
-    const forGamma = asks.asks.find((ask) => ask.title === "Release notes")!
-    const answered = await beta.host.call("peers", {
-      action: "reply",
-      replyTo: forGamma.askID,
-      message: "Answer chosen by id",
-    })
-    expect(answered.text).toBe("Reply sent to Release notes")
-    expect((await fromGamma).text).toBe("**Reply from Docs site:**\nAnswer chosen by id")
-
-    await beta.host.call("peers", { action: "reply", message: "the remaining answer" })
-    expect((await fromAlpha).text).toBe("**Reply from Docs site:**\nthe remaining answer")
-
-    await unloadAll(alpha, beta, gamma)
-  })
-
-  test("reports a reply that names nobody waiting", async () => {
-    const { alpha, beta } = await threeDirectories()
-
-    const none = await beta.host.call("peers", { action: "reply", message: "to nobody" })
-    expect(none.text).toBe("No pending ask matches that reply.")
-    expect(none.details).toMatchObject({ delivered: false, code: "E_NO_PENDING_ASK" })
-
-    const wrongAsk = await beta.host.call("peers", { action: "reply", replyTo: "ask_nope", message: "to nobody" })
-    expect(wrongAsk.text).toBe("No pending ask matches that reply.")
-
-    await unloadAll(alpha, beta)
-  })
-})
-
-describe("withdrawing a question", () => {
-  test("withdraws one that is still waiting, and reports it", async () => {
-    const { alpha, beta, storage } = await threeDirectories()
-
-    // The question of an asker whose instance has gone away: recorded, not
-    // answered, and nobody in the blocked call any more.
-    const ask = askRecord({ askID: "ask_waiting" })
-    await storage.set(askKey(ask.askID), ask)
-    await settle()
-    expect((await beta.host.call("peers", { action: "pending" })).text).toContain("Payments API")
-
-    const result = await alpha.host.call("peers", { action: "cancel" })
-    expect(result.text).toBe("Cancellation requested for ask_waiting")
-    expect(result.details).toEqual({
-      delivered: true,
-      cancelled: true,
-      askID: "ask_waiting",
-      sessionID: BETA.id,
-    })
-    expect((await beta.host.call("peers", { action: "pending" })).text).toBe("No unresolved inbound asks.")
-
-    // Withdrawn means withdrawn: a reply now has no question to answer.
-    const late = await beta.host.call("peers", { action: "reply", message: "too late?" })
-    expect(late.details).toMatchObject({ code: "E_NO_PENDING_ASK" })
-
-    await unloadAll(alpha, beta)
-  })
-
-  test("reports one whose wait had already ended, and still lets its answer arrive", async () => {
-    const { alpha, beta, storage } = await threeDirectories()
-
-    const ask = askRecord({ askID: "ask_ended", expiresAt: Date.now() - 1_000 })
-    await storage.set(askKey(ask.askID), ask)
-    await settle()
-
-    const result = await alpha.host.call("peers", { action: "cancel" })
-    expect(result.text).toBe(
-      "Cancellation for ask_ended was not delivered: its wait had already ended, so an answer " +
-        "that arrives later will arrive as an ordinary message.",
-    )
-    expect(result.details).toEqual({
-      delivered: false,
-      cancelled: false,
-      ended: true,
-      askID: "ask_ended",
-      sessionID: BETA.id,
-    })
-
-    // The record was left alone: the answer still has a path to the asker.
-    const answered = await beta.host.call("peers", { action: "reply", message: "An answer, eventually." })
-    expect(answered.text).toContain("(late:")
-    expect(beta.host.prompts).toHaveLength(1)
-
-    await unloadAll(alpha, beta)
-  })
-
-  test("names the question when one was asked, and refuses when none is outstanding", async () => {
-    const { alpha, beta, storage } = await threeDirectories()
-
-    const none = await alpha.host.call("peers", { action: "cancel" })
-    expect(none.text).toBe("This session has no question waiting for an answer.")
-    expect(none.details).toEqual({
-      delivered: false,
-      code: "E_NO_ASK_TO_CANCEL",
-      reason: "This session has no question waiting for an answer.",
-      retryable: false,
-    })
-
-    await storage.set(askKey("ask_mine"), askRecord({ askID: "ask_mine" }))
-    await storage.set(askKey("ask_theirs"), askRecord({ askID: "ask_theirs", askerSessionID: BETA.id, targetSessionID: ALPHA.id }))
-    await settle()
-
-    const named = await alpha.host.call("peers", { action: "cancel", replyTo: "ask_nope" })
-    expect(named.text).toBe(`No question with id "ask_nope" is outstanding for this session.`)
-    expect(named.details).toMatchObject({ code: "E_NO_ASK_TO_CANCEL" })
-
-    const mine = await alpha.host.call("peers", { action: "cancel", replyTo: "ask_mine" })
-    expect(mine.text).toBe("Cancellation requested for ask_mine")
-
-    await unloadAll(alpha, beta)
   })
 })
