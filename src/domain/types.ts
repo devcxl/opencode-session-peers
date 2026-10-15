@@ -9,6 +9,15 @@
 /** A host session identifier. */
 export type SessionID = string
 
+/**
+ * What an action hands back to the tool layer: text the model reads, and
+ * details the host records alongside the tool result.
+ */
+export interface ActionResult {
+  readonly text: string
+  readonly details: Readonly<Record<string, unknown>>
+}
+
 /** When the host should hand a message to its recipient. */
 export type Delivery = "steer" | "queue"
 
