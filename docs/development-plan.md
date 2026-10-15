@@ -56,7 +56,8 @@ boundary cannot rot silently.
 1. **Delivery.** `ctx.session.prompt({ sessionID, text, delivery })`. The inbound policy maps onto the
    host's native modes: idle recipient -> `queue` (starts a turn), busy recipient -> `steer` (injected
    at the next safe boundary, no interruption). Defaults follow `pi-intercom`: trigger always, steer
-   when busy.
+   when busy. Because delivery is one call made by the sender, the recipient's trigger **travels with
+   its roster record** and is enforced by the sender (ADR-0005). A send is not queued.
 2. **Roster.** Each plugin instance publishes the sessions it serves to `ctx.storage` with a heartbeat,
    reads the whole registry, and filters by scope. Rows are formatted like the original's
    (`name (id-prefix) — cwd (model · status)`), with the shortest unique id prefix. Module-level state
@@ -109,9 +110,9 @@ Each milestone ends at a gate that must be observed, not assumed.
 3. Where `steer` actually lands when the recipient is mid-turn — the safe boundary in practice.
 4. Reliability of parked detection: which message records expose a running tool call.
 5. Reclamation of stale roster entries after a session or instance disappears.
-6. Where a `send` to a peer that has gone away waits: in the sender's instance (simple, but the queue
-   dies with the sender) or in `ctx.storage` (outlives the sender, as the original's broker did, at the
-   cost of pruning and a claim so two instances cannot deliver the same message twice). Decide at M3.
+6. ~~Where a `send` to a peer that has gone away waits.~~ Settled: it does not wait. An in-process prompt
+   reaches a session another server process created (`docs/research/cross-process-prompt.md`), so the
+   only miss left is a session id that no longer exists — see ADR-0005.
 
 ## Risks
 
