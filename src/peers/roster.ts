@@ -23,6 +23,7 @@ import { startSessionIndex, type EventSource, type SessionChange, type SessionIn
 import type { InstanceLocation } from "../host/index.ts"
 import type { SessionLookup, SessionRecord } from "../host/session.ts"
 import type { PluginStorage, StoredRecord } from "../host/storage.ts"
+import { reclaimStale } from "./reclaim.ts"
 
 /** Untitled sessions still need something to be called by. */
 const FALLBACK_TITLE = "untitled session"
@@ -54,6 +55,10 @@ export interface Roster {
 export async function startRoster(deps: RosterDeps): Promise<Roster> {
   const roster = new LiveRoster(deps, deps.instanceID ?? randomUUID())
   await roster.seed()
+  // Sweeping at start matters more than sweeping per beat: a machine that was
+  // killed without unloading leaves its records behind, and the next instance
+  // to run is the only thing that will ever notice them.
+  await roster.sweep()
   return roster
 }
 
@@ -157,6 +162,27 @@ class LiveRoster implements Roster {
         // One session that cannot be refreshed must not stop the others.
         this.deps.warn(`could not refresh ${sessionID} on the roster: ${describeError(error)}`)
       }
+    }
+    if (!this.disposed) await this.sweep()
+  }
+
+  /**
+   * Reclaims records nobody owns any more. Housekeeping is never allowed to
+   * take the roster down with it, so a failed sweep is a warning and nothing
+   * else — the records it failed on were already ignored by every reader.
+   */
+  async sweep(): Promise<void> {
+    try {
+      const { failures } = await reclaimStale({
+        storage: this.deps.storage,
+        config: this.deps.config,
+        now: Date.now(),
+      })
+      if (failures > 0) {
+        this.deps.warn(`could not reclaim ${failures} stale record(s) from plugin storage`)
+      }
+    } catch (error) {
+      this.deps.warn(`could not sweep plugin storage: ${describeError(error)}`)
     }
   }
 
