@@ -21,14 +21,15 @@ import {
   STUB_URL_ENV,
   globalConfigText,
   projectConfigText,
+  type PluginEntry,
   type ScratchLayout,
 } from "./paths.ts"
 
 const HOSTNAME = "127.0.0.1"
 
 export interface ScratchContents {
-  /** Directories declared in both projects' `.opencode/opencode.json`. */
-  pluginDirectories: readonly string[]
+  /** Entries declared in both projects' `.opencode/opencode.json`. */
+  plugins: readonly PluginEntry[]
   /** Copied into the instance's data dir for the run; never committed, never printed. */
   authSource?: string
   /** Install the stub provider plugin, so the instance can offer the stub model. */
@@ -44,7 +45,7 @@ export function prepareScratch(layout: ScratchLayout, contents: ScratchContents)
   mkdirSync(join(layout.projectB, ".opencode"), { recursive: true })
 
   writeFileSync(join(layout.config, "opencode", "opencode.json"), globalConfigText())
-  const projectConfig = projectConfigText(contents.pluginDirectories)
+  const projectConfig = projectConfigText(contents.plugins)
   writeFileSync(join(layout.projectA, ".opencode", "opencode.json"), projectConfig)
   writeFileSync(join(layout.projectB, ".opencode", "opencode.json"), projectConfig)
 

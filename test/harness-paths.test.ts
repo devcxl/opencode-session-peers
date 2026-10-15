@@ -97,6 +97,16 @@ describe("project config", () => {
     expect(parsed.share).toBe("disabled")
   })
 
+  test("an entry with options becomes the host's {package, options} form", () => {
+    const parsed = JSON.parse(
+      projectConfigText([{ package: "/plugin/under-test", options: { askTimeoutMs: 10000 } }, "/plugin/probe"]),
+    ) as { plugins: unknown[] }
+    expect(parsed.plugins).toEqual([
+      { package: "/plugin/under-test", options: { askTimeoutMs: 10000 } },
+      "/plugin/probe",
+    ])
+  })
+
   test("the instance config disables sharing and updates", () => {
     const parsed = JSON.parse(globalConfigText()) as { share: string; update: string }
     expect(parsed.share).toBe("disabled")

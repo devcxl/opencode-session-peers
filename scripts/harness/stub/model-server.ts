@@ -5,24 +5,38 @@
  * shape the host's openai-compatible provider speaks. The answer is a pure
  * function of the request, so two runs of the pass see the same turn:
  *
- *   - a conversation whose last user turn carries the harness's directive and
- *     has no tool result yet gets exactly one tool call: `peers` with action
- *     "send" (or "list", for the roster directive);
+ *   - a conversation whose last user turn carries a directive and has no tool
+ *     result yet gets exactly one tool call: `peers` with action "send", "ask"
+ *     or "list", or "reply" for the directive a peer reads in a question;
  *   - the same conversation after the tool result, or any conversation without
  *     a directive, gets a fixed final text.
  *
- * The directive is a line of the prompt the harness itself writes, which keeps
- * the script's input the only thing that decides the output.
+ * The directive is text the harness itself writes — into the prompt it sends,
+ * or into the question the peer receives — which keeps the script's input the
+ * only thing that decides the output.
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http"
 import type { AddressInfo } from "node:net"
 
-/** Marks the prompt whose turn must call `peers`; written by the harness. */
-export const STUB_DIRECTIVE = "HARNESS_STUB_SEND"
+/** Marks the prompt whose turn must call `peers` with `send`; written by the harness. */
+export const STUB_SEND_DIRECTIVE = "HARNESS_STUB_SEND"
+
+/** Marks the prompt whose turn must call `peers` with `ask`; written by the harness. */
+export const STUB_ASK_DIRECTIVE = "HARNESS_STUB_ASK"
+
+/**
+ * Marks the question a peer must answer. The harness writes it as the ask's
+ * message, so the peer never sees the prompt the asker was given: it reads the
+ * token where a reader would, inside the delivered question, and replies.
+ */
+export const STUB_REPLY_DIRECTIVE = "HARNESS_STUB_REPLY"
 
 /** Marks a prompt whose turn must ask `peers` for the roster instead. */
 export const STUB_LIST_DIRECTIVE = "HARNESS_STUB_LIST"
+
+/** The answer the peer's reply carries; the asker's result must show it. */
+export const STUB_ANSWER_TEXT = "HARNESS_OFFLINE_ANSWER_OK"
 
 /** The answer the stub gives once the tool result has come back. */
 export const STUB_SENT_TEXT = "HARNESS_STUB_SENT"
@@ -136,22 +150,46 @@ export function planReply(body: ChatRequest): Reply {
     .slice(lastUser)
     .some((message) => message.role === "tool")
 
-  if (directive !== undefined && !calledInTurn) {
-    return directive.kind === "list"
-      ? { kind: "tool-call", name: "peers", arguments: JSON.stringify({ action: "list" }) }
-      : {
-          kind: "tool-call",
-          name: "peers",
-          arguments: JSON.stringify({ action: "send", to: directive.to, message: directive.message }),
-        }
-  }
+  if (directive !== undefined && !calledInTurn) return toolCallFor(directive)
   if (directive !== undefined) return { kind: "text", text: STUB_SENT_TEXT }
   return { kind: "text", text: STUB_IDLE_TEXT }
 }
 
+function toolCallFor(directive: Directive): Reply {
+  switch (directive.kind) {
+    case "list":
+      return { kind: "tool-call", name: "peers", arguments: JSON.stringify({ action: "list" }) }
+    case "send":
+      return {
+        kind: "tool-call",
+        name: "peers",
+        arguments: JSON.stringify({ action: "send", to: directive.to, message: directive.message }),
+      }
+    case "ask":
+      return {
+        kind: "tool-call",
+        name: "peers",
+        arguments: JSON.stringify({ action: "ask", to: directive.to, message: directive.message }),
+      }
+    case "reply":
+      // No `to` and no `replyTo`: the peer holds one question, and answering it
+      // is what the delivered message asked for.
+      return {
+        kind: "tool-call",
+        name: "peers",
+        arguments: JSON.stringify({ action: "reply", message: STUB_ANSWER_TEXT }),
+      }
+  }
+}
+
 /** The prompt that makes A's turn call `peers({ action: "send" })`. */
 export function sendPrompt(to: string, message: string): string {
-  return `${STUB_DIRECTIVE} to=${to} message=${message}`
+  return `${STUB_SEND_DIRECTIVE} to=${to} message=${message}`
+}
+
+/** The prompt that makes the asker's turn call `peers({ action: "ask" })`. */
+export function askPrompt(to: string, message: string): string {
+  return `${STUB_ASK_DIRECTIVE} to=${to} message=${message}`
 }
 
 /** The prompt that makes a session's turn call `peers({ action: "list" })`. */
@@ -165,24 +203,43 @@ function lastIndexOf<T>(items: readonly T[], match: (item: T) => boolean): numbe
 }
 
 /**
- * The `to` and `message` the harness wrote into the prompt, if it is there.
- * Both are read as single whitespace-free words: the harness chooses the titles
- * and the token, so it can keep the directive line that simple.
+ * The directive the harness wrote into this message, if it is there.
+ *
+ * The markers are read in a fixed order because one directive can nest inside
+ * another: an ask whose message is the reply directive carries both, and the
+ * asker's turn must produce the ask. The `to` and `message` that follow a
+ * marker are read as single whitespace-free words: the harness chooses the
+ * titles and the token, so it can keep the directive line that simple.
  */
 function directiveOf(message: ChatMessage): Directive | undefined {
   if (message.role !== "user") return undefined
   const text = contentOf(message)
   if (text.includes(STUB_LIST_DIRECTIVE)) return { kind: "list" }
-  const start = text.indexOf(STUB_DIRECTIVE)
-  if (start === -1) return undefined
 
-  const rest = text.slice(start + STUB_DIRECTIVE.length)
-  const to = /(?:^|\s)to=(\S+)/.exec(rest)?.[1]
-  const sent = /(?:^|\s)message=(\S+)/.exec(rest)?.[1]
-  return to === undefined || sent === undefined ? undefined : { kind: "send", to, message: sent }
+  const asked = addressed(text, STUB_ASK_DIRECTIVE)
+  if (asked !== undefined) return { kind: "ask", ...asked }
+  if (text.includes(STUB_REPLY_DIRECTIVE)) return { kind: "reply" }
+
+  const sent = addressed(text, STUB_SEND_DIRECTIVE)
+  return sent === undefined ? undefined : { kind: "send", ...sent }
 }
 
-type Directive = { kind: "list" } | { kind: "send"; to: string; message: string }
+/** The `to` and `message` written after a marker, if both are there. */
+function addressed(text: string, marker: string): { to: string; message: string } | undefined {
+  const start = text.indexOf(marker)
+  if (start === -1) return undefined
+
+  const rest = text.slice(start + marker.length)
+  const to = /(?:^|\s)to=(\S+)/.exec(rest)?.[1]
+  const message = /(?:^|\s)message=(\S+)/.exec(rest)?.[1]
+  return to === undefined || message === undefined ? undefined : { to, message }
+}
+
+type Directive =
+  | { kind: "list" }
+  | { kind: "send"; to: string; message: string }
+  | { kind: "ask"; to: string; message: string }
+  | { kind: "reply" }
 
 function contentOf(message: ChatMessage): string {
   return typeof message.content === "string" ? message.content : contentText(message.content)
