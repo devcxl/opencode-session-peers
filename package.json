@@ -5,6 +5,18 @@
   "description": "OpenCode v2 plugin that lets sessions on the same machine message each other: list peers, send, ask and wait for a reply, hand over context.",
   "type": "module",
   "license": "MIT",
+  "exports": {
+    ".": "./index.ts",
+    "./server": "./index.ts"
+  },
+  "files": [
+    "index.ts",
+    "src/",
+    "README.md",
+    "SECURITY.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
   "keywords": [
     "opencode",
     "opencode-plugin",
