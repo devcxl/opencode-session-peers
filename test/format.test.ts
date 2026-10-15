@@ -16,14 +16,14 @@ const PEER: Peer = {
 
 describe("rosterRow", () => {
   test("carries the facts a reader needs to choose a target", () => {
-    const row = rosterRow(PEER, { self: false, sameDirectory: false, prefix: "ses_aaaa" })
-    expect(row).toBe("• Payments API (ses_aaaa) — /home/dev/projects/payments (some-model · busy)")
+    const row = rosterRow(PEER, { self: false, sameDirectory: false })
+    expect(row).toBe("• Payments API (ses_aaaaaaaaaaaa1111) — /home/dev/projects/payments (some-model · busy)")
   })
 
   test("omits empty facts and adds tags", () => {
     const bare: Peer = { ...PEER, model: undefined, status: undefined }
-    const row = rosterRow(bare, { self: true, sameDirectory: true, prefix: "ses_aaaa" })
-    expect(row).toBe("• Payments API (ses_aaaa) — /home/dev/projects/payments [self, same cwd]")
+    const row = rosterRow(bare, { self: true, sameDirectory: true })
+    expect(row).toBe("• Payments API (ses_aaaaaaaaaaaa1111) — /home/dev/projects/payments [self, same cwd]")
   })
 })
 

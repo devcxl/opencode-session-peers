@@ -3,12 +3,10 @@
  *
  * The two list actions differ only in which peers they show, so what they share
  * lives here: publishing the caller first (so the row the model reads back is
- * one this session will answer to), rendering a row with an id prefix that is
- * unique among the rows in view, and turning a refusal into the text the model
- * reads.
+ * one this session will answer to), rendering a row, and turning a refusal into
+ * the text the model reads.
  */
 
-import { shortestUniquePrefix } from "../domain/addressing.ts"
 import { failure, type ErrorCode } from "../domain/errors.ts"
 import { rosterRow } from "../domain/format.ts"
 import type { ActionResult, Peer, SessionID } from "../domain/types.ts"
@@ -27,9 +25,9 @@ export async function readRoster(roster: Roster, caller: SessionID): Promise<Ros
   return { self: peers.find((peer) => peer.sessionID === caller) ?? published, peers }
 }
 
-/** The row the model reads. The prefix is unique among the rows in view. */
+/** The row the model reads, and a person reads over its shoulder. */
 export function rowFor(peer: Peer, view: RosterView, tags: { self: boolean; sameDirectory: boolean }): string {
-  return rosterRow(peer, { ...tags, prefix: shortestUniquePrefix(peer.sessionID, view.peers) })
+  return rosterRow(peer, tags)
 }
 
 /**
