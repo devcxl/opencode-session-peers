@@ -5,10 +5,11 @@
  * shape the host's openai-compatible provider speaks. The answer is a pure
  * function of the request, so two runs of the pass see the same turn:
  *
- *   - a conversation that carries the harness's directive and no tool result
- *     yet gets one tool call: `peers` with action "send";
+ *   - a conversation whose last user turn carries the harness's directive and
+ *     has no tool result yet gets exactly one tool call: `peers` with action
+ *     "send" (or "list", for the roster directive);
  *   - the same conversation after the tool result, or any conversation without
- *     the directive, gets a fixed final text.
+ *     a directive, gets a fixed final text.
  *
  * The directive is a line of the prompt the harness itself writes, which keeps
  * the script's input the only thing that decides the output.
@@ -32,22 +33,22 @@ export const STUB_IDLE_TEXT = "HARNESS_STUB_IDLE"
 export interface StubHandle {
   port: number
   url: string
-  /** Every request path the stub was asked for, in order; evidence for a report. */
+  /** Every request path the stub was asked for, in order; the tests assert on it. */
   requests: readonly string[]
   stop(): Promise<void>
 }
 
-export interface StartStubOptions {
-  hostname?: string
-}
-
-export async function startStubModel(options: StartStubOptions = {}): Promise<StubHandle> {
-  const hostname = options.hostname ?? "127.0.0.1"
+export async function startStubModel(): Promise<StubHandle> {
+  const hostname = "127.0.0.1"
   const requests: string[] = []
 
   const server = createServer((request, response) => {
     requests.push(`${request.method ?? "?"} ${request.url ?? "?"}`)
-    void handle(request, response)
+    handle(request, response).catch((error: unknown) => {
+      // A stub that cannot answer is a failed turn, not a hang: drop the
+      // connection so the host reports the turn as an error.
+      response.destroy(error instanceof Error ? error : undefined)
+    })
   })
 
   await new Promise<void>((resolve, reject) => {
@@ -163,7 +164,11 @@ function lastIndexOf<T>(items: readonly T[], match: (item: T) => boolean): numbe
   return items.length
 }
 
-/** The `to` and `message` the harness wrote into the prompt, if it is there. */
+/**
+ * The `to` and `message` the harness wrote into the prompt, if it is there.
+ * Both are read as single whitespace-free words: the harness chooses the titles
+ * and the token, so it can keep the directive line that simple.
+ */
 function directiveOf(message: ChatMessage): Directive | undefined {
   if (message.role !== "user") return undefined
   const text = contentOf(message)

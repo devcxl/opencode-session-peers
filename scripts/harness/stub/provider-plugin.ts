@@ -39,6 +39,12 @@ interface IntegrationTransformEditor {
 export default {
   id: "session-peers-harness-stub-provider",
   async setup(ctx: ProviderEditor): Promise<void> {
+    // The plugin is useless without its endpoint, and a missing variable would
+    // otherwise register a provider that cannot answer: fail where it is seen.
+    if (baseURL === undefined || baseURL.length === 0) {
+      throw new Error("session-peers-harness-stub-provider: SESSION_PEERS_HARNESS_STUB_URL is not set")
+    }
+
     await ctx.integration.transform((editor) => {
       editor.method.update({
         integrationID: providerID,
