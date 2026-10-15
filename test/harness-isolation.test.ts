@@ -1,16 +1,20 @@
 /**
  * The evidence helpers. The isolation promise rests on `digestFile` and
- * `readLiveService`, and the plugin-load check rests on parsing the server log,
- * so both are pinned down here with fixtures instead of trusting the run.
+ * `readLiveService`, the plugin-load check rests on parsing the server log, and
+ * the boot wait rests on polling until the instance serves its routes — so all
+ * three are pinned down here with fixtures instead of trusting the run.
  */
 
 import { afterAll, describe, expect, test } from "bun:test"
+import type { ChildProcess } from "node:child_process"
 import { createHash } from "node:crypto"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { createServer } from "node:http"
+import type { AddressInfo } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { MISSING, digestFile, isProcessAlive, readLiveService } from "../scripts/harness/isolation.ts"
-import { instanceEnvironment, loadedPluginIds, logTail } from "../scripts/harness/instance.ts"
+import { instanceEnvironment, loadedPluginIds, logTail, waitForBoot } from "../scripts/harness/instance.ts"
 import { readProbeLog } from "../scripts/harness/checks.ts"
 import { PROBE_LOG_ENV, scratchLayout } from "../scripts/harness/paths.ts"
 
@@ -105,6 +109,90 @@ describe("instance environment", () => {
     expect(inDeveloperDirs).toBe(false)
   })
 })
+
+describe("the boot wait", () => {
+  test("a service that is still starting is polled until it answers", async () => {
+    const server = await bootServer((call) =>
+      call < 3 ? { status: 503, body: "service unavailable" } : { status: 200, body: '{"data":[]}' },
+    )
+    try {
+      await waitForBoot({
+        url: server.url,
+        password: "harness-pw",
+        child: bootingChild(),
+        bootTimeoutMs: 5_000,
+        log: () => "",
+      })
+      expect(server.calls()).toBe(3)
+    } finally {
+      await server.close()
+    }
+  })
+
+  test("an answer that will not improve is reported with its status, not polled", async () => {
+    const server = await bootServer(() => ({ status: 401, body: "unauthorized" }))
+    try {
+      await expect(
+        waitForBoot({
+          url: server.url,
+          password: "the-wrong-password",
+          child: bootingChild(),
+          bootTimeoutMs: 60_000,
+          log: () => "",
+        }),
+      ).rejects.toThrowError("the instance answered 401 on /api/session during boot")
+      expect(server.calls()).toBe(1)
+    } finally {
+      await server.close()
+    }
+  })
+
+  test("a 503 that never clears reports the deadline and the last status", async () => {
+    const server = await bootServer(() => ({ status: 503, body: "service unavailable" }))
+    try {
+      await expect(
+        waitForBoot({
+          url: server.url,
+          password: "harness-pw",
+          child: bootingChild(),
+          bootTimeoutMs: 50,
+          log: () => "",
+        }),
+      ).rejects.toThrowError(/within 50 ms; last answer 503 on \/api\/session/)
+    } finally {
+      await server.close()
+    }
+  })
+})
+
+/**
+ * A server standing in for the instance's port: it answers each request from
+ * `answer`, and counts what it saw so a test can tell a retry from a settled
+ * failure.
+ */
+async function bootServer(answer: (call: number) => { status: number; body: string }) {
+  let calls = 0
+  const server = createServer((_request, response) => {
+    calls += 1
+    const { status, body } = answer(calls)
+    response.writeHead(status, { "content-type": "application/json" })
+    response.end(body)
+  })
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()))
+  return {
+    url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+    calls: () => calls,
+    async close() {
+      server.closeAllConnections()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    },
+  }
+}
+
+/** A child that is still running, for the boot wait's exit-code check. */
+function bootingChild(): ChildProcess {
+  return { exitCode: null } as unknown as ChildProcess
+}
 
 describe("probe log evidence", () => {
   test("every recorded setup is one line of evidence", () => {

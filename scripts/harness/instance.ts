@@ -172,7 +172,7 @@ export async function startInstance(options: StartOptions): Promise<InstanceHand
   return handle
 }
 
-interface BootWait {
+export interface BootWait {
   url: string
   password: string
   child: ChildProcess
@@ -180,7 +180,7 @@ interface BootWait {
   log: () => string
 }
 
-async function waitForBoot(wait: BootWait): Promise<void> {
+export async function waitForBoot(wait: BootWait): Promise<void> {
   const client = createClient(wait.url, wait.password)
   const deadline = Date.now() + wait.bootTimeoutMs
 
@@ -192,11 +192,19 @@ async function waitForBoot(wait: BootWait): Promise<void> {
       await client.listSessions()
       return
     } catch (error) {
-      if (error instanceof ApiError) {
+      // Measured on 2.0.29: the server's listener accepts connections for a
+      // moment before its routes serve them, and answers 503 in between. That
+      // is "not ready yet", so it is polled like a closed port. A 4xx is
+      // settled — the password or the path is wrong — and waiting for it to
+      // fix itself would only delay the report.
+      if (error instanceof ApiError && error.status < 500) {
         throw new Error(`the instance answered ${error.status} on /api/session during boot`)
       }
       if (Date.now() >= deadline) {
-        throw new Error(`the instance did not answer ${wait.url} within ${wait.bootTimeoutMs} ms\n${logTail(wait.log())}`)
+        const last = error instanceof ApiError ? `; last answer ${error.status} on /api/session` : ""
+        throw new Error(
+          `the instance did not answer ${wait.url} within ${wait.bootTimeoutMs} ms${last}\n${logTail(wait.log())}`,
+        )
       }
       await sleep(BOOT_POLL_MS)
     }
