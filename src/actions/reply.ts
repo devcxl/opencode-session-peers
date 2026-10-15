@@ -15,7 +15,7 @@
  */
 
 import { describeError, failure } from "../domain/errors.ts"
-import { chooseAskToAnswer } from "../domain/policy.ts"
+import { chooseAskToAnswer, type ReplyChoice } from "../domain/policy.ts"
 import type { ActionResult } from "../domain/types.ts"
 import type { Config } from "../config.ts"
 import type { SessionLookup } from "../host/session.ts"
@@ -55,7 +55,7 @@ export async function replyAction(deps: ReplyDeps, call: ToolCall, input: unknow
   }
 
   const now = Date.now()
-  let choice: ReturnType<typeof chooseAskToAnswer>
+  let choice: ReplyChoice
   try {
     choice = chooseAskToAnswer({
       asks: await readAsks(storage),
@@ -114,7 +114,9 @@ export async function replyAction(deps: ReplyDeps, call: ToolCall, input: unknow
   // The wait had already ended, so the answer degrades into an ordinary
   // message — the asker is no longer listening anywhere else.
   const asker = view.peers.find((peer) => peer.sessionID === ask.askerSessionID)
-  if (asker === undefined) return refusal(failure("E_TARGET_NOT_FOUND", ask.askerTitle))
+  if (asker === undefined) {
+    return refusal(failure("E_TARGET_NOT_FOUND", ask.askerTitle), { sessionID: ask.askerSessionID })
+  }
 
   const attempt = await deliverTo(deps, {
     from: view.self,

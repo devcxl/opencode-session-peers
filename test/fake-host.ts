@@ -128,11 +128,16 @@ export interface FakeHost {
   emit(type: string, data: Readonly<Record<string, unknown>>): void
   /** Live event subscriptions; zero once the plugin has unsubscribed. */
   subscribers(): number
-  /** Invoke a registered tool, and report what the model would receive. */
+  /**
+   * Invoke a registered tool, and report what the model would receive. The
+   * signal is the tool call's own: aborting it stands in for the turn being
+   * interrupted while the call is still running.
+   */
   call(
     name: string,
     input: unknown,
     sessionID?: string,
+    signal?: AbortSignal,
   ): Promise<{ readonly text: string; readonly details: unknown }>
 }
 
@@ -236,10 +241,10 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
       for (const subscription of [...subscriptions]) subscription.push(event as unknown as HostEvent)
     },
     subscribers: () => subscriptions.size,
-    async call(name, input, sessionID = caller) {
+    async call(name, input, sessionID = caller, signal) {
       const tool = tools.find((candidate) => candidate.name === name)
       if (tool === undefined) throw new Error(`No tool named "${name}" is registered`)
-      const result = await tool.execute(input, toolCall(sessionID))
+      const result = await tool.execute(input, toolCall(sessionID, signal))
       rejectUndefined(result.metadata, "metadata")
       return { text: textOf(result), details: result.metadata }
     },
@@ -296,13 +301,13 @@ class FakeSubscription implements AsyncIterable<HostEvent> {
 }
 
 /** The host's tool call context; only `sessionID` and `signal` are ours to read. */
-function toolCall(sessionID: string): ToolCall {
+function toolCall(sessionID: string, signal?: AbortSignal): ToolCall {
   return {
     sessionID,
     agent: "build",
     messageID: "msg_fake",
     id: "tool_fake",
-    signal: new AbortController().signal,
+    signal: signal ?? new AbortController().signal,
     progress: async () => {},
   } as unknown as ToolCall
 }

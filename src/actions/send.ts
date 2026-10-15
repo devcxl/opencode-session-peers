@@ -16,7 +16,7 @@
 import { describeError, failure } from "../domain/errors.ts"
 import { resolvePeer } from "../domain/addressing.ts"
 import { blockingAsk } from "../domain/policy.ts"
-import type { ActionResult } from "../domain/types.ts"
+import type { ActionResult, AskRecord } from "../domain/types.ts"
 import type { Config } from "../config.ts"
 import type { SessionLookup } from "../host/session.ts"
 import type { PluginStorage } from "../host/storage.ts"
@@ -66,7 +66,7 @@ export async function sendAction(deps: SendDeps, call: ToolCall, input: unknown)
   // A session with an unanswered question of its own does not get to talk to
   // anyone else: the answer is what this turn owes, and a send to a third
   // session is how an answer ends up with the wrong peer.
-  let blocked: ReturnType<typeof blockingAsk>
+  let blocked: AskRecord | undefined
   try {
     blocked = blockingAsk(await readAsks(deps.storage), call.sessionID, peer.sessionID, Date.now())
   } catch (error) {

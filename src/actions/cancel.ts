@@ -11,7 +11,7 @@
  */
 
 import { describeError, failure } from "../domain/errors.ts"
-import type { ActionResult } from "../domain/types.ts"
+import type { ActionResult, AskRecord } from "../domain/types.ts"
 import type { PluginStorage } from "../host/storage.ts"
 import type { ToolCall } from "../host/tools.ts"
 import type { Roster } from "../peers/roster.ts"
@@ -31,7 +31,7 @@ export async function cancelAction(deps: CancelDeps, call: ToolCall, input: unkn
   const replyTo = readText(input, "replyTo")
   const now = Date.now()
 
-  let mine: Awaited<ReturnType<typeof readAsks>>
+  let mine: readonly AskRecord[]
   try {
     mine = (await readAsks(deps.storage)).filter(
       (ask) => ask.askerSessionID === call.sessionID && (replyTo.length === 0 || ask.askID === replyTo),

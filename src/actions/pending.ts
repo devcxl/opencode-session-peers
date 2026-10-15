@@ -11,7 +11,7 @@
 import { describeError, failure } from "../domain/errors.ts"
 import { pendingAskRow } from "../domain/format.ts"
 import { pendingAsksFor } from "../domain/policy.ts"
-import type { ActionResult } from "../domain/types.ts"
+import type { ActionResult, AskRecord } from "../domain/types.ts"
 import type { PluginStorage } from "../host/storage.ts"
 import type { ToolCall } from "../host/tools.ts"
 import type { Roster } from "../peers/roster.ts"
@@ -28,7 +28,7 @@ export async function pendingAction(deps: PendingDeps, call: ToolCall): Promise<
   if (deps.roster === undefined) return refusal(failure("E_DISABLED"))
 
   const now = Date.now()
-  let pending: ReturnType<typeof pendingAsksFor>
+  let pending: readonly AskRecord[]
   try {
     pending = pendingAsksFor(await readAsks(deps.storage), call.sessionID, now)
   } catch (error) {

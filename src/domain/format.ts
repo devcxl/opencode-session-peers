@@ -82,7 +82,7 @@ export function replyResult(fromTitle: string, body: MessageBody): string {
  * which is also what a session copies into `replyTo` when several are waiting.
  */
 export function pendingAskRow(ask: AskRecord, now: number): string {
-  const preview = ask.question.replace(/\s+/g, " ").slice(0, 80)
+  const preview = ask.question.replace(/\s+/g, " ").trim().slice(0, 80) || "(no text)"
   const elapsedSeconds = Math.max(0, Math.floor((now - ask.createdAt) / 1000))
   return `- ${ask.askerTitle} · ${ask.askID} · ${elapsedSeconds}s ago · ${preview}`
 }
