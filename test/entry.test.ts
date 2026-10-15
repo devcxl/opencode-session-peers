@@ -37,14 +37,14 @@ describe("the plugin definition", () => {
       type: "object",
       additionalProperties: false,
       required: ["action"],
-      properties: { action: { type: "string", enum: ["list", "list-cwd", "status"] } },
+      properties: { action: { type: "string", enum: ["list", "list-cwd", "send", "status"] } },
     })
-    for (const action of ["list", "list-cwd", "status"]) expect(tool?.description).toContain(action)
+    for (const action of ["list", "list-cwd", "send", "status"]) expect(tool?.description).toContain(action)
   })
 
   test("an action the tool does not have is refused, not answered", async () => {
     const host = await loaded()
-    await expect(host.call("peers", { action: "send" })).rejects.toThrowError("Unknown peers action: send")
+    await expect(host.call("peers", { action: "ask" })).rejects.toThrowError("Unknown peers action: ask")
   })
 })
 

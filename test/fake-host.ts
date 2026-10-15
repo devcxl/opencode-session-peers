@@ -2,7 +2,7 @@
  * A fake opencode plugin context.
  *
  * `Plugin.Context` is a large, branded surface; the plugin's entry point reads
- * six of its members. The fake implements exactly those, so a test can call
+ * seven of its members. The fake implements exactly those, so a test can call
  * `setup`, drive the registered tool the way the host would, emit events into
  * the subscription, and inspect the storage the plugin wrote.
  *
@@ -44,6 +44,13 @@ export interface FakeScanOptions {
   readonly prefix: string
   readonly after?: string
   readonly limit?: number
+}
+
+/** One message the plugin asked the host to hand to a session. */
+export interface FakePrompt {
+  readonly sessionID: string
+  readonly text: string
+  readonly delivery: string
 }
 
 export interface FakeStorage {
@@ -102,6 +109,8 @@ export interface FakeHostOptions {
   readonly storage?: FakeStorage
   /** The session tool calls come from, unless a call names another. */
   readonly caller?: string
+  /** Sessions this fake host refuses to hand a message to, as the real one does for a session it no longer has. */
+  readonly promptRefuses?: readonly string[]
 }
 
 export interface FakeHost {
@@ -109,6 +118,8 @@ export interface FakeHost {
   readonly context: Plugin.Context
   /** Session ids the plugin looked up, in order. */
   readonly lookups: readonly string[]
+  /** Messages the plugin asked the host to hand to a session, in order. */
+  readonly prompts: readonly FakePrompt[]
   /** Tools the plugin registered, in order. */
   readonly tools: readonly ToolInfo[]
   /** The storage the plugin wrote to; the same object the host was given. */
@@ -135,7 +146,9 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
     ),
   )
   const lookups: string[] = []
+  const prompts: FakePrompt[] = []
   const tools: ToolInfo[] = []
+  const refused = new Set(options.promptRefuses ?? [])
   const subscriptions = new Set<FakeSubscription>()
   let eventCounter = 0
 
@@ -167,6 +180,25 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
           ...(session.model === undefined ? {} : { model: { id: session.model, providerID: "fake" } }),
         }
       },
+      prompt: async (input: {
+        readonly sessionID: string
+        readonly text: string
+        readonly delivery?: string
+      }) => {
+        // The host refuses a session it no longer has, and refuses it loudly:
+        // the plugin must report that, not treat it as delivered.
+        if (refused.has(input.sessionID)) throw new Error("Session.NotFoundError")
+        const delivery = input.delivery ?? "steer"
+        prompts.push({ sessionID: input.sessionID, text: input.text, delivery })
+        return {
+          id: `msg_fake_${prompts.length}`,
+          sessionID: input.sessionID,
+          time: { created: Date.now() },
+          type: "user",
+          payload: { text: input.text },
+          delivery,
+        }
+      },
     },
     storage,
     event: {
@@ -195,6 +227,7 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
     // stops pretending to be the whole host.
     context: context as unknown as Plugin.Context,
     lookups,
+    prompts,
     tools,
     storage,
     emit(type, data) {
