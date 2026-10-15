@@ -5,8 +5,9 @@
  * id, then a case-insensitive title, then an id prefix — and every `send`
  * fails closed rather than guessing a recipient. The delivery is decided from
  * what the roster last saw of the target and from the recipient's declared
- * policy, and the body is what the receiver reads: sender, directory, reply
- * hint, message, attachments.
+ * policy, and the body is what the receiver reads: sender, directory, message,
+ * attachments. A plain message asks nothing, so it carries no reply
+ * instruction (issue #24).
  *
  * Nothing waits here: a message the host refuses is reported undelivered
  * instead of being held for a session that has already exited — the mailbox
@@ -88,7 +89,7 @@ export async function sendAction(deps: SendDeps, call: ToolCall, input: unknown)
     to: peer,
     body: { text: message.value.message, attachments: message.value.attachments },
     exchange: false,
-    replyHint: deps.config.replyHint,
+    expectsReply: false,
     detail: target,
   })
   if (attempt.kind === "refused") return attempt.refusal

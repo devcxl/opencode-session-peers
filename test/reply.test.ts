@@ -212,6 +212,9 @@ describe("answering a question whose wait has ended", () => {
     const answered = await beta.host.call("peers", { action: "reply", message: "An answer after the fact." })
     expect(answered.text).toContain("(late:")
     expect(beta.host.prompts).toHaveLength(1)
+    // An answer is not a question: the message it becomes carries no reply
+    // instruction (issue #24).
+    expect(beta.host.prompts[0]?.text).not.toContain("To reply:")
 
     // A plain send to the same session is still refused: the answer was admitted
     // because it is one side of an exchange, not because the policy was ignored.

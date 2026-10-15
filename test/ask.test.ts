@@ -127,8 +127,9 @@ describe("a question that is answered", () => {
     })
     await waitFor("the question to be delivered", () => alpha.host.prompts.length === 1)
 
-    // The recipient reads the body `send` would have produced: sender,
-    // directory, the instruction that answers it, then the question.
+    // The recipient reads the question body: sender, directory, the instruction
+    // that answers it, then the question. A question is the one message shape
+    // that expects a reply, so it is the one that carries the instruction.
     expect(alpha.host.prompts).toEqual([
       {
         sessionID: BETA.id,
@@ -167,6 +168,26 @@ describe("a question that is answered", () => {
     // The answer was consumed: the slot nobody reads again is gone.
     expect(await stored(storage, "v1/replies/")).toEqual([])
     expect(await stored(storage, "v1/asks/")).toEqual([])
+
+    await unloadAll(alpha, beta)
+  })
+
+  test("leaves the reply instruction out of the question when the option asks it to", async () => {
+    const { alpha, beta } = await threeDirectories({
+      alpha: { options: { replyHint: false, askTimeoutMs: 2_000 } },
+    })
+
+    const asking = alpha.host.call("peers", { action: "ask", to: BETA.id, message: "Answer without a hint?" })
+    await waitFor("the question to be delivered", () => alpha.host.prompts.length === 1)
+
+    // The option removes the instruction from the one message that would
+    // otherwise carry it; the question itself is unchanged.
+    expect(alpha.host.prompts[0]?.text).toBe(
+      `**From Payments API** (/work/alpha)\n\nAnswer without a hint?`,
+    )
+
+    await beta.host.call("peers", { action: "reply", message: "Answered anyway." })
+    expect((await asking).text).toBe("**Reply from Docs site:**\nAnswered anyway.")
 
     await unloadAll(alpha, beta)
   })
@@ -421,13 +442,14 @@ describe("a wait that ends without an answer", () => {
       sessionID: ALPHA.id,
       title: "Payments API",
     })
-    // The answer reached the asker's session as a message, not a reply slot.
+    // The answer reached the asker's session as a message, not a reply slot —
+    // and an answer ends an exchange rather than opening one, so it carries no
+    // reply instruction.
     expect(beta.host.prompts).toEqual([
       {
         sessionID: ALPHA.id,
         text: [
           `**From Docs site** (/work/beta)`,
-          `To reply: peers({ action: "reply", message: "..." })`,
           `_Reply to your question, arriving after the wait for it had ended._`,
           "",
           "Answering anyway.",

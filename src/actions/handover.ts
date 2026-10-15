@@ -121,7 +121,9 @@ export async function handoverAction(
   const inbound = inboundMessage({
     from: view.self,
     body: { text },
-    replyHint: deps.config.replyHint,
+    // A handover starts work rather than asking for an answer, so there is no
+    // ask for a reply instruction to name.
+    replyHint: false,
   })
 
   try {

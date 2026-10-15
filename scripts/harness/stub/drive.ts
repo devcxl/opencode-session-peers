@@ -2,9 +2,10 @@
  * The offline driven pass.
  *
  * Two sessions in two directories are driven through the harness's own stub
- * model, and the pass asserts the one thing the structural pass cannot: a
- * message sent from the session in one directory appears in the session in the
- * other. Nothing here leaves loopback and no credential is read.
+ * model, and the pass asserts what the structural pass cannot: a message sent
+ * from the session in one directory appears in the session in the other — as a
+ * plain body, with no reply instruction a receiver could not act on (issue
+ * #24). Nothing here leaves loopback and no credential is read.
  *
  * The stub is a script, not a model, so the transcript is checked rather than
  * the answers being judged: A's `peers` tool result must say the message was
@@ -25,6 +26,13 @@ import { LIST_PROMPT, sendPrompt } from "./model-server.ts"
  * boundary, not a coincidence.
  */
 export const CROSSING_TOKEN = "HARNESS_OFFLINE_MESSAGE_OK"
+
+/**
+ * The instruction a question carries. The offline pass sends a plain message,
+ * so the body the peer receives must not tell it to `reply`: a send opens no
+ * ask to answer.
+ */
+export const REPLY_HINT = `To reply: peers({ action: "reply", message: "..." })`
 
 /**
  * How long the roster may take to show the other session. The plugin publishes
@@ -179,6 +187,7 @@ async function waitForCrossing(
           `${CROSSING_TOKEN} is in ${sessionB.label}'s transcript in ${sessionB.directory}, ` +
           `sent from ${sessionA.directory}`,
       })
+      expectations.push(hintCheck(sessionB, messageText(carrier)))
       return
     }
     if (Date.now() >= deadline) {
@@ -193,6 +202,24 @@ async function waitForCrossing(
       throw new Error(`${CROSSING_TOKEN} never reached ${sessionB.label}`)
     }
     await sleep(POLL_MS)
+  }
+}
+
+/**
+ * The body of a plain send carries no reply instruction: the receiver's `reply`
+ * would have no ask to match, so the line would only send it to a refusal. The
+ * check lives next to the crossing because the body it reads is the evidence
+ * the crossing found.
+ */
+function hintCheck(sessionB: SessionSummary, body: string): Expectation {
+  const carries = body.includes(REPLY_HINT)
+  return {
+    name: "send-carries-no-reply-hint",
+    met: !carries,
+    expected: "the body a plain send delivers carries no reply instruction",
+    observed: carries
+      ? `${sessionB.label}'s message tells the receiver to reply, but a send opens no ask to answer`
+      : `the message in ${sessionB.label}'s transcript carries sender and body only`,
   }
 }
 

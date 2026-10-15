@@ -23,8 +23,8 @@ import {
   REPO_ROOT,
   scratchLayout,
 } from "../scripts/harness/paths.ts"
-import type { Expectation, SessionSummary } from "../scripts/harness/report.ts"
-import { CROSSING_TOKEN, driveStubPass } from "../scripts/harness/stub/drive.ts"
+import { expectationsMet, type Expectation, type SessionSummary } from "../scripts/harness/report.ts"
+import { CROSSING_TOKEN, REPLY_HINT, driveStubPass } from "../scripts/harness/stub/drive.ts"
 import {
   LIST_PROMPT,
   STUB_IDLE_TEXT,
@@ -224,9 +224,11 @@ function sessionInfo(session: FakeSession): SessionInfo {
 /**
  * A fake instance that answers a scripted turn the way the stub plus the real
  * plugin would: a roster ask returns a roster naming both sessions, a send
- * returns a delivered tool result and writes the message into the peer.
+ * returns a delivered tool result and writes the message into the peer. The
+ * `hint` flag writes a reply instruction into that peer's copy, standing in for
+ * a plugin that still appends one to a plain message.
  */
-function fakeInstance(deliver: boolean) {
+function fakeInstance(deliver: boolean, hint = false) {
   const sessions = new Map<string, FakeSession>([
     ["ses_a", { id: "ses_a", directory: "/scratch/project-a", title: "harness-a", messages: [] }],
     ["ses_b", { id: "ses_b", directory: "/scratch/project-b", title: "harness-b", messages: [] }],
@@ -253,7 +255,11 @@ function fakeInstance(deliver: boolean) {
           toolMessage({ action: "send", to: "harness-b", message: CROSSING_TOKEN }, sentText, { delivered: deliver }),
         )
         if (deliver) {
-          sessions.get("ses_b")!.messages.push({ id: "msg_peer", type: "user", text: CROSSING_TOKEN })
+          sessions.get("ses_b")!.messages.push({
+            id: "msg_peer",
+            type: "user",
+            text: hint ? `${CROSSING_TOKEN}\n\n${REPLY_HINT}` : CROSSING_TOKEN,
+          })
         }
       }
       return json(sessionInfo(session))
@@ -284,11 +290,11 @@ function summaries(): SessionSummary[] {
   ]
 }
 
-async function run(deliver: boolean) {
+async function run(deliver: boolean, hint = false) {
   const expectations: Expectation[] = []
   const disclosures: string[] = []
   const result = await driveStubPass(
-    fakeInstance(deliver),
+    fakeInstance(deliver, hint),
     parseArgs(["--stub"], "/tmp/harness-cwd"),
     summaries(),
     expectations,
@@ -311,7 +317,20 @@ describe("the offline driving phase", () => {
     expect(crossed.met).toBe(true)
     expect(crossed.observed).toContain("/scratch/project-b")
     expect(crossed.observed).toContain("/scratch/project-a")
+    expect(byName.get("send-carries-no-reply-hint")!.met).toBe(true)
+    expect(expectationsMet(expectations)).toBe(true)
     expect(disclosures.join(" ")).toContain("no hosted model and no credential were involved")
+  })
+
+  test("a delivered body that still tells the receiver to reply fails the pass", async () => {
+    const { result, expectations } = await run(true, true)
+    expect(result).not.toBeInstanceOf(Error)
+    const byName = new Map(expectations.map((expectation) => [expectation.name, expectation]))
+    expect(byName.get("message-crossed-directories")!.met).toBe(true)
+    const hint = byName.get("send-carries-no-reply-hint")!
+    expect(hint.met).toBe(false)
+    expect(hint.observed).toContain("a send opens no ask to answer")
+    expect(expectationsMet(expectations)).toBe(false)
   })
 
   test("an undelivered send fails the pass with the tool's own words", async () => {
