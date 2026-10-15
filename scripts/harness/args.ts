@@ -67,18 +67,19 @@ directories, its own database and its own port. The developer's live service is
 never touched; its service.json is hashed before and after the run and the two
 digests are compared.
 
-Without --model nothing is driven and no credentials are read. With --model the
-developer's auth.json is copied into the instance for the run and deleted at
-teardown, and real turns are driven through the instance's own HTTP API. Those
-turns depend on the host's model backend serving a fresh instance, which is not
-guaranteed on this machine: a refused turn is asked again in a fresh session,
-reported with the provider's own words, and leaves the run non-zero.
+Without --model and --stub nothing is driven and no credentials are read. With
+--model the developer's auth.json is copied into the instance for the run and
+deleted at teardown, and real turns are driven through the instance's own HTTP
+API. Those turns depend on the host's model backend serving a fresh instance,
+which is not guaranteed on this machine: a refused turn is asked again in a
+fresh session, reported with the provider's own words, and leaves the run
+non-zero.
 
 --stub replaces the host's model backend with the harness's own: a tiny
-OpenAI-compatible endpoint in the scratch directory that answers a scripted
-turn. It is offline and deterministic, so the two sessions can prove that a
-message sent in one directory arrives in the other without a hosted model and
-without reading any credential.
+OpenAI-compatible endpoint on a loopback port that answers a scripted turn. It
+is offline and deterministic, so the two sessions can prove that a message sent
+in one directory arrives in the other without a hosted model and without
+reading any credential.
 `
 
 export function wantsHelp(argv: readonly string[]): boolean {

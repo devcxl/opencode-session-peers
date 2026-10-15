@@ -68,7 +68,8 @@ export async function driveStubPass(
   await waitForCrossing(client, options, sessionA, sessionB, expectations)
 
   disclosures.push(
-    `the offline pass drove every turn through the harness's stub model (${modelLabel(model)}); no hosted model and no credential were involved`,
+    `the offline pass drove every turn through the harness's stub model (${modelLabel(model)}); ` +
+      "no hosted model and no credential were involved",
   )
   return [...sessions]
 }
@@ -77,10 +78,9 @@ export async function driveStubPass(
  * A's own roster view must name B before anything is sent: the plugin publishes
  * from a live event stream, so the peer can briefly lag behind its creation,
  * and asking again is how the harness observes the roster rather than assumes
- * it. The transcript is bounded by the turn timeout, so a roster that never
- * shows the peer fails the run with the state it stalled in.
- */
-async function waitForRoster(
+ * it. The wait is bounded, so a roster that never shows the peer fails the run
+ * with the state it stalled in instead of hanging.
+ */async function waitForRoster(
   client: HarnessClient,
   options: HarnessOptions,
   sessionA: SessionSummary,
@@ -130,12 +130,17 @@ async function sendAndCheckDelivery(
     // The directive names the peer by title, so the stub can write the tool call
     // the way a model would: a target the harness created and knows.
     const call = await promptForTool(client, options, sessionA.id, sendPrompt(sessionB.title, CROSSING_TOKEN))
-    const delivered = call.metadata["delivered"] === true
+    const asked = call.input as { action?: unknown; to?: unknown } | undefined
+    // The name and the input are checked too: a turn that produced some other
+    // tool result must not read as a delivered message.
+    const sent =
+      call.name === "peers" && asked?.action === "send" && asked.to === sessionB.title
+    const delivered = sent && call.metadata["delivered"] === true
     expectations.push({
       name: "message-delivered",
       met: delivered,
       expected,
-      observed: delivered ? oneLine(call.text) : `not delivered: ${oneLine(call.text)}`,
+      observed: `${call.name} ${JSON.stringify(call.input)} — ${delivered ? "" : "not delivered: "}${oneLine(call.text)}`,
     })
     return delivered
   } catch (error) {
@@ -170,7 +175,9 @@ async function waitForCrossing(
         name: "message-crossed-directories",
         met: true,
         expected,
-        observed: `${CROSSING_TOKEN} is in ${sessionB.label}'s transcript in ${sessionB.directory}, sent from ${sessionA.directory}`,
+        observed:
+          `${CROSSING_TOKEN} is in ${sessionB.label}'s transcript in ${sessionB.directory}, ` +
+          `sent from ${sessionA.directory}`,
       })
       return
     }
@@ -179,7 +186,9 @@ async function waitForCrossing(
         name: "message-crossed-directories",
         met: false,
         expected,
-        observed: `${CROSSING_TOKEN} never appeared in ${sessionB.label}'s ${messages.length} message(s) within ${options.turnTimeoutMs} ms`,
+        observed:
+          `${CROSSING_TOKEN} never appeared in ${sessionB.label}'s ${messages.length} message(s) ` +
+          `within ${options.turnTimeoutMs} ms`,
       })
       throw new Error(`${CROSSING_TOKEN} never reached ${sessionB.label}`)
     }

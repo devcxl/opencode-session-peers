@@ -87,7 +87,8 @@ export async function runHarness(options: HarnessOptions): Promise<HarnessReport
     if (options.stub) {
       stub = await startStubModel()
       disclosures.push(
-        `started the harness's stub model on 127.0.0.1:${stub.port} (loopback only, no hosted model, no credentials); it is stopped at teardown`,
+        `started the harness's stub model on 127.0.0.1:${stub.port} ` +
+          "(loopback only, no hosted model, no credentials); it is stopped at teardown",
       )
     }
     prepareScratch(layout, {
@@ -113,7 +114,8 @@ export async function runHarness(options: HarnessOptions): Promise<HarnessReport
     )
     disclosures.push(
       options.stub
-        ? "the driven turns went only to the harness's stub model on loopback; the instance loaded the host's own provider catalogue as in every pass"
+        ? "the driven turns went only to the harness's stub model on loopback; " +
+            "the instance loaded the host's own provider catalogue as in every pass"
         : options.driveModel
           ? "the instance fetched its model catalogue over the network; driven turns also called the model provider"
           : "the instance fetched its model catalogue over the network",
