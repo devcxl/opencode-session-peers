@@ -20,6 +20,7 @@
 import type { Plugin } from "@opencode/plugin"
 
 import type { HostEvent } from "../src/host/events.ts"
+import { pluginStorage, type PluginStorage } from "../src/host/storage.ts"
 
 /** The session a tool call comes from, unless a test says otherwise. */
 export const CALLER_SESSION_ID = "ses_fake_caller"
@@ -133,6 +134,18 @@ export function fakeStorage(): FakeStorage {
       return [...entries.keys()].sort().map((key) => entries.get(key))
     },
   }
+}
+
+/**
+ * The shared storage seen through the plugin's own adapter.
+ *
+ * The fake keeps values as `unknown` on purpose — it must not quietly mirror the
+ * host's JSON type to look more like the host than it is — while the adapter
+ * takes that JSON type. The conversion belongs here, next to the fake, rather
+ * than in every test that seeds or inspects the namespace.
+ */
+export function fakePluginStorage(raw: FakeStorage): PluginStorage {
+  return pluginStorage(raw as unknown as Parameters<typeof pluginStorage>[0])
 }
 
 export interface FakeHostOptions {
