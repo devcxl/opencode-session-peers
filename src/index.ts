@@ -37,7 +37,18 @@ export default {
     const roster = config.enabled ? await startRoster({ config, warn, ...host }) : undefined
 
     await host.tools.register(
-      peersTool({ config, sessions: host.sessions, storage: host.storage, roster, warn }),
+      peersTool({
+        config,
+        sessions: host.sessions,
+        storage: host.storage,
+        roster,
+        warn,
+        handover: {
+          generation: host.generation,
+          versionControl: host.versionControl,
+          senderDirectory: host.location.directory,
+        },
+      }),
     )
 
     // A disabled plugin does nothing and describes nothing: its sessions are told
