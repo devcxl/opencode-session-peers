@@ -16,3 +16,23 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun test
+
+  harness:
+    # The driven pass, offline: a pinned host and the harness's own stub model,
+    # so no hosted model and no credentials are involved. The host is pinned
+    # because an unpinned one drifts under us — which is exactly what made the
+    # old hosted-model pass useless (#25, #28).
+    runs-on: ubuntu-latest
+    env:
+      OPENCODE_HOST_VERSION: 2.0.29
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: npm install --global "@opencode/cli@$OPENCODE_HOST_VERSION"
+      - name: Point the harness at the pinned host
+        run: echo "OPENCODE_BIN=$(command -v opencode)" >> "$GITHUB_ENV"
+      - run: opencode --version
+      - run: bun run harness --stub
