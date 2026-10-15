@@ -171,11 +171,15 @@ async function driveAnsweredAsk(
 
   const answered = call.metadata["answered"] === true
   const returned = call.text.includes(STUB_ANSWER_TEXT) && call.text.includes(sessionB.title)
+  // The wait is reported too: it is the margin the peer's reply had, and the
+  // evidence that the answer arrived inside the configured timeout at all.
+  const answeredInMs = elapsedInCall(call)
+  const waited = answeredInMs === undefined ? "" : `, wait ${answeredInMs} ms`
   expectations.push({
     name: "ask-answered-returned",
     met: answered && returned,
     expected: `the answered ask returns ${sessionB.title}'s own words`,
-    observed: `${call.name} ${JSON.stringify(call.input)} — ${oneLine(call.text)} [answered=${String(answered)}]`,
+    observed: `${call.name} ${JSON.stringify(call.input)} — ${oneLine(call.text)} [answered=${String(answered)}${waited}]`,
   })
 
   const reply = await waitForCall(client, sessionB.id, isPeersReply, PEER_CALL_WAIT_MS)

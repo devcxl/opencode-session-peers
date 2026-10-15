@@ -162,7 +162,11 @@ bun run harness --help
 `bun run harness` is the structural pass and needs no model and no credentials. `--stub` adds the
 driven pass: the harness starts a tiny OpenAI-compatible stub on loopback, installs it as the
 instance's model provider, and asserts that a message sent from the session in one scratch project
-appears in the session in the other. It is deterministic and offline; `--model <provider/id>` remains
+appears in the session in the other. It also drives the ask chain both ways: a question the peer
+answers comes back with the peer's own words, and a question it leaves unanswered comes back with the
+timeout text after the configured `askTimeoutMs` — the harness sets one in the plugin options, so the
+pass can tell "nobody answered" from "the chain is broken", and can tell either from a wait that ran
+on the ten-minute default. It is deterministic and offline; `--model <provider/id>` remains
 the opt-in pass that drives real hosted turns with the developer's own credentials.
 
 The harness owns its own XDG directories, database and port, hashes the developer's
