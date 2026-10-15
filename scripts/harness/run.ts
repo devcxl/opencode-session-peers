@@ -12,8 +12,8 @@
  */
 
 import { join, relative } from "node:path"
-import { modelLabel, scratchId, type HarnessOptions } from "./args.ts"
-import { checkAuth, checkIsolation, checkPluginLoading, checkPluginPath } from "./checks.ts"
+import { drivenModel, modelLabel, scratchId, type HarnessOptions } from "./args.ts"
+import { checkAuth, checkIsolation, checkNoCredentials, checkPluginLoading, checkPluginPath } from "./checks.ts"
 import { createClient } from "./client.ts"
 import { prepareScratch, startInstance, type InstanceHandle } from "./instance.ts"
 import { isProcessAlive, readLiveService } from "./isolation.ts"
@@ -36,6 +36,8 @@ import {
   readTranscripts,
   summarizeSession,
 } from "./sessions.ts"
+import { driveStubPass } from "./stub/drive.ts"
+import { startStubModel, type StubHandle } from "./stub/model-server.ts"
 import { teardown } from "./teardown.ts"
 
 export async function runHarness(options: HarnessOptions): Promise<HarnessReport> {
@@ -47,6 +49,7 @@ export async function runHarness(options: HarnessOptions): Promise<HarnessReport
   const liveBefore = readLiveService(serviceJson)
 
   let instance: InstanceHandle | undefined
+  let stub: StubHandle | undefined
   let sessions: SessionSummary[] = []
   let instanceSummary: InstanceSummary | undefined
   let usedModels: string[] = []
@@ -81,12 +84,20 @@ export async function runHarness(options: HarnessOptions): Promise<HarnessReport
       relative(layout.root, join(layout.projectA, ".opencode", "opencode.json")),
       relative(layout.root, join(layout.projectB, ".opencode", "opencode.json")),
     ]
+    if (options.stub) {
+      stub = await startStubModel()
+      disclosures.push(
+        `started the harness's stub model on 127.0.0.1:${stub.port} (loopback only, no hosted model, no credentials); it is stopped at teardown`,
+      )
+    }
     prepareScratch(layout, {
       pluginDirectories: [options.pluginPath, PROBE_PLUGIN_DIR],
       ...(authSource === undefined ? {} : { authSource }),
+      ...(options.stub ? { stub: true } : {}),
     })
+    if (options.stub) checkNoCredentials(layout, expectations)
 
-    instance = await boot(options, layout, expectations)
+    instance = await boot(options, layout, expectations, stub?.url)
     instanceSummary = {
       url: instance.url,
       port: instance.port,
@@ -101,9 +112,11 @@ export async function runHarness(options: HarnessOptions): Promise<HarnessReport
       `started one opencode server process (pid ${instance.pid}) on 127.0.0.1:${instance.port}; it is stopped at teardown`,
     )
     disclosures.push(
-      options.driveModel
-        ? "the instance fetched its model catalogue over the network; driven turns also called the model provider"
-        : "the instance fetched its model catalogue over the network",
+      options.stub
+        ? "the driven turns went only to the harness's stub model on loopback; the instance loaded the host's own provider catalogue as in every pass"
+        : options.driveModel
+          ? "the instance fetched its model catalogue over the network; driven turns also called the model provider"
+          : "the instance fetched its model catalogue over the network",
     )
     checkIsolation(instance, liveBefore.url, layout, expectations)
 
@@ -116,12 +129,14 @@ export async function runHarness(options: HarnessOptions): Promise<HarnessReport
     // the reason for the failure is, and the report has to name both sessions
     // either way.
     let driveFailure: unknown
-    if (options.driveModel) {
-      try {
+    try {
+      if (options.stub) {
+        sessions = await driveStubPass(client, options, sessions, expectations, disclosures)
+      } else if (options.driveModel) {
         sessions = await driveTurns(client, options, sessions, expectations, disclosures)
-      } catch (error) {
-        driveFailure = error
       }
+    } catch (error) {
+      driveFailure = error
     }
     sessions = await readTranscripts(client, sessions, options, expectations)
     if (options.driveModel && driveFailure === undefined) checkAnswers(sessions, expectations)
@@ -139,7 +154,7 @@ export async function runHarness(options: HarnessOptions): Promise<HarnessReport
       observed: explain(error),
     })
   } finally {
-    cleanup = await teardown(options, layout, instance, serviceJson)
+    cleanup = await teardown(options, layout, instance, serviceJson, stub)
     expectations.push({
       name: "teardown",
       met:
@@ -147,7 +162,9 @@ export async function runHarness(options: HarnessOptions): Promise<HarnessReport
         cleanup.portClosed &&
         cleanup.authFileRemoved &&
         (cleanup.scratchRemoved || cleanup.scratchKept),
-      expected: "the instance stops, its port closes, auth.json is deleted and the scratch directory is removed",
+      expected: options.stub
+        ? "the instance and the stub model stop, both ports close, auth.json is deleted and the scratch directory is removed"
+        : "the instance stops, its port closes, auth.json is deleted and the scratch directory is removed",
       observed: cleanup.observed,
     })
     if (!cleanup.scratchRemoved && !cleanup.scratchKept) {
@@ -170,9 +187,10 @@ export async function runHarness(options: HarnessOptions): Promise<HarnessReport
   })
 
   const finishedAt = Date.now()
+  const requested = options.stub ? drivenModel(options) : options.model
   return {
     ok: expectationsMet(expectations),
-    mode: options.driveModel ? "drive" : "structural",
+    mode: options.stub ? "offline" : options.driveModel ? "drive" : "structural",
     startedAt: new Date(startedAt).toISOString(),
     finishedAt: new Date(finishedAt).toISOString(),
     durationMs: finishedAt - startedAt,
@@ -181,7 +199,7 @@ export async function runHarness(options: HarnessOptions): Promise<HarnessReport
     ...(instanceSummary === undefined ? {} : { instance: instanceSummary }),
     plugin,
     model: {
-      ...(options.model === undefined ? {} : { requested: modelLabel(options.model) }),
+      ...(requested === undefined ? {} : { requested: modelLabel(requested) }),
       used: usedModels,
     },
     disclosures,
@@ -193,6 +211,7 @@ async function boot(
   options: HarnessOptions,
   layout: ScratchLayout,
   expectations: Expectation[],
+  stubUrl?: string,
 ): Promise<InstanceHandle> {
   const expected = "a throwaway opencode instance answers on its own port and credentials"
   const startedAt = Date.now()
@@ -203,6 +222,7 @@ async function boot(
       opencodeBin: process.env["OPENCODE_BIN"] ?? "/usr/bin/opencode",
       bootTimeoutMs: options.bootTimeoutMs,
       env: process.env,
+      ...(stubUrl === undefined ? {} : { stubBaseUrl: `${stubUrl}/v1` }),
     })
     expectations.push({
       name: "instance-boots",

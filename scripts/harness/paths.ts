@@ -15,6 +15,23 @@ import { join, resolve } from "node:path"
 /** Environment variable the fixture probe plugin reads to find its evidence log. */
 export const PROBE_LOG_ENV = "SESSION_PEERS_HARNESS_PROBE_LOG"
 
+/**
+ * The stub model the offline pass drives its turns through. The provider id and
+ * the model id are part of two contracts at once — the provider plugin that
+ * declares them and the harness that asks for them — so they are named once
+ * here; `test/harness-stub.test.ts` pins that the plugin text agrees.
+ */
+export const STUB_PROVIDER_ID = "harness-stub"
+export const STUB_MODEL_ID = "stub"
+/** Base URL of the stub, read by the provider plugin from the instance's environment. */
+export const STUB_URL_ENV = "SESSION_PEERS_HARNESS_STUB_URL"
+/** The plugin declares this variable as its credential; its value is a literal. */
+export const STUB_KEY_ENV = "SESSION_PEERS_HARNESS_STUB_API_KEY"
+/** The whole credential an openai-compatible provider needs for a local endpoint. */
+export const STUB_API_KEY = "stub"
+/** The provider plugin as it lives in the repository, copied into each scratch config. */
+export const STUB_PLUGIN_SOURCE = join(import.meta.dir, "stub", "provider-plugin.ts")
+
 /** The checkout the harness was started from; the default plugin under test. */
 export const REPO_ROOT = resolve(import.meta.dir, "..", "..")
 
@@ -43,23 +60,27 @@ export interface ScratchLayout {
   /** One JSON line per plugin `setup`, written by the fixture probe plugin. */
   probeLog: string
   serverLog: string
+  /** Where the stub provider plugin is installed, when the offline pass runs. */
+  stubProvider: string
 }
 
 export function scratchLayout(scratchRoot: string, id: string): ScratchLayout {
   const root = join(scratchRoot, `session-peers-harness-${id}`)
   const data = join(root, "data")
+  const config = join(root, "config")
   return {
     root,
     data,
     state: join(root, "state"),
     cache: join(root, "cache"),
-    config: join(root, "config"),
+    config,
     projectA: join(root, "project-a"),
     projectB: join(root, "project-b"),
     authFile: join(data, "opencode", "auth.json"),
     database: join(data, "opencode", "opencode.db"),
     probeLog: join(root, "plugin-loads.jsonl"),
     serverLog: join(root, "server.log"),
+    stubProvider: join(config, "opencode", "plugins", "harness-stub-provider.ts"),
   }
 }
 

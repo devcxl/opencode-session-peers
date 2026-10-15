@@ -20,6 +20,9 @@ import type { AddressInfo } from "node:net"
 /** Marks the prompt whose turn must call `peers`; written by the harness. */
 export const STUB_DIRECTIVE = "HARNESS_STUB_SEND"
 
+/** Marks a prompt whose turn must ask `peers` for the roster instead. */
+export const STUB_LIST_DIRECTIVE = "HARNESS_STUB_LIST"
+
 /** The answer the stub gives once the tool result has come back. */
 export const STUB_SENT_TEXT = "HARNESS_STUB_SENT"
 
@@ -61,7 +64,12 @@ export async function startStubModel(options: StartStubOptions = {}): Promise<St
     url: `http://${hostname}:${address.port}`,
     requests,
     async stop() {
-      await new Promise<void>((resolve) => server.close(() => resolve()))
+      await new Promise<void>((resolve) => {
+        server.close(() => resolve())
+        // The host may be holding an idle keep-alive connection; closing the
+        // listener alone would leave the port bound until it goes away.
+        server.closeAllConnections()
+      })
     },
   }
 }
@@ -140,6 +148,14 @@ export function planReply(body: ChatRequest): Reply {
   return { kind: "text", text: STUB_IDLE_TEXT }
 }
 
+/** The prompt that makes A's turn call `peers({ action: "send" })`. */
+export function sendPrompt(to: string, message: string): string {
+  return `${STUB_DIRECTIVE} to=${to} message=${message}`
+}
+
+/** The prompt that makes a session's turn call `peers({ action: "list" })`. */
+export const LIST_PROMPT = STUB_LIST_DIRECTIVE
+
 function lastIndexOf<T>(items: readonly T[], match: (item: T) => boolean): number {
   for (let index = items.length - 1; index >= 0; index -= 1) {
     if (match(items[index]!)) return index
@@ -151,7 +167,7 @@ function lastIndexOf<T>(items: readonly T[], match: (item: T) => boolean): numbe
 function directiveOf(message: ChatMessage): Directive | undefined {
   if (message.role !== "user") return undefined
   const text = contentOf(message)
-  if (text.includes("HARNESS_STUB_LIST")) return { kind: "list" }
+  if (text.includes(STUB_LIST_DIRECTIVE)) return { kind: "list" }
   const start = text.indexOf(STUB_DIRECTIVE)
   if (start === -1) return undefined
 
