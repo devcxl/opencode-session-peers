@@ -458,7 +458,7 @@ describe("targets that fail closed", () => {
 
   test("a disabled plugin writes nothing and says why", async () => {
     const alpha = await loaded({
-      location: "/work/alpha",
+      location: PLAIN(),
       caller: ALPHA.id,
       options: { enabled: false },
       sessions: [ALPHA],
