@@ -4,7 +4,7 @@
  * The target is resolved through the domain's addressing rules — exact session
  * id, then a case-insensitive title, then an id prefix — and every `send`
  * fails closed rather than guessing a recipient. The delivery is decided from
- * what the roster last saw of the target and from this instance's inbound
+ * what the roster last saw of the target and from the recipient's declared
  * policy, and the body is what the receiver reads: sender, directory, reply
  * hint, message, attachments.
  *
@@ -13,20 +13,24 @@
  * the original had lived in a broker this build does not have (ADR-0001).
  */
 
-import { describeError, failure, type Failure } from "../domain/errors.ts"
+import { describeError, failure } from "../domain/errors.ts"
 import { resolvePeer } from "../domain/addressing.ts"
-import { inboundMessage } from "../domain/format.ts"
-import { admitInbound, deliveryFor } from "../domain/policy.ts"
-import type { ActionResult, Attachment } from "../domain/types.ts"
+import { blockingAsk } from "../domain/policy.ts"
+import type { ActionResult, AskRecord } from "../domain/types.ts"
 import type { Config } from "../config.ts"
 import type { SessionLookup } from "../host/session.ts"
+import type { PluginStorage } from "../host/storage.ts"
 import type { ToolCall } from "../host/tools.ts"
 import type { Roster } from "../peers/roster.ts"
+import { readAsks } from "../ask/handshake.ts"
+import { deliverTo, refusal } from "./delivery.ts"
+import { readMessage, readText } from "./input.ts"
 import { readRoster, peerDetails, type RosterView } from "./roster-view.ts"
 
 export interface SendDeps {
   readonly config: Config
   readonly sessions: SessionLookup
+  readonly storage: PluginStorage
   /** Absent while the plugin is disabled: a disabled instance publishes nothing. */
   readonly roster?: Roster
 }
@@ -35,8 +39,9 @@ export async function sendAction(deps: SendDeps, call: ToolCall, input: unknown)
   const { roster } = deps
   if (roster === undefined) return refusal(failure("E_DISABLED"))
 
-  const parsed = readRequest(input)
-  if (!parsed.ok) return refusal(parsed.failure)
+  const message = readMessage(input)
+  if (!message.ok) return refusal(message.failure)
+  const target = readText(input, "to")
 
   let view: RosterView
   try {
@@ -45,11 +50,11 @@ export async function sendAction(deps: SendDeps, call: ToolCall, input: unknown)
     return refusal(failure("E_NOT_CONNECTED", describeError(error)))
   }
 
-  const resolution = resolvePeer(parsed.request.target, view.peers, call.sessionID)
+  const resolution = resolvePeer(target, view.peers, call.sessionID)
   if (resolution.kind === "self") return refusal(failure("E_SELF_TARGET"))
-  if (resolution.kind === "not-found") return refusal(failure("E_TARGET_NOT_FOUND", parsed.request.target))
+  if (resolution.kind === "not-found") return refusal(failure("E_TARGET_NOT_FOUND", target))
   if (resolution.kind === "ambiguous") {
-    return refusal(failure("E_TARGET_AMBIGUOUS", parsed.request.target), {
+    return refusal(failure("E_TARGET_AMBIGUOUS", target), {
       candidates: resolution.candidates.map((peer) => peer.sessionID),
     })
   }
@@ -58,106 +63,35 @@ export async function sendAction(deps: SendDeps, call: ToolCall, input: unknown)
   // The same check catches a target that names the caller by title or prefix.
   if (peer.sessionID === call.sessionID) return refusal(failure("E_SELF_TARGET"))
 
-  // The recipient declared what it accepts on its own roster record; this
-  // instance is only the messenger. `send` is never part of an ask/reply
-  // exchange, so the exchange flag is false until the ask action exists.
-  const admission = admitInbound({ declared: peer.inboundTrigger, exchange: false })
-  if (!admission.ok) {
-    return refusal(failure(admission.code, parsed.request.target), { sessionID: peer.sessionID })
-  }
-
-  // The roster is everything this instance knows about the target; a status it
-  // never saw counts as "not idle", so a message never starts a turn on a guess.
-  const delivery = deliveryFor({ recipientIdle: peer.status === "idle", policy: deps.config.inbound })
-  const body = inboundMessage({
-    from: view.self,
-    body: { text: parsed.request.text, attachments: parsed.request.attachments },
-    replyHint: deps.config.replyHint,
-  })
-
+  // A session with an unanswered question of its own does not get to talk to
+  // anyone else: the answer is what this turn owes, and a send to a third
+  // session is how an answer ends up with the wrong peer.
+  let blocked: AskRecord | undefined
   try {
-    await deps.sessions.prompt({ sessionID: peer.sessionID, text: body, delivery })
+    blocked = blockingAsk(await readAsks(deps.storage), call.sessionID, peer.sessionID, Date.now())
   } catch (error) {
-    // The record was still fresh, so the session went away between the roster
-    // read and the delivery. Reporting it is the point: a dropped message the
-    // sender believes was delivered is worse than a failure.
-    return refusal(failure("E_DELIVERY_FAILED", parsed.request.target), {
+    return refusal(failure("E_NOT_CONNECTED", describeError(error)))
+  }
+  if (blocked !== undefined) {
+    return refusal(failure("E_ASK_UNANSWERED", blocked.askerTitle), {
       sessionID: peer.sessionID,
-      hostError: describeError(error),
+      askID: blocked.askID,
+      askerSessionID: blocked.askerSessionID,
     })
   }
 
+  const attempt = await deliverTo(deps, {
+    from: view.self,
+    to: peer,
+    body: { text: message.value.message, attachments: message.value.attachments },
+    exchange: false,
+    replyHint: deps.config.replyHint,
+    detail: target,
+  })
+  if (attempt.kind === "refused") return attempt.refusal
+
   return {
     text: `Message sent to ${peer.title}`,
-    details: { delivered: true, delivery, ...peerDetails(peer, call.sessionID) },
-  }
-}
-
-interface SendRequest {
-  readonly target: string
-  readonly text: string
-  readonly attachments: readonly Attachment[]
-}
-
-type ParsedRequest = { ok: true; request: SendRequest } | { ok: false; failure: Failure }
-
-/** The tool's input as plain data; `undefined` here means the model left it out. */
-function readRequest(input: unknown): ParsedRequest {
-  const fields = typeof input === "object" && input !== null ? (input as Record<string, unknown>) : {}
-  const attachments = readAttachments(fields["attachments"])
-  if (attachments === undefined) return { ok: false, failure: failure("E_ATTACHMENT_INVALID") }
-
-  const request: SendRequest = {
-    target: readString(fields["to"]).trim(),
-    text: readString(fields["message"]).trim(),
-    attachments,
-  }
-  if (request.text.length === 0 && request.attachments.length === 0) {
-    return { ok: false, failure: failure("E_MESSAGE_EMPTY") }
-  }
-  return { ok: true, request }
-}
-
-function readString(value: unknown): string {
-  return typeof value === "string" ? value : ""
-}
-
-/** `undefined` means malformed, which is not the same as absent. */
-function readAttachments(value: unknown): Attachment[] | undefined {
-  if (value === undefined) return []
-  if (!Array.isArray(value)) return undefined
-
-  const attachments: Attachment[] = []
-  for (const entry of value) {
-    const attachment = readAttachment(entry)
-    if (attachment === undefined) return undefined
-    attachments.push(attachment)
-  }
-  return attachments
-}
-
-function readAttachment(value: unknown): Attachment | undefined {
-  if (typeof value !== "object" || value === null) return undefined
-  const { type, name, content, language } = value as Record<string, unknown>
-
-  if (type !== "file" && type !== "snippet" && type !== "context") return undefined
-  if (typeof name !== "string" || name.trim().length === 0) return undefined
-  if (typeof content !== "string") return undefined
-  if (language !== undefined && typeof language !== "string") return undefined
-
-  return language === undefined ? { type, name, content } : { type, name, content, language }
-}
-
-/** A refusal the model reads as text, with the code kept for the result details. */
-function refusal(f: Failure, extra: Readonly<Record<string, unknown>> = {}): ActionResult {
-  return {
-    text: f.reason,
-    details: {
-      delivered: false,
-      code: f.code,
-      reason: f.reason,
-      retryable: f.retryable,
-      ...extra,
-    },
+    details: { delivered: true, delivery: attempt.delivery, ...peerDetails(peer, call.sessionID) },
   }
 }

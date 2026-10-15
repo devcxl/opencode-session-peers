@@ -74,7 +74,17 @@ export interface Peer {
   updatedAt: number
 }
 
-/** An outstanding ask, published so a reply can find its way back to its asker. */
+/**
+ * An outstanding ask, published so a reply can find its way back to its asker.
+ *
+ * The asker carries a display name of its own on the record: the instance that
+ * serves the answer reads only this record, never the asker's roster row, so
+ * everything the answer needs to be routed and rendered travels here.
+ *
+ * `expiresAt` is when the asker stops waiting, not when the record is deleted:
+ * the record outlives the wait so that an answer arriving later can be
+ * delivered as an ordinary message instead of being dropped.
+ */
 export interface AskRecord {
   askID: string
   askerSessionID: SessionID
@@ -86,9 +96,12 @@ export interface AskRecord {
   expiresAt: number
 }
 
-export interface ReplyBody {
+/** The answer to one ask, written where the blocked asker polls for it. */
+export interface ReplyRecord {
   askID: string
+  /** The session that answered; the asker renders its title. */
   fromSessionID: SessionID
+  fromTitle: string
   text: string
   attachments?: readonly Attachment[]
 }

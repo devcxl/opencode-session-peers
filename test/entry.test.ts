@@ -33,18 +33,21 @@ describe("the plugin definition", () => {
   test("peers takes an action enum and nothing else, and names its actions in prose", async () => {
     const host = await loaded()
     const tool = host.tools[0]
+    const actions = ["list", "list-cwd", "send", "ask", "reply", "pending", "cancel", "status"]
     expect(tool?.input).toMatchObject({
       type: "object",
       additionalProperties: false,
       required: ["action"],
-      properties: { action: { type: "string", enum: ["list", "list-cwd", "send", "status"] } },
+      properties: { action: { type: "string", enum: actions } },
     })
-    for (const action of ["list", "list-cwd", "send", "status"]) expect(tool?.description).toContain(action)
+    for (const action of actions) expect(tool?.description).toContain(action)
   })
 
   test("an action the tool does not have is refused, not answered", async () => {
     const host = await loaded()
-    await expect(host.call("peers", { action: "ask" })).rejects.toThrowError("Unknown peers action: ask")
+    await expect(host.call("peers", { action: "handover" })).rejects.toThrowError(
+      "Unknown peers action: handover",
+    )
   })
 })
 

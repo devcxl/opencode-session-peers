@@ -26,6 +26,22 @@ export type ErrorCode =
   | "E_ASK_IN_FLIGHT"
   | "E_MUTUAL_ASK"
   | "E_NO_PENDING_ASK"
+  | "E_REPLY_AMBIGUOUS"
+  | "E_ASK_UNANSWERED"
+  | "E_NO_ASK_TO_CANCEL"
+
+/**
+ * How a blocked ask stopped waiting without an answer.
+ *
+ * Not an `ErrorCode`: nothing was refused and nothing failed to be delivered —
+ * the question reached the recipient and stayed answerable.
+ */
+export type AskStopCode = "E_ASK_TIMEOUT" | "E_ASK_INTERRUPTED"
+
+export interface AskStop {
+  readonly code: AskStopCode
+  readonly reason: string
+}
 
 export interface Failure {
   delivered: false
@@ -84,7 +100,62 @@ function reasonFor(code: ErrorCode, detail: string): string {
       return `"${detail}" has an open question to you. Answer it with "reply" before asking one of your own.`
     case "E_NO_PENDING_ASK":
       return "No pending ask matches that reply."
+    case "E_REPLY_AMBIGUOUS":
+      return `More than one peer is waiting for a reply: ${detail}. Name the one you are answering with "to", or its question with "replyTo".`
+    // The original kept this rule inside a turn it knew was answering an ask;
+    // this host reports no turn context, so the plugin refuses any send from a
+    // session whose inbox holds an unanswered ask (see `docs/research/ask-reply-handshake.md`).
+    case "E_ASK_UNANSWERED":
+      return `This session has an unanswered question from ${quote(detail)}. Answer it with "reply" before sending to another peer.`
+    case "E_NO_ASK_TO_CANCEL":
+      return detail.length > 0
+        ? `No question with id "${detail}" is outstanding for this session.`
+        : "This session has no question waiting for an answer."
   }
+}
+
+/**
+ * The ported timeout text (pi-intercom v0.17.0 `index.ts:777-780`), including
+ * its duration rule: whole minutes are spelled as minutes, anything else in
+ * milliseconds, because the timeout is configurable.
+ *
+ * "This waiter timeout is not cancellation" is the load-bearing sentence: the
+ * question stays in the recipient's hands, so an answer arriving afterwards is
+ * still delivered — as an ordinary message, since nobody is waiting for it.
+ */
+export function askTimeout(input: {
+  readonly target: string
+  readonly askID: string
+  readonly timeoutMs: number
+  readonly delivery: Delivery
+}): AskStop {
+  const minutes = input.timeoutMs / 60_000
+  const within =
+    input.timeoutMs % 60_000 === 0
+      ? `${minutes} ${minutes === 1 ? "minute" : "minutes"}`
+      : `${input.timeoutMs}ms`
+  return {
+    code: "E_ASK_TIMEOUT",
+    reason:
+      `No reply from ${quote(input.target)} for message ${input.askID} within ${within}. ` +
+      `Last known delivery state: ${input.delivery}. ` +
+      `This waiter timeout is not cancellation; the delivered message may still be queued or actionable in the recipient session.`,
+  }
+}
+
+/** What the model reads when the turn waiting for an answer was interrupted. */
+export function askInterrupted(input: { readonly target: string; readonly askID: string }): AskStop {
+  return {
+    code: "E_ASK_INTERRUPTED",
+    reason:
+      `Waiting for a reply from ${quote(input.target)} for message ${input.askID} was interrupted. ` +
+      `The question was delivered; an answer that arrives later will arrive as an ordinary message.`,
+  }
+}
+
+/** A session title inside the texts above, quoted so a title with a quote cannot break them. */
+function quote(value: string): string {
+  return JSON.stringify(value)
 }
 
 /**
