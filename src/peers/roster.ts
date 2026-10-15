@@ -48,7 +48,12 @@ export interface Roster {
   publish(sessionID: SessionID): Promise<Peer>
   /** Every live peer in this instance's scope, this instance's sessions included. */
   live(): Promise<readonly Peer[]>
-  /** Stops the heartbeat and the event subscription, and removes this instance's records. */
+  /**
+   * Stops the heartbeat and the event subscription. The records this instance
+   * published are deliberately left behind: the successor that serves this
+   * location adopts them, which is the only way a session that is idle across a
+   * reload stays visible. What no successor adopts, the sweep reclaims.
+   */
   dispose(): Promise<void>
 }
 
@@ -138,18 +143,12 @@ class LiveRoster implements Roster {
     this.disposed = true
     clearInterval(this.heartbeat)
     this.index.close()
-
-    for (const sessionID of [...this.served.keys()]) {
-      try {
-        // Remove the row only while this instance still owns it: the same
-        // session may since have been published by the instance that reloaded
-        // this one, and that record is the live one.
-        const record = await this.deps.storage.peers.read(sessionID)
-        if (record?.instanceID === this.instanceID) await this.deps.storage.peers.remove(sessionID)
-      } catch (error) {
-        this.deps.warn(`could not withdraw ${sessionID} from the roster: ${describeError(error)}`)
-      }
-    }
+    // The records stay. Withdrawing them would take each idle session in this
+    // location off the roster until it happened to run something, because the
+    // successor's seed can only adopt records that still exist — and an
+    // instance has no way to enumerate the sessions it serves. Left in place,
+    // they age out of every reader's view at the TTL and are re-published by
+    // whoever takes over, or reclaimed by the sweep if nobody does.
     this.served.clear()
   }
 
