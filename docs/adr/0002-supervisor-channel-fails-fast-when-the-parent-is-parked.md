@@ -20,3 +20,21 @@ spawn the child with `background: true`.
 Consequences: no structured-interview action in v1; the parked-detection reads the parent's message
 context and must be re-verified against host upgrades; a child whose parent used the default foreground
 spawn receives an immediate explanatory failure instead of a ten-minute timeout.
+
+## Amendment (2026-10-15): the parked signal the host actually exposes
+
+Measured on opencode 2.0.29 while implementing #8 (`docs/research/parked-parent-signal.md`): the
+assumption above — that the parent's running tool call can be attributed to *this* child — does not hold.
+A running `subagent` part carries no `input.sessionID` (a new spawn is never given one) and its
+`metadata` stays empty until the call returns, by which time the child can no longer ask. A probe keyed
+on that attribution stalled for the full ask timeout in a foreground scenario, and the question only
+reached the parent after the subagent call had already returned.
+
+The rule implemented instead reads what the host does expose: **the parent has a `subagent` call in its
+transcript whose status is `running`**. That deliberately over-covers — a parent parked on a *sibling*
+child cannot drain its inbox either, so the same refusal is correct there — and it fails in the safe
+direction: it may refuse an ask while the parent is parked on someone else, it never lets the deadlock
+through. The refusal text was reworded to match, and no longer claims that the parent is waiting for the
+caller specifically. A parent whose transcript cannot be read is treated as unknown and asked anyway; a
+target that is not the caller's parent costs no host read at all. Residual risks: a stale `running` part
+after a server restart mid-call, and the ~34 ms window of a `background: true` call.
