@@ -1,7 +1,8 @@
 # Development plan
 
-Status: awaiting approval. No implementation code exists yet; this document plus the ADRs are the
-design. Vocabulary lives in `CONTEXT.md`; the facts it rests on live in `docs/research/`.
+Status: implemented. Tickets #2–#8 are merged and CI-verified (see the issue tracker); what remains is
+publish readiness (#9). This document is the design of record; where a measurement contradicted it, the
+measurement won and the ADR carries an amendment — reconcile the two before trusting a paragraph here.
 
 ## What we are building
 
@@ -70,9 +71,11 @@ boundary cannot rot silently.
    message. Admission rules from the original are kept: one pending ask per session, mutual asks
    refused, and inside a turn triggered by an inbound ask a non-reply message to a third session is
    refused.
-4. **Parked detection.** Before asking a session that is the caller's own parent, inspect the parent's
-   context: if its running tool call is the subagent call for this session, the parent cannot answer —
-   fail fast with guidance (ADR-0002).
+4. **Parked detection.** Before asking a session that is the caller's own parent, read the parent's
+   transcript: if it holds a `subagent` call whose status is `running`, the parent cannot drain its inbox
+   and the ask is refused with guidance. Measured on 2.0.29, the host does **not** attribute a running
+   subagent call to the child it spawned, so the rule deliberately over-covers rather than deadlock —
+   see ADR-0002 and its amendment.
 5. **Handover.** `ctx.session.generate` with the original's fixed sections, plus a header carrying
    sender, cwd and git branch.
 6. **Configuration.** `inboundTrigger`, busy delivery, reply hint, scope id, ask timeout — all plugin
