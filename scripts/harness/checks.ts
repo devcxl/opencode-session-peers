@@ -48,9 +48,9 @@ export function checkAuth(options: HarnessOptions, expectations: Expectation[]):
       name: "auth-available",
       met: false,
       expected,
-      observed: `${source} does not exist; run with --no-model for structural checks`,
+      observed: `${source} does not exist; run without --model for the structural pass`,
     })
-    throw new Error(`${source} does not exist (run with --no-model for structural checks)`)
+    throw new Error(`${source} does not exist (run without --model for the structural pass)`)
   }
   expectations.push({
     name: "auth-available",

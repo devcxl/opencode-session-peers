@@ -120,8 +120,13 @@ export function renderReport(report: HarnessReport): string {
   )
   lines.push("")
 
-  lines.push(`model     requested: ${report.model.requested ?? "(instance default)"}`)
-  if (report.model.used.length > 0) lines.push(`          used: ${report.model.used.join(", ")}`)
+  if (report.mode === "structural") {
+    lines.push("model     not driven (structural pass; pass --model to drive the turns)")
+  } else {
+    lines.push(`model     requested: ${report.model.requested ?? "(the instance's own choice)"}`)
+    lines.push("          turns depend on the host's model backend serving a fresh instance")
+    if (report.model.used.length > 0) lines.push(`          used: ${report.model.used.join(", ")}`)
+  }
   lines.push("")
 
   lines.push(`sessions  ${report.sessions.length}`)

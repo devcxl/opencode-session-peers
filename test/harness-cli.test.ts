@@ -21,6 +21,7 @@ describe("harness exit contract", () => {
     const result = harness(["--help"])
     expect(result.status).toBe(0)
     expect(result.stdout).toContain("Usage: bun run harness [options]")
+    expect(result.stdout).toContain("--no-model                The structural pass, stated explicitly (the default)")
   })
 
   test("a usage error exits two and explains itself", () => {
@@ -30,7 +31,8 @@ describe("harness exit contract", () => {
   })
 
   test("an unmet expectation exits non-zero and the report names it", () => {
-    const result = harness(["--plugin", join(REPO_ROOT, "does-not-exist"), "--no-model", "--json"])
+    // No mode flag: the default pass is the one that has to answer for this.
+    const result = harness(["--plugin", join(REPO_ROOT, "does-not-exist"), "--json"])
     expect(result.status).toBe(1)
     const report = JSON.parse(result.stdout) as {
       ok: boolean

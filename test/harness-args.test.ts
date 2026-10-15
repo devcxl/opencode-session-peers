@@ -11,11 +11,11 @@ import { REPO_ROOT, defaultScratchRoot } from "../scripts/harness/paths.ts"
 const CWD = "/tmp/harness-cwd"
 
 describe("harness arguments", () => {
-  test("defaults: this repository, model-driven, scratch under the tmp dir", () => {
+  test("defaults: this repository, the structural pass, scratch under the tmp dir", () => {
     const options = parseArgs([], CWD)
     expect(options.pluginPath).toBe(REPO_ROOT)
     expect(options.model).toBeUndefined()
-    expect(options.driveModel).toBe(true)
+    expect(options.driveModel).toBe(false)
     expect(options.turnTimeoutMs).toBeGreaterThan(0)
     expect(options.bootTimeoutMs).toBeGreaterThan(0)
     expect(options.scratchRoot).toBe(defaultScratchRoot())
@@ -28,11 +28,10 @@ describe("harness arguments", () => {
     expect(parseArgs(["--plugin", "/abs/plugin"], CWD).pluginPath).toBe("/abs/plugin")
   })
 
-  test("--model splits provider and model id, keeping later slashes", () => {
-    expect(parseArgs(["--model", "half-cabbage/deepseek-v4.1-flash"], CWD).model).toEqual({
-      providerID: "half-cabbage",
-      id: "deepseek-v4.1-flash",
-    })
+  test("--model splits provider and model id, keeping later slashes, and opts into driving", () => {
+    const options = parseArgs(["--model", "half-cabbage/deepseek-v4.1-flash"], CWD)
+    expect(options.model).toEqual({ providerID: "half-cabbage", id: "deepseek-v4.1-flash" })
+    expect(options.driveModel).toBe(true)
     expect(parseArgs(["--model", "opencode/vendor/name"], CWD).model).toEqual({
       providerID: "opencode",
       id: "vendor/name",
@@ -40,7 +39,7 @@ describe("harness arguments", () => {
     expect(modelLabel({ providerID: "openai", id: "gpt-6-luna" })).toBe("openai/gpt-6-luna")
   })
 
-  test("--no-model switches to structural mode", () => {
+  test("--no-model states the structural pass, which is the default", () => {
     const options = parseArgs(["--no-model"], CWD)
     expect(options.driveModel).toBe(false)
     expect(options.model).toBeUndefined()

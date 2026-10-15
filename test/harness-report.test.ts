@@ -138,7 +138,19 @@ describe("report rendering", () => {  const text = renderReport(report())
     expect(rendered).toContain("locations: /scratch/project-a, /scratch/project-b")
   })
 
-  test("structural mode and a kept scratch directory read as intended", () => {    const structural = report({
+  test("structural mode says plainly that no turn was driven", () => {
+    const rendered = renderReport(report({ mode: "structural", model: { used: [] } }))
+    expect(rendered).toContain("structural mode")
+    expect(rendered).toContain("model     not driven (structural pass; pass --model to drive the turns)")
+  })
+
+  test("the driven mode says plainly what it depends on", () => {
+    expect(text).toContain("turns depend on the host's model backend serving a fresh instance")
+    expect(text).toContain("used: opencode/free")
+  })
+
+  test("structural mode and a kept scratch directory read as intended", () => {
+    const structural = report({
       mode: "structural",
       cleanup: { ...report().cleanup, scratchRemoved: false, scratchKept: true },
     })

@@ -101,7 +101,9 @@ export async function runHarness(options: HarnessOptions): Promise<HarnessReport
       `started one opencode server process (pid ${instance.pid}) on 127.0.0.1:${instance.port}; it is stopped at teardown`,
     )
     disclosures.push(
-      "the instance fetched its model catalogue over the network; driven turns also called the model provider",
+      options.driveModel
+        ? "the instance fetched its model catalogue over the network; driven turns also called the model provider"
+        : "the instance fetched its model catalogue over the network",
     )
     checkIsolation(instance, liveBefore.url, layout, expectations)
 

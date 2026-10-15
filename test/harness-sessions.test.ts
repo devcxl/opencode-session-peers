@@ -40,6 +40,8 @@ function fakeInstance(initial: readonly FakeSession[], refuse: (sessionID: strin
   const fetchImpl = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url)
     const json = (body: unknown) => new Response(JSON.stringify({ data: body }), { status: 200 })
+
+    if (url.pathname === "/api/model") return json([{ providerID: "fake", id: "model" }])
     const body = init?.body === undefined ? undefined : (JSON.parse(String(init.body)) as Record<string, unknown>)
 
     if (init?.method === "POST" && url.pathname === "/api/session") {
@@ -89,7 +91,7 @@ async function drive(refuse: (sessionID: string) => boolean) {
   const sessions: SessionSummary[] = [summarizeSession("A", sessionInfo(underTest))]
   const expectations: Expectation[] = []
   const disclosures: string[] = []
-  const driven = await driveTurns(client, parseArgs(["--no-model"]), sessions, expectations, disclosures).then(
+  const driven = await driveTurns(client, parseArgs(["--model", "fake/model"]), sessions, expectations, disclosures).then(
     (value) => value,
     (error: Error) => error,
   )

@@ -47,10 +47,6 @@ export function prepareScratch(layout: ScratchLayout, contents: ScratchContents)
   }
 }
 
-export function credentialsPath(layout: ScratchLayout): string {
-  return layout.authFile
-}
-
 /**
  * The environment the instance runs in.
  *
@@ -95,8 +91,6 @@ export interface InstanceHandle {
   url: string
   password: string
   layout: ScratchLayout
-  /** True when the instance answered an authenticated request. */
-  databaseCreated: boolean
   log(): string
   stop(): Promise<StopOutcome>
 }
@@ -141,7 +135,6 @@ export async function startInstance(options: StartOptions): Promise<InstanceHand
     url,
     password,
     layout,
-    databaseCreated: false,
     log: () => readLog(layout.serverLog),
     stop: () => stopProcess(pid, port),
   }
@@ -158,7 +151,7 @@ export async function startInstance(options: StartOptions): Promise<InstanceHand
     const reason = error instanceof Error ? error.message : String(error)
     throw new Error(`${reason}; the instance process was stopped (${stopped.observed})`, { cause: error })
   }
-  return { ...handle, databaseCreated: true }
+  return handle
 }
 
 interface BootWait {
