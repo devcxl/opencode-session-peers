@@ -14,6 +14,14 @@ import type { SessionID } from "../domain/types.ts"
 /** What the plugin knows about a session it addresses. */
 export interface SessionRecord {
   readonly id: SessionID
+  /** Session title; peers address each other by it. Absent until the host names the session. */
+  readonly title?: string
+  /** The directory this session works in; one plugin instance serves one directory. */
+  readonly directory: string
+  readonly projectID: string
+  readonly parentID?: SessionID
+  /** The model id the session runs, if one is selected. */
+  readonly modelID?: string
 }
 
 export interface SessionLookup {
@@ -25,7 +33,15 @@ export function sessionLookup(session: Pick<Plugin.Context["session"], "get">): 
   return {
     async get(sessionID) {
       const record = await session.get({ sessionID })
-      return { id: record.id }
+      const title = record.title?.trim()
+      return {
+        id: record.id,
+        title: title !== undefined && title.length > 0 ? title : undefined,
+        directory: record.location.directory,
+        projectID: record.projectID,
+        parentID: record.parentID,
+        modelID: record.model?.id,
+      }
     },
   }
 }

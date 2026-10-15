@@ -8,17 +8,22 @@
  * one enum member and one case each.
  */
 
+import { listCwdAction } from "./actions/list-cwd.ts"
+import { listAction } from "./actions/list.ts"
 import { statusAction } from "./actions/status.ts"
 import type { Config } from "./config.ts"
 import type { SessionLookup } from "./host/session.ts"
 import type { ToolSpec } from "./host/tools.ts"
+import type { Roster } from "./peers/roster.ts"
 
 export const PEERS_TOOL_NAME = "peers"
 
 const PEERS_TOOL_DESCRIPTION =
-  `Report the state of the session-peers bridge between opencode sessions on this machine. ` +
-  `Use "status" to check that this session is connected before trying to reach a peer. ` +
-  `Actions: "status" — this session's id, its scope, and whether the host is answering.`
+  `Find the other opencode sessions on this machine and check that this one is reachable. ` +
+  `Use "list" before addressing a peer, so the target is one this session actually saw. ` +
+  `Actions: "list" — every live peer in this session's scope, this session first; ` +
+  `"list-cwd" — only the peers working in this session's directory; ` +
+  `"status" — this session's id, its scope, and whether the host is answering.`
 
 const PEERS_TOOL_INPUT = {
   type: "object",
@@ -26,8 +31,10 @@ const PEERS_TOOL_INPUT = {
   properties: {
     action: {
       type: "string",
-      enum: ["status"],
-      description: `Action to run. "status" reports this session's id and the plugin's connectivity.`,
+      enum: ["list", "list-cwd", "status"],
+      description:
+        `Action to run: "list" every live peer in scope, "list-cwd" the peers in this ` +
+        `session's directory, "status" this session's id and connectivity.`,
     },
   },
   required: ["action"],
@@ -36,6 +43,8 @@ const PEERS_TOOL_INPUT = {
 export interface PeersToolDeps {
   readonly config: Config
   readonly sessions: SessionLookup
+  /** Absent exactly when the plugin is disabled: a disabled instance publishes nothing. */
+  readonly roster?: Roster
 }
 
 export function peersTool(deps: PeersToolDeps): ToolSpec {
@@ -47,6 +56,10 @@ export function peersTool(deps: PeersToolDeps): ToolSpec {
       // The schema requires an action, so anything else is a caller bug.
       const action = readAction(input)
       switch (action) {
+        case "list":
+          return listAction(deps, call)
+        case "list-cwd":
+          return listCwdAction(deps, call)
         case "status":
           return statusAction(deps, call)
         default:

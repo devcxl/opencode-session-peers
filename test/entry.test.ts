@@ -9,6 +9,7 @@
 import { describe, expect, test } from "bun:test"
 
 import plugin from "../src/index.ts"
+import { toolRegistrar } from "../src/host/tools.ts"
 import { CALLER_SESSION_ID, fakeHost, type FakeHostOptions } from "./fake-host.ts"
 
 /** Load the plugin into a fake host, the way the host would. */
@@ -29,16 +30,16 @@ describe("the plugin definition", () => {
     expect(host.tools[0]?.options).toEqual({ codemode: false })
   })
 
-  test("peers takes an action enum and nothing else, and names its action in prose", async () => {
+  test("peers takes an action enum and nothing else, and names its actions in prose", async () => {
     const host = await loaded()
     const tool = host.tools[0]
     expect(tool?.input).toMatchObject({
       type: "object",
       additionalProperties: false,
       required: ["action"],
-      properties: { action: { type: "string", enum: ["status"] } },
+      properties: { action: { type: "string", enum: ["list", "list-cwd", "status"] } },
     })
-    expect(tool?.description).toContain("status")
+    for (const action of ["list", "list-cwd", "status"]) expect(tool?.description).toContain(action)
   })
 
   test("an action the tool does not have is refused, not answered", async () => {
@@ -94,6 +95,43 @@ describe("status", () => {
     const result = await host.call("peers", { action: "status" })
     expect(result.text).toContain("Scope: team-a")
     expect(result.details).toMatchObject({ scope: "team-a" })
+  })
+})
+
+describe("tool results", () => {
+  test("an undefined field in the details is dropped, not fatal", async () => {
+    // Measured host behaviour: opencode never delivers a tool result whose
+    // metadata holds `undefined` (docs/research/tool-result-metadata-undefined.md),
+    // so the adapter removes it before the host ever sees it — including from
+    // arrays and from nested objects.
+    const host = fakeHost()
+    await toolRegistrar(host.context.tool).register({
+      name: "probe",
+      description: "A tool that hands back absent fields.",
+      input: { type: "object", properties: {}, additionalProperties: false },
+      handle: async () => ({
+        text: "probe ran",
+        details: {
+          present: 1,
+          absent: undefined,
+          nested: { deep: undefined, kept: "yes" },
+          list: [1, undefined, { gone: undefined, kept: 2 }],
+        },
+      }),
+    })
+
+    const result = await host.call("probe", {})
+    expect(result.text).toBe("probe ran")
+    expect(result.details).toEqual({
+      present: 1,
+      nested: { kept: "yes" },
+      list: [1, null, { kept: 2 }],
+    })
+    expect(Object.keys(result.details as Record<string, unknown>).sort()).toEqual([
+      "list",
+      "nested",
+      "present",
+    ])
   })
 })
 

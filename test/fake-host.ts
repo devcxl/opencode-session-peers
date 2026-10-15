@@ -2,13 +2,24 @@
  * A fake opencode plugin context.
  *
  * `Plugin.Context` is a large, branded surface; the plugin's entry point reads
- * three of its members. The fake implements exactly those, so a test can call
- * `setup` and then invoke the registered tool the way the host would, and see
- * what the plugin asked for. The assertions live in `entry.test.ts`; this file
- * knows nothing about the plugin's internals.
+ * six of its members. The fake implements exactly those, so a test can call
+ * `setup`, drive the registered tool the way the host would, emit events into
+ * the subscription, and inspect the storage the plugin wrote.
+ *
+ * Two fakes can share one `FakeStorage`, which is how the tests stand in for two
+ * locations of one machine: the host's storage is shared per plugin id, while
+ * everything else is per instance.
+ *
+ * It also pins the one host quirk this build ran into: a tool result whose
+ * metadata holds an `undefined` value is never delivered (see `rejectUndefined`).
+ *
+ * The assertions live in the tests; this file knows nothing about the plugin's
+ * internals.
  */
 
 import type { Plugin } from "@opencode/plugin"
+
+import type { HostEvent } from "../src/host/events.ts"
 
 /** The session a tool call comes from, unless a test says otherwise. */
 export const CALLER_SESSION_ID = "ses_fake_caller"
@@ -19,11 +30,78 @@ type ToolInfo = Parameters<ToolEditor["add"]>[0]
 type ToolCall = Parameters<ToolInfo["execute"]>[1]
 type ToolResult = Awaited<ReturnType<ToolInfo["execute"]>>
 
+/** A session as the fake host knows it. Everything else has a default. */
+export interface FakeSession {
+  readonly id: string
+  readonly title?: string
+  /** Defaults to this host's location: sessions live where their instance does. */
+  readonly directory?: string
+  readonly parentID?: string
+  readonly model?: string
+}
+
+export interface FakeScanOptions {
+  readonly prefix: string
+  readonly after?: string
+  readonly limit?: number
+}
+
+export interface FakeStorage {
+  readonly get: (key: string) => Promise<unknown>
+  readonly set: (key: string, value: unknown) => Promise<void>
+  readonly remove: (key: string) => Promise<void>
+  readonly scan: (options: FakeScanOptions) => Promise<{
+    readonly entries: readonly { readonly key: string; readonly value: unknown }[]
+    readonly next?: string
+  }>
+  /** Every stored value, in key order: what the plugin asked the host to keep. */
+  values(): readonly unknown[]
+}
+
+/** One scan page. The real host may page; the fake always does, so nothing can rely on a single page. */
+const SCAN_PAGE = 2
+
+export function fakeStorage(): FakeStorage {
+  const entries = new Map<string, unknown>()
+
+  return {
+    async get(key) {
+      return entries.get(key)
+    },
+    async set(key, value) {
+      entries.set(key, value)
+    },
+    async remove(key) {
+      entries.delete(key)
+    },
+    async scan(options) {
+      const matching = [...entries.keys()]
+        .filter((key) => key.startsWith(options.prefix) && (options.after === undefined || key > options.after))
+        .sort()
+      const page = matching.slice(0, options.limit ?? SCAN_PAGE)
+      const next = matching.length > page.length ? page[page.length - 1] : undefined
+      return {
+        entries: page.map((key) => ({ key, value: entries.get(key) })),
+        ...(next === undefined ? {} : { next }),
+      }
+    },
+    values() {
+      return [...entries.keys()].sort().map((key) => entries.get(key))
+    },
+  }
+}
+
 export interface FakeHostOptions {
   /** Raw plugin options, as the host would pass them. */
   readonly options?: unknown
+  /** The directory this instance was loaded for. */
+  readonly location?: string
   /** Sessions this fake host knows; a lookup for anything else fails as the host's does. */
-  readonly sessions?: readonly string[]
+  readonly sessions?: readonly (string | FakeSession)[]
+  /** Shared namespace; pass the same storage to two hosts to make them one machine. */
+  readonly storage?: FakeStorage
+  /** The session tool calls come from, unless a call names another. */
+  readonly caller?: string
 }
 
 export interface FakeHost {
@@ -33,14 +111,33 @@ export interface FakeHost {
   readonly lookups: readonly string[]
   /** Tools the plugin registered, in order. */
   readonly tools: readonly ToolInfo[]
+  /** The storage the plugin wrote to; the same object the host was given. */
+  readonly storage: FakeStorage
+  /** Delivers an event to the plugin's subscription, as the host would. */
+  emit(type: string, data: Readonly<Record<string, unknown>>): void
+  /** Live event subscriptions; zero once the plugin has unsubscribed. */
+  subscribers(): number
   /** Invoke a registered tool, and report what the model would receive. */
-  call(name: string, input: unknown): Promise<{ readonly text: string; readonly details: unknown }>
+  call(
+    name: string,
+    input: unknown,
+    sessionID?: string,
+  ): Promise<{ readonly text: string; readonly details: unknown }>
 }
 
 export function fakeHost(options: FakeHostOptions = {}): FakeHost {
-  const known = new Set(options.sessions ?? [CALLER_SESSION_ID])
+  const location = options.location ?? "/tmp/opencode/fake"
+  const caller = options.caller ?? CALLER_SESSION_ID
+  const storage = options.storage ?? fakeStorage()
+  const known = new Map(
+    (options.sessions ?? [caller]).map((session) =>
+      typeof session === "string" ? [session, {} as Partial<FakeSession>] : [session.id, session],
+    ),
+  )
   const lookups: string[] = []
   const tools: ToolInfo[] = []
+  const subscriptions = new Set<FakeSubscription>()
+  let eventCounter = 0
 
   const editor: ToolEditor = {
     list: () => [],
@@ -55,15 +152,34 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
 
   const context = {
     options: options.options ?? {},
+    location: { directory: location, project: { id: "proj_fake" } },
     session: {
       get: async (input: { readonly sessionID: string }) => {
         lookups.push(input.sessionID)
-        if (!known.has(input.sessionID)) throw new Error("Session.NotFoundError")
+        const session = known.get(input.sessionID)
+        if (session === undefined) throw new Error("Session.NotFoundError")
         return {
           id: input.sessionID,
-          title: "fake session",
-          location: { directory: "/tmp/opencode/fake" },
+          title: session.title ?? "fake session",
+          projectID: "proj_fake",
+          location: { directory: session.directory ?? location },
+          ...(session.parentID === undefined ? {} : { parentID: session.parentID }),
+          ...(session.model === undefined ? {} : { model: { id: session.model, providerID: "fake" } }),
         }
+      },
+    },
+    storage,
+    event: {
+      subscribe: (subscribeOptions: { readonly signal?: AbortSignal }) => {
+        const subscription = new FakeSubscription()
+        subscriptions.add(subscription)
+        const onAbort = () => {
+          subscriptions.delete(subscription)
+          subscription.close()
+        }
+        if (subscribeOptions.signal?.aborted === true) onAbort()
+        else subscribeOptions.signal?.addEventListener("abort", onAbort, { once: true })
+        return subscription
       },
     },
     tool: {
@@ -80,19 +196,76 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
     context: context as unknown as Plugin.Context,
     lookups,
     tools,
-    async call(name, input) {
+    storage,
+    emit(type, data) {
+      eventCounter += 1
+      const event = { id: `evt_fake_${eventCounter}`, created: Date.now(), type, data }
+      for (const subscription of [...subscriptions]) subscription.push(event as unknown as HostEvent)
+    },
+    subscribers: () => subscriptions.size,
+    async call(name, input, sessionID = caller) {
       const tool = tools.find((candidate) => candidate.name === name)
       if (tool === undefined) throw new Error(`No tool named "${name}" is registered`)
-      const result = await tool.execute(input, toolCall())
+      const result = await tool.execute(input, toolCall(sessionID))
+      rejectUndefined(result.metadata, "metadata")
       return { text: textOf(result), details: result.metadata }
     },
   }
 }
 
+/**
+ * opencode 2.0.29 never delivers a tool result whose metadata holds an
+ * `undefined` value: the call stays running and the model sees no output. The
+ * fake refuses one loudly instead, so the belief is pinned where CI can see it.
+ */
+function rejectUndefined(value: unknown, path: string): void {
+  if (value === undefined) throw new Error(`Tool result ${path} is undefined, which the host would drop`)
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => rejectUndefined(item, `${path}[${index}]`))
+    return
+  }
+  if (typeof value === "object" && value !== null) {
+    for (const [key, entry] of Object.entries(value)) rejectUndefined(entry, `${path}.${key}`)
+  }
+}
+
+/** One live subscription: an async iterable the test pushes events into. */
+class FakeSubscription implements AsyncIterable<HostEvent> {
+  private readonly queue: HostEvent[] = []
+  private wake: (() => void) | undefined
+  private closed = false
+
+  push(event: HostEvent): void {
+    this.queue.push(event)
+    this.wake?.()
+  }
+
+  close(): void {
+    this.closed = true
+    this.wake?.()
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<HostEvent> {
+    return this
+  }
+
+  async next(): Promise<IteratorResult<HostEvent>> {
+    for (;;) {
+      const event = this.queue.shift()
+      if (event !== undefined) return { done: false, value: event }
+      if (this.closed) return { done: true, value: undefined }
+      await new Promise<void>((resolve) => {
+        this.wake = resolve
+      })
+      this.wake = undefined
+    }
+  }
+}
+
 /** The host's tool call context; only `sessionID` and `signal` are ours to read. */
-function toolCall(): ToolCall {
+function toolCall(sessionID: string): ToolCall {
   return {
-    sessionID: CALLER_SESSION_ID,
+    sessionID,
     agent: "build",
     messageID: "msg_fake",
     id: "tool_fake",
