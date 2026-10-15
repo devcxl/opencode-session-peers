@@ -9,7 +9,7 @@
 
 import type { Plugin } from "@opencode/plugin"
 
-import type { Delivery, SessionID } from "../domain/types.ts"
+import type { Delivery, SessionID, ToolCallRecord, ToolCallStatus } from "../domain/types.ts"
 
 /** What the plugin knows about a session it addresses. */
 export interface SessionRecord {
@@ -40,10 +40,16 @@ export interface SessionLookup {
    * Rejects when the host does not know the session.
    */
   prompt(request: PromptRequest): Promise<void>
+  /**
+   * Every tool call a session's own transcript shows, oldest first. Rejects when
+   * the host cannot produce the transcript, which the caller must treat as "not
+   * known" rather than as an empty one.
+   */
+  toolCalls(sessionID: SessionID): Promise<readonly ToolCallRecord[]>
 }
 
 export function sessionLookup(
-  session: Pick<Plugin.Context["session"], "get" | "prompt">,
+  session: Pick<Plugin.Context["session"], "context" | "get" | "prompt">,
 ): SessionLookup {
   return {
     async get(sessionID) {
@@ -68,5 +74,34 @@ export function sessionLookup(
         delivery: request.delivery,
       })
     },
+
+    async toolCalls(sessionID) {
+      const messages = await session.context({ sessionID })
+      const calls: ToolCallRecord[] = []
+      for (const message of messages) {
+        if (message.type !== "assistant") continue
+        for (const part of message.content) {
+          if (part.type !== "tool") continue
+          calls.push({ name: part.name, status: toolCallStatus(part.state.status) })
+        }
+      }
+      return calls
+    },
+  }
+}
+
+/**
+ * The host's four statuses, with everything else read as `unknown`. A newer host
+ * inventing a status must not have it mistaken for a running call.
+ */
+function toolCallStatus(status: string): ToolCallStatus {
+  switch (status) {
+    case "streaming":
+    case "running":
+    case "completed":
+    case "error":
+      return status
+    default:
+      return "unknown"
   }
 }

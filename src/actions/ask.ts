@@ -29,6 +29,7 @@ import type { Roster } from "../peers/roster.ts"
 import { readAsks, replyPollMs, waitForReply, type ReplyWait } from "../ask/handshake.ts"
 import { deliverTo, refusal } from "./delivery.ts"
 import { readMessage, readText } from "./input.ts"
+import { probeParent } from "./parked-parent.ts"
 import { readRoster, peerDetails, type RosterView } from "./roster-view.ts"
 
 export interface AskDeps {
@@ -37,6 +38,8 @@ export interface AskDeps {
   readonly storage: PluginStorage
   /** Absent while the plugin is disabled: a disabled instance publishes nothing. */
   readonly roster?: Roster
+  /** Reports what went wrong in a way the caller can see but the ask survives. */
+  readonly warn: (message: string) => void
 }
 
 export async function askAction(deps: AskDeps, call: ToolCall, input: unknown): Promise<ActionResult> {
@@ -70,6 +73,24 @@ export async function askAction(deps: AskDeps, call: ToolCall, input: unknown): 
   // accepts messages only as replies still admits it.
   const admission = admitInbound({ declared: peer.inboundTrigger, exchange: true })
   if (!admission.ok) return refusal(failure(admission.code, target), { sessionID: peer.sessionID })
+
+  // The supervisor channel (ADR-0002): a parent inside a `subagent` call that
+  // has not returned cannot drain its inbox, so the question would reach it only
+  // after the wait for it had ended. Refuse before anything is written or
+  // delivered, and say what to do with the question instead. A parent whose
+  // transcript cannot be read is asked, not refused.
+  const probe = await probeParent({
+    sessions: deps.sessions,
+    parentID: view.self.parentID,
+    targetID: peer.sessionID,
+    warn: deps.warn,
+  })
+  if (probe.parking === "parked") {
+    return refusal(failure("E_TARGET_UNREACHABLE", peer.title), {
+      sessionID: peer.sessionID,
+      parentProbe: probe.parking,
+    })
+  }
 
   const now = Date.now()
   let asks: readonly AskRecord[]
