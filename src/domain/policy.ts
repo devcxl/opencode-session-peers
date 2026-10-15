@@ -9,11 +9,11 @@
  */
 
 import type { ErrorCode } from "./errors.ts"
-import type { Delivery } from "./types.ts"
+import type { Delivery, InboundTrigger } from "./types.ts"
 
 export interface InboundPolicy {
-  /** Which peer messages may start a turn in the recipient. */
-  trigger: "always" | "replies" | "never"
+  /** What this session accepts from peers; published on its roster record. */
+  trigger: InboundTrigger
   /** Delivery to use when the recipient is mid-turn. */
   busyDelivery: Delivery
 }
@@ -22,19 +22,31 @@ export function deliveryFor(input: { recipientIdle: boolean; policy: InboundPoli
   return input.recipientIdle ? "queue" : input.policy.busyDelivery
 }
 
-/** `replies` admits only answers to an ask; `never` keeps peer messages out entirely. */
-export function shouldDeliver(input: { expectsReply: boolean; policy: InboundPolicy }): boolean {
-  switch (input.policy.trigger) {
+export type Admission = { ok: true } | { ok: false; code: ErrorCode }
+
+/**
+ * Whether a peer's *declared* trigger admits one message.
+ *
+ * The declaration travels on the peer's roster record, so the sending instance
+ * decides with the recipient's own policy — there is no receiving-side hook to
+ * ask. A record that carries no declaration fails closed.
+ */
+export function admitInbound(input: {
+  readonly declared: InboundTrigger | undefined
+  /** True for a question waiting for an answer, or for the answer to one. */
+  exchange: boolean
+}): Admission {
+  switch (input.declared) {
     case "always":
-      return true
+      return { ok: true }
     case "replies":
-      return input.expectsReply
+      return input.exchange ? { ok: true } : { ok: false, code: "E_TARGET_REPLIES_ONLY" }
     case "never":
-      return false
+      return { ok: false, code: "E_TARGET_REFUSES" }
+    default:
+      return { ok: false, code: "E_TARGET_POLICY_UNKNOWN" }
   }
 }
-
-export type Admission = { ok: true } | { ok: false; code: ErrorCode }
 
 export function canStartAsk(input: { askInFlight: boolean; targetAskToUs: boolean }): Admission {
   if (input.askInFlight) return { ok: false, code: "E_ASK_IN_FLIGHT" }

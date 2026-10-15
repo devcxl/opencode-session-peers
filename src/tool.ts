@@ -10,6 +10,7 @@
 
 import { listCwdAction } from "./actions/list-cwd.ts"
 import { listAction } from "./actions/list.ts"
+import { sendAction } from "./actions/send.ts"
 import { statusAction } from "./actions/status.ts"
 import type { Config } from "./config.ts"
 import type { SessionLookup } from "./host/session.ts"
@@ -23,6 +24,7 @@ const PEERS_TOOL_DESCRIPTION =
   `Use "list" before addressing a peer, so the target is one this session actually saw. ` +
   `Actions: "list" — every live peer in this session's scope, this session first; ` +
   `"list-cwd" — only the peers working in this session's directory; ` +
+  `"send" — deliver a message to one peer and report whether it was delivered; ` +
   `"status" — this session's id, its scope, and whether the host is answering.`
 
 const PEERS_TOOL_INPUT = {
@@ -31,10 +33,40 @@ const PEERS_TOOL_INPUT = {
   properties: {
     action: {
       type: "string",
-      enum: ["list", "list-cwd", "status"],
+      enum: ["list", "list-cwd", "send", "status"],
       description:
         `Action to run: "list" every live peer in scope, "list-cwd" the peers in this ` +
-        `session's directory, "status" this session's id and connectivity.`,
+        `session's directory, "send" a message to one peer, "status" this session's id ` +
+        `and connectivity.`,
+    },
+    to: {
+      type: "string",
+      description:
+        `Target for "send": a session id, the short id shown in parentheses by "list", ` +
+        `or a session title.`,
+    },
+    message: {
+      type: "string",
+      description: `Text for "send". A message needs text or at least one attachment.`,
+    },
+    attachments: {
+      type: "array",
+      description: `Attachments for "send", delivered inline inside the message body.`,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          type: {
+            type: "string",
+            enum: ["file", "snippet", "context"],
+            description: `What the attachment is: a whole file, an excerpt, or background material.`,
+          },
+          name: { type: "string", description: `What the receiver should call it.` },
+          content: { type: "string", description: `The attachment's text.` },
+          language: { type: "string", description: `Language of "content", for a snippet.` },
+        },
+        required: ["type", "name", "content"],
+      },
     },
   },
   required: ["action"],
@@ -60,6 +92,8 @@ export function peersTool(deps: PeersToolDeps): ToolSpec {
           return listAction(deps, call)
         case "list-cwd":
           return listCwdAction(deps, call)
+        case "send":
+          return sendAction({ config: deps.config, sessions: deps.sessions, roster: deps.roster }, call, input)
         case "status":
           return statusAction(deps, call)
         default:
