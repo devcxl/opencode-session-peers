@@ -8,6 +8,7 @@
  * supersession — are deliberately absent.
  */
 
+import { HANDOVER_MAX_CHARS } from "./handover.ts"
 import type { Delivery } from "./types.ts"
 
 export type ErrorCode =
@@ -29,6 +30,13 @@ export type ErrorCode =
   | "E_REPLY_AMBIGUOUS"
   | "E_ASK_UNANSWERED"
   | "E_NO_ASK_TO_CANCEL"
+  | "E_HANDOVER_NO_GOAL"
+  | "E_HANDOVER_ATTACHMENTS"
+  | "E_HANDOVER_REPLY"
+  | "E_HANDOVER_EMPTY"
+  | "E_HANDOVER_INCOMPLETE"
+  | "E_HANDOVER_TOO_LONG"
+  | "E_HANDOVER_GENERATION_FAILED"
 
 /**
  * How a blocked ask stopped waiting without an answer.
@@ -111,6 +119,27 @@ function reasonFor(code: ErrorCode, detail: string): string {
       return detail.length > 0
         ? `No question with id "${detail}" is outstanding for this session.`
         : "This session has no question waiting for an answer."
+    // The original refused these three shape violations with its own text; the
+    // reader of a refused handover is the model that asked for it, so it is
+    // told which combination is impossible and what to do instead.
+    case "E_HANDOVER_NO_GOAL":
+      return `A handover needs the next task for the receiving session in "message".`
+    case "E_HANDOVER_ATTACHMENTS":
+      return `A handover does not carry attachments: its body is written by this session's model from the conversation. Send them in a message instead.`
+    case "E_HANDOVER_REPLY":
+      return `A handover starts a new message and cannot be a reply. Send the answer with "reply" instead.`
+    // The model's own output is what fails here: nothing was written, a section
+    // is missing, or the answer ran past the bound. Sending a partial handover
+    // would look delivered while carrying less than the reader needs, so the
+    // delivery is refused instead.
+    case "E_HANDOVER_EMPTY":
+      return "The handover came back empty; nothing was sent. Try again."
+    case "E_HANDOVER_INCOMPLETE":
+      return "The handover is missing one of the agreed sections; nothing was sent. Try again."
+    case "E_HANDOVER_TOO_LONG":
+      return `The handover is longer than ${HANDOVER_MAX_CHARS} characters; nothing was sent. Try again with a shorter summary.`
+    case "E_HANDOVER_GENERATION_FAILED":
+      return `The handover was not generated${detail.length > 0 ? `: ${detail}` : ""}, so nothing was sent. Try again.`
   }
 }
 

@@ -10,10 +10,12 @@
 import type { Plugin } from "@opencode/plugin"
 
 import type { EventSource } from "./events.ts"
+import { sessionGeneration, type Generation } from "./generation.ts"
 import { sessionLookup, type SessionLookup } from "./session.ts"
 import { skillRegistrar, type SkillRegistrar } from "./skills.ts"
 import { pluginStorage, type PluginStorage } from "./storage.ts"
 import { toolRegistrar, type ToolRegistrar } from "./tools.ts"
+import { versionControl, type VersionControl } from "./vcs.ts"
 
 /** The location this plugin instance was loaded for: one directory, one project. */
 export interface InstanceLocation {
@@ -27,6 +29,10 @@ export interface Host {
   readonly options: unknown
   readonly location: InstanceLocation
   readonly sessions: SessionLookup
+  /** The sending session's own model, asked to write a handover. */
+  readonly generation: Generation
+  /** What the host knows about a directory's version control, and what it does not. */
+  readonly versionControl: VersionControl
   /** The one namespace every instance on the machine can meet in. */
   readonly storage: PluginStorage
   readonly events: EventSource
@@ -43,6 +49,8 @@ export function createHost(context: Plugin.Context): Host {
       projectID: context.location.project?.id,
     },
     sessions: sessionLookup(context.session),
+    generation: sessionGeneration(context.session),
+    versionControl: versionControl(context.vcs),
     storage: pluginStorage(context.storage),
     events: {
       subscribe: (options) => context.event.subscribe({ signal: options.signal }),

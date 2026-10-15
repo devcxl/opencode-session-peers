@@ -10,6 +10,7 @@
 
 import { askAction } from "./actions/ask.ts"
 import { cancelAction } from "./actions/cancel.ts"
+import { handoverAction } from "./actions/handover.ts"
 import { listCwdAction } from "./actions/list-cwd.ts"
 import { listAction } from "./actions/list.ts"
 import { pendingAction } from "./actions/pending.ts"
@@ -17,6 +18,7 @@ import { replyAction } from "./actions/reply.ts"
 import { sendAction } from "./actions/send.ts"
 import { statusAction } from "./actions/status.ts"
 import type { Config } from "./config.ts"
+import type { HandoverSupport } from "./host/handover.ts"
 import type { SessionLookup } from "./host/session.ts"
 import type { PluginStorage } from "./host/storage.ts"
 import type { ToolSpec } from "./host/tools.ts"
@@ -34,6 +36,8 @@ const PEERS_TOOL_DESCRIPTION =
   `"reply" — answer a question another peer is waiting on; ` +
   `"pending" — the questions waiting for this session's answer; ` +
   `"cancel" — withdraw a question this session asked; ` +
+  `"handover" — summarize this session with this session's own model and send the summary ` +
+  `to one peer, which continues the work; ` +
   `"status" — this session's id, its scope, and whether the host is answering.`
 
 const PEERS_TOOL_INPUT = {
@@ -42,28 +46,34 @@ const PEERS_TOOL_INPUT = {
   properties: {
     action: {
       type: "string",
-      enum: ["list", "list-cwd", "send", "ask", "reply", "pending", "cancel", "status"],
+      enum: ["list", "list-cwd", "send", "ask", "reply", "pending", "cancel", "handover", "status"],
       description:
         `Action to run: "list" every live peer in scope, "list-cwd" the peers in this ` +
         `session's directory, "send" a message to one peer, "ask" a question that waits for ` +
         `its answer inside this call, "reply" the answer to a peer's question, "pending" the ` +
-        `questions waiting here, "cancel" withdraw a question this session asked, "status" ` +
-        `this session's id and connectivity.`,
+        `questions waiting here, "cancel" withdraw a question this session asked, "handover" ` +
+        `summarize this session and send the summary to one peer, "status" this session's id ` +
+        `and connectivity.`,
     },
     to: {
       type: "string",
       description:
-        `Target for "send" and "ask": a session id, the short id shown in parentheses by ` +
-        `"list", or a session title. For "reply": the peer whose question you are answering, ` +
-        `when more than one is waiting.`,
+        `Target for "send", "ask" and "handover": a session id, the short id shown in ` +
+        `parentheses by "list", or a session title. For "reply": the peer whose question you ` +
+        `are answering, when more than one is waiting.`,
     },
     message: {
       type: "string",
-      description: `Text for "send", "ask" or "reply". A message needs text or at least one attachment.`,
+      description:
+        `Text for "send", "ask" or "reply". For "handover", the next task for the receiving ` +
+        `session, which the handover addresses to it. A message needs text or at least one ` +
+        `attachment; a handover needs the next task.`,
     },
     attachments: {
       type: "array",
-      description: `Attachments for "send", "ask" or "reply", delivered inline inside the message body.`,
+      description:
+        `Attachments for "send", "ask" or "reply", delivered inline inside the message body. ` +
+        `A "handover" does not carry attachments.`,
       items: {
         type: "object",
         additionalProperties: false,
@@ -85,7 +95,8 @@ const PEERS_TOOL_INPUT = {
       description:
         `For "reply": the id of the question being answered, as shown by "pending", when ` +
         `more than one peer is waiting. For "cancel": the id of the question to withdraw; ` +
-        `omit it to withdraw the one this session is waiting on.`,
+        `omit it to withdraw the one this session is waiting on. Not for "send", "ask" or ` +
+        `"handover": a handover that carries a reply reference is refused.`,
     },
   },
   required: ["action"],
@@ -100,6 +111,8 @@ export interface PeersToolDeps {
   readonly roster?: Roster
   /** Reports what went wrong in a way the caller can see but the call survives. */
   readonly warn: (message: string) => void
+  /** What a handover needs from the host: the session's own model, version control, the sender's directory. */
+  readonly handover: HandoverSupport
 }
 
 export function peersTool(deps: PeersToolDeps): ToolSpec {
@@ -125,6 +138,8 @@ export function peersTool(deps: PeersToolDeps): ToolSpec {
           return pendingAction(deps, call)
         case "cancel":
           return cancelAction(deps, call, input)
+        case "handover":
+          return handoverAction(deps, call, input)
         case "status":
           return statusAction(deps, call)
         default:

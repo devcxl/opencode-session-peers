@@ -79,6 +79,17 @@ export interface FakePrompt {
   readonly delivery: string
 }
 
+/** One generation the plugin asked this session's own model to write. */
+export interface FakeGeneration {
+  readonly sessionID: string
+  readonly prompt: string
+}
+
+/** One version control lookup the plugin made for a directory. */
+export interface FakeVcsLookup {
+  readonly directory: string
+}
+
 export interface FakeStorage {
   readonly get: (key: string) => Promise<unknown>
   readonly set: (key: string, value: unknown) => Promise<void>
@@ -139,6 +150,10 @@ export interface FakeHostOptions {
   readonly promptRefuses?: readonly string[]
   /** Sessions whose transcript this fake host cannot read, as the real one does not know a gone session. */
   readonly contextRefuses?: readonly string[]
+  /** What this session's own model answers with; a throwable answer stands in for the host failing the request. */
+  readonly generate?: string | Error
+  /** The branch this host knows for a directory; a lookup for anything else is a directory with no repository. */
+  readonly vcsBranch?: Readonly<Record<string, string>>
 }
 
 export interface FakeHost {
@@ -150,6 +165,10 @@ export interface FakeHost {
   readonly transcriptReads: readonly string[]
   /** Messages the plugin asked the host to hand to a session, in order. */
   readonly prompts: readonly FakePrompt[]
+  /** Generations the plugin asked this session's own model for, in order. */
+  readonly generations: readonly FakeGeneration[]
+  /** Version control lookups the plugin made, in order. */
+  readonly vcsLookups: readonly FakeVcsLookup[]
   /** Tools the plugin registered, in order. */
   readonly tools: readonly ToolInfo[]
   /** Skills the plugin registered, in order. */
@@ -185,6 +204,8 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
   const lookups: string[] = []
   const transcriptReads: string[] = []
   const prompts: FakePrompt[] = []
+  const generations: FakeGeneration[] = []
+  const vcsLookups: FakeVcsLookup[] = []
   const tools: ToolInfo[] = []
   const skills: FakeSkill[] = []
   const refused = new Set(options.promptRefuses ?? [])
@@ -256,6 +277,34 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
         if (session === undefined) throw new Error("Session.NotFoundError")
         return transcript(session)
       },
+      generate: async (input: { readonly sessionID: string; readonly prompt: string }) => {
+        generations.push({ sessionID: input.sessionID, prompt: input.prompt })
+        // A refused request rejects, as the host's does when the model cannot be
+        // reached; the plugin must report that instead of sending nothing.
+        if (options.generate instanceof Error) throw options.generate
+        return {
+          id: `gen_fake_${generations.length}`,
+          sessionID: input.sessionID,
+          time: { created: Date.now() },
+          type: "user",
+          payload: { text: input.prompt },
+          delivery: "queue",
+          text: options.generate ?? "",
+        }
+      },
+    },
+    vcs: {
+      get: async (input?: { readonly location?: { readonly directory?: string } }) => {
+        const directory = input?.location?.directory ?? location
+        vcsLookups.push({ directory })
+        const branch = options.vcsBranch?.[directory]
+        return {
+          location: { directory },
+          // A directory this host knows no repository for has no branch to
+          // report, which is what the real surface does for a plain directory.
+          data: branch === undefined ? { branch: {} } : { provider: "git", branch: { current: branch } },
+        }
+      },
     },
     storage,
     event: {
@@ -292,6 +341,8 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
     lookups,
     transcriptReads,
     prompts,
+    generations,
+    vcsLookups,
     tools,
     skills,
     storage,
