@@ -30,6 +30,9 @@ type ToolInfo = Parameters<ToolEditor["add"]>[0]
 type ToolCall = Parameters<ToolInfo["execute"]>[1]
 type ToolResult = Awaited<ReturnType<ToolInfo["execute"]>>
 
+type SkillTransform = Plugin.Context["skill"]["transform"]
+type SkillEditor = Parameters<Parameters<SkillTransform>[0]>[0]
+
 /** A session as the fake host knows it. Everything else has a default. */
 export interface FakeSession {
   readonly id: string
@@ -38,6 +41,30 @@ export interface FakeSession {
   readonly directory?: string
   readonly parentID?: string
   readonly model?: string
+  /** The tool calls this session's transcript shows, oldest first. */
+  readonly toolCalls?: readonly FakeToolCall[]
+}
+
+/**
+ * One tool call in a session's transcript, as the host reports it: the call the
+ * model wrote (`input`), how it stands, and the progress metadata the tool
+ * recorded while running.
+ */
+export interface FakeToolCall {
+  readonly name: string
+  readonly status?: string
+  readonly input?: Readonly<Record<string, unknown>>
+  readonly metadata?: Readonly<Record<string, unknown>>
+}
+
+/** One skill the plugin registered with the host. */
+export interface FakeSkill {
+  readonly id: string
+  readonly name: string
+  readonly description?: string
+  readonly autoinvoke?: boolean
+  readonly path: string
+  readonly content: string
 }
 
 export interface FakeScanOptions {
@@ -111,6 +138,8 @@ export interface FakeHostOptions {
   readonly caller?: string
   /** Sessions this fake host refuses to hand a message to, as the real one does for a session it no longer has. */
   readonly promptRefuses?: readonly string[]
+  /** Sessions whose transcript this fake host cannot read, as the real one does not know a gone session. */
+  readonly contextRefuses?: readonly string[]
 }
 
 export interface FakeHost {
@@ -118,10 +147,14 @@ export interface FakeHost {
   readonly context: Plugin.Context
   /** Session ids the plugin looked up, in order. */
   readonly lookups: readonly string[]
+  /** Sessions whose transcript the plugin asked to read, in order. */
+  readonly transcriptReads: readonly string[]
   /** Messages the plugin asked the host to hand to a session, in order. */
   readonly prompts: readonly FakePrompt[]
   /** Tools the plugin registered, in order. */
   readonly tools: readonly ToolInfo[]
+  /** Skills the plugin registered, in order. */
+  readonly skills: readonly FakeSkill[]
   /** The storage the plugin wrote to; the same object the host was given. */
   readonly storage: FakeStorage
   /** Delivers an event to the plugin's subscription, as the host would. */
@@ -151,9 +184,12 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
     ),
   )
   const lookups: string[] = []
+  const transcriptReads: string[] = []
   const prompts: FakePrompt[] = []
   const tools: ToolInfo[] = []
+  const skills: FakeSkill[] = []
   const refused = new Set(options.promptRefuses ?? [])
+  const unreadable = new Set(options.contextRefuses ?? [])
   const subscriptions = new Set<FakeSubscription>()
   let eventCounter = 0
 
@@ -163,6 +199,16 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
     namespace: () => {},
     add: (tool) => {
       tools.push(tool)
+    },
+    update: () => {},
+    remove: () => {},
+  }
+
+  const skillEditor: SkillEditor = {
+    list: () => [],
+    get: () => undefined,
+    add: (skill) => {
+      skills.push(skill as unknown as FakeSkill)
     },
     update: () => {},
     remove: () => {},
@@ -204,6 +250,13 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
           delivery,
         }
       },
+      context: async (input: { readonly sessionID: string }) => {
+        transcriptReads.push(input.sessionID)
+        if (unreadable.has(input.sessionID)) throw new Error("Session.NotFoundError")
+        const session = known.get(input.sessionID)
+        if (session === undefined) throw new Error("Session.NotFoundError")
+        return transcript(session)
+      },
     },
     storage,
     event: {
@@ -225,6 +278,12 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
         return { dispose: async () => {} }
       },
     },
+    skill: {
+      transform: async (edit: (editor: SkillEditor) => void) => {
+        edit(skillEditor)
+        return { dispose: async () => {} }
+      },
+    },
   }
 
   return {
@@ -232,8 +291,10 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
     // stops pretending to be the whole host.
     context: context as unknown as Plugin.Context,
     lookups,
+    transcriptReads,
     prompts,
     tools,
+    skills,
     storage,
     emit(type, data) {
       eventCounter += 1
@@ -310,6 +371,33 @@ function toolCall(sessionID: string, signal?: AbortSignal): ToolCall {
     signal: signal ?? new AbortController().signal,
     progress: async () => {},
   } as unknown as ToolCall
+}
+
+/**
+ * A session's transcript as the host reports it: one assistant message holding
+ * the session's tool calls, each part carrying the state the host keeps for it.
+ * The parked-parent probe reads exactly this.
+ */
+function transcript(session: Partial<FakeSession>): unknown[] {
+  const calls = session.toolCalls ?? []
+  if (calls.length === 0) return []
+  return [
+    {
+      id: "msg_fake_transcript",
+      type: "assistant",
+      time: { created: Date.now() },
+      content: calls.map((call, index) => ({
+        type: "tool",
+        id: `call_fake_${index}`,
+        name: call.name,
+        state: {
+          status: call.status ?? "completed",
+          input: call.input ?? {},
+          metadata: call.metadata ?? {},
+        },
+      })),
+    },
+  ]
 }
 
 /** Flatten a tool result to the text the model reads. */

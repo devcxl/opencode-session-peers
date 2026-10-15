@@ -98,6 +98,8 @@ export interface PeersToolDeps {
   readonly storage: PluginStorage
   /** Absent exactly when the plugin is disabled: a disabled instance publishes nothing. */
   readonly roster?: Roster
+  /** Reports what went wrong in a way the caller can see but the call survives. */
+  readonly warn: (message: string) => void
 }
 
 export function peersTool(deps: PeersToolDeps): ToolSpec {

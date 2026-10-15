@@ -29,6 +29,7 @@ import type { Roster } from "../peers/roster.ts"
 import { readAsks, replyPollMs, waitForReply, type ReplyWait } from "../ask/handshake.ts"
 import { deliverTo, refusal } from "./delivery.ts"
 import { readMessage, readText } from "./input.ts"
+import { probeParent } from "./parked-parent.ts"
 import { readRoster, peerDetails, type RosterView } from "./roster-view.ts"
 
 export interface AskDeps {
@@ -37,6 +38,8 @@ export interface AskDeps {
   readonly storage: PluginStorage
   /** Absent while the plugin is disabled: a disabled instance publishes nothing. */
   readonly roster?: Roster
+  /** Reports what went wrong in a way the caller can see but the ask survives. */
+  readonly warn: (message: string) => void
 }
 
 export async function askAction(deps: AskDeps, call: ToolCall, input: unknown): Promise<ActionResult> {
@@ -70,6 +73,25 @@ export async function askAction(deps: AskDeps, call: ToolCall, input: unknown): 
   // accepts messages only as replies still admits it.
   const admission = admitInbound({ declared: peer.inboundTrigger, exchange: true })
   if (!admission.ok) return refusal(failure(admission.code, target), { sessionID: peer.sessionID })
+
+  // The supervisor channel (ADR-0002): if this peer is the session that spawned
+  // the caller and it is parked in that `subagent` call, the question cannot be
+  // answered until the caller's own run ends — and the wait for it ends the same
+  // way. Refuse before anything is written or delivered, and say what to do
+  // with the question instead. An unreadable parent is asked, not refused.
+  const probe = await probeParent({
+    sessions: deps.sessions,
+    parentID: view.self.parentID,
+    callerID: call.sessionID,
+    targetID: peer.sessionID,
+    warn: deps.warn,
+  })
+  if (probe.parking === "parked") {
+    return refusal(failure("E_TARGET_UNREACHABLE", peer.title), {
+      sessionID: peer.sessionID,
+      parentProbe: probe.parking,
+    })
+  }
 
   const now = Date.now()
   let asks: readonly AskRecord[]

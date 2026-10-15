@@ -25,6 +25,7 @@ import type { Roster } from "../peers/roster.ts"
 import { readAsks } from "../ask/handshake.ts"
 import { deliverTo, refusal } from "./delivery.ts"
 import { readMessage, readText } from "./input.ts"
+import { probeParent } from "./parked-parent.ts"
 import { readRoster, peerDetails, type RosterView } from "./roster-view.ts"
 
 export interface SendDeps {
@@ -33,6 +34,8 @@ export interface SendDeps {
   readonly storage: PluginStorage
   /** Absent while the plugin is disabled: a disabled instance publishes nothing. */
   readonly roster?: Roster
+  /** Reports what went wrong in a way the caller can see but the send survives. */
+  readonly warn: (message: string) => void
 }
 
 export async function sendAction(deps: SendDeps, call: ToolCall, input: unknown): Promise<ActionResult> {
@@ -90,8 +93,27 @@ export async function sendAction(deps: SendDeps, call: ToolCall, input: unknown)
   })
   if (attempt.kind === "refused") return attempt.refusal
 
+  // A progress report to a parent that is parked in the `subagent` call that
+  // started this session is admitted now and read when the run ends — the one
+  // thing a child cannot see for itself, and the honest answer to "did it arrive".
+  const probe = await probeParent({
+    sessions: deps.sessions,
+    parentID: view.self.parentID,
+    callerID: call.sessionID,
+    targetID: peer.sessionID,
+    warn: deps.warn,
+  })
+  const parked = probe.parking === "parked"
+
   return {
-    text: `Message sent to ${peer.title}`,
-    details: { delivered: true, delivery: attempt.delivery, ...peerDetails(peer, call.sessionID) },
+    text: parked
+      ? `Message sent to ${peer.title}; it is blocked waiting for this run to end, so it will read the message then.`
+      : `Message sent to ${peer.title}`,
+    details: {
+      delivered: true,
+      delivery: attempt.delivery,
+      ...(parked ? { parentProbe: probe.parking } : {}),
+      ...peerDetails(peer, call.sessionID),
+    },
   }
 }

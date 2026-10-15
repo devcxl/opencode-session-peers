@@ -16,6 +16,7 @@ import type { Plugin } from "@opencode/plugin"
 import { parseConfig } from "./config.ts"
 import { createHost } from "./host/index.ts"
 import { startRoster } from "./peers/roster.ts"
+import { SUPERVISOR_SKILL } from "./skill.ts"
 import { peersTool } from "./tool.ts"
 
 export const PLUGIN_ID = "session-peers"
@@ -35,10 +36,20 @@ export default {
     // not listening, and its own session is told why nothing happens.
     const roster = config.enabled ? await startRoster({ config, warn, ...host }) : undefined
 
-    await host.tools.register(peersTool({ config, sessions: host.sessions, storage: host.storage, roster }))
+    await host.tools.register(
+      peersTool({ config, sessions: host.sessions, storage: host.storage, roster, warn }),
+    )
+
+    // A disabled plugin does nothing and describes nothing: its sessions are told
+    // why their calls are refused, not how to use a channel that is off.
+    if (roster === undefined) return
+
+    // The supervisor channel's parent-side text (ADR-0002) is a skill, not part
+    // of the tool description: a parent reads it while deciding how to spawn a
+    // child, which is before any tool of this plugin is in play.
+    await host.skills.register(SUPERVISOR_SKILL)
 
     // The host calls this when the location shuts down or the plugin reloads.
-    if (roster === undefined) return
     return () => roster.dispose()
   },
 } satisfies Plugin.Plugin

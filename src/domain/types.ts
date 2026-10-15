@@ -22,6 +22,29 @@ export interface ActionResult {
 export type Delivery = "steer" | "queue"
 
 /**
+ * How a tool call stands. A status this build does not know reads as `unknown`
+ * instead of being forced into one of the others: the rule that cares about
+ * `running` must not be told that a newer host's status means it.
+ */
+export type ToolCallStatus = "streaming" | "running" | "completed" | "error" | "unknown"
+
+/**
+ * One tool call as a session's own transcript shows it.
+ *
+ * The parked-parent rule (ADR-0002) reads these to find the `subagent` call a
+ * parent is currently inside. `input` is the call as the model wrote it and
+ * `metadata` is what the tool reported while it ran; either may be empty, and
+ * the host layer maps the transcript into this shape so the rule stays free of
+ * host types.
+ */
+export interface ToolCallRecord {
+  readonly name: string
+  readonly status: ToolCallStatus
+  readonly input: Readonly<Record<string, unknown>>
+  readonly metadata: Readonly<Record<string, unknown>>
+}
+
+/**
  * What a session accepts from peers.
  *
  * The receiving side is the only side that can decide this, and this plugin has
