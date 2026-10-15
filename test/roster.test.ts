@@ -384,8 +384,8 @@ describe("a disabled plugin", () => {
   })
 })
 
-describe("unload", () => {
-  test("removes this instance's records, stops its subscription, and leaves peers alone", async () => {
+describe("when a location's instance is replaced", () => {
+  test("stops its own subscription, and leaves its records for whoever takes over", async () => {
     const storage = fakeStorage()
     const alpha = await loaded({ location: "/work/alpha", caller: ALPHA.id, storage, sessions: [ALPHA] })
     const beta = await loaded({ location: "/work/beta", caller: BETA.id, storage, sessions: [BETA] })
@@ -396,10 +396,55 @@ describe("unload", () => {
 
     await alpha.unload()
 
-    expect(peerRecords(storage).map((peer) => peer.sessionID)).toEqual([BETA.id])
+    // Alpha's row is deliberately still there: withdrawing it would take every
+    // idle session in that location off the roster until it ran something.
+    expect(peerRecords(storage).map((peer) => peer.sessionID).sort()).toEqual([ALPHA.id, BETA.id])
     expect(alpha.host.subscribers()).toBe(0)
     expect(beta.host.subscribers()).toBe(1)
 
     await beta.unload()
+  })
+
+  test("publishes an idle session again under the successor, without it doing anything", async () => {
+    const storage = fakeStorage()
+    const first = await loaded({ location: "/work/alpha", caller: ALPHA.id, storage, sessions: [ALPHA] })
+    await first.host.call("peers", { action: "list" })
+    const before = peerRecords(storage).find((peer) => peer.sessionID === ALPHA.id)
+    expect(before).toBeDefined()
+    const firstInstance = before?.instanceID
+
+    await first.unload()
+
+    // The same location comes back. Nothing happens in the session itself.
+    const second = await loaded({ location: "/work/alpha", caller: ALPHA.id, storage, sessions: [ALPHA] })
+    await settle()
+
+    const after = peerRecords(storage).find((peer) => peer.sessionID === ALPHA.id)
+    expect(after).toBeDefined()
+    expect(after?.instanceID).not.toBe(firstInstance)
+
+    const result = await second.host.call("peers", { action: "list" })
+    expect(result.text).toContain("/work/alpha")
+
+    await second.unload()
+  })
+
+  test("leaves a record whose session is gone for the sweep, rather than republishing it", async () => {
+    const storage = fakeStorage()
+    const ghost = peerRecord({
+      sessionID: "ses_ghost",
+      directory: "/work/alpha",
+      updatedAt: Date.now() - 5_000,
+    })
+    await storage.set(peerKey(ghost.sessionID), ghost)
+
+    const alpha = await loaded({ location: "/work/alpha", caller: ALPHA.id, storage, sessions: [ALPHA] })
+    await settle()
+
+    expect(peerRecords(storage).find((peer) => peer.sessionID === ghost.sessionID)?.updatedAt).toBe(
+      ghost.updatedAt,
+    )
+
+    await alpha.unload()
   })
 })
