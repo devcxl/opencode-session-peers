@@ -8,8 +8,8 @@
  * tokens the prompts asked for.
  */
 
-import { modelLabel, type HarnessOptions, type ModelRef } from "./args.ts"
-import type { HarnessClient, SessionInfo, SessionMessage } from "./client.ts"
+import { drivenModel, modelLabel, type HarnessOptions, type ModelRef } from "./args.ts"
+import type { HarnessClient, SessionInfo, SessionMessage, SessionTextPart, SessionToolPart } from "./client.ts"
 import { sleep } from "./instance.ts"
 import type { ScratchLayout } from "./paths.ts"
 import { explain, type Expectation, type MessageSummary, type SessionSummary } from "./report.ts"
@@ -71,17 +71,18 @@ export async function createSessions(
   expectations: Expectation[],
 ): Promise<SessionInfo[]> {
   const expected = "two sessions exist in two different directories"
+  const model = drivenModel(options)
   try {
     const created = await Promise.all([
       client.createSession({
         directory: layout.projectA,
         title: "harness-a",
-        ...(options.model === undefined ? {} : { model: options.model }),
+        ...(model === undefined ? {} : { model }),
       }),
       client.createSession({
         directory: layout.projectB,
         title: "harness-b",
-        ...(options.model === undefined ? {} : { model: options.model }),
+        ...(model === undefined ? {} : { model }),
       }),
     ])
     const fetched = await Promise.all([client.getSession(created[0]!.id), client.getSession(created[1]!.id)])
@@ -114,7 +115,7 @@ export async function driveTurns(
 ): Promise<SessionSummary[]> {
   const expected = "a driven turn reaches a terminal outcome in each session"
   try {
-    if (options.model !== undefined) await requireModel(client, options, sessions[0]!.directory, expectations)
+    if (options.model !== undefined) await requireModel(client, options.model, sessions[0]!.directory, expectations)
     // One session at a time: the host's hosted provider refuses turns that are
     // asked for concurrently while it is still registering itself.
     const driven: DrivenTurn[] = []
@@ -208,13 +209,13 @@ function describeDrive(turn: DrivenTurn): string {
   return `${turn.label}: ${last.outcome} in ${last.elapsedMs} ms${reasonSuffix(last)}${earlier}`
 }
 
-async function requireModel(
+/** The requested model must be one the instance offers, whoever asked for it. */
+export async function requireModel(
   client: HarnessClient,
-  options: HarnessOptions,
+  requested: ModelRef,
   directory: string,
   expectations: Expectation[],
 ): Promise<void> {
-  const requested: ModelRef = options.model!
   const expected = `the requested model ${modelLabel(requested)} is offered by the instance`
   const models = await client.models(directory)
   const found = models.some((model) => model.providerID === requested.providerID && model.id === requested.id)
@@ -230,7 +231,7 @@ async function requireModel(
 }
 
 /** A session's terminal outcome, or a failure naming the subject and the state it stalled in. */
-async function waitForOutcome(
+export async function waitForOutcome(
   client: HarnessClient,
   options: HarnessOptions,
   sessionID: string,
@@ -292,7 +293,8 @@ export async function readTranscripts(
     expectations.push({
       name: "conversations-readable",
       met: true,
-      expected: options.driveModel ? `${expected}, including the driven turn` : expected,
+      expected:
+        options.driveModel || options.stub ? `${expected}, including the driven turn` : expected,
       observed: read.map((session) => `${session.label}: ${session.messages.length} messages`).join(", "),
     })
     return read
@@ -337,13 +339,31 @@ export function summarizeSession(label: SessionSummary["label"], info: SessionIn
 }
 
 function summarizeMessage(message: SessionMessage): MessageSummary {
-  const text = message.text ?? (message.content ?? []).map((part) => part.text ?? "").join("")
+  const text = messageText(message)
   return {
     type: message.type,
     ...(text.length === 0 ? {} : { text }),
     ...(message.finish === undefined ? {} : { finish: message.finish }),
     ...(message.error === undefined ? {} : { error: message.error.type ?? message.error.message ?? "unknown" }),
   }
+}
+
+/**
+ * A message's text, wherever the host keeps it: a plain `text` field on user
+ * and assistant messages, or text parts on a message that mixes tool calls in.
+ * Tool parts are not text, so they contribute nothing here.
+ */
+export function messageText(message: SessionMessage): string {
+  if (message.text !== undefined) return message.text
+  let text = ""
+  for (const part of message.content ?? []) {
+    if (!isToolPart(part)) text += part.text ?? ""
+  }
+  return text
+}
+
+function isToolPart(part: SessionTextPart | SessionToolPart): part is SessionToolPart {
+  return part.type === "tool"
 }
 
 function describeSession(info: SessionInfo): string {

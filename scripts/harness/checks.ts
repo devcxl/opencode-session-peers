@@ -61,6 +61,22 @@ export function checkAuth(options: HarnessOptions, expectations: Expectation[]):
   return source
 }
 
+/**
+ * The offline pass must read no developer credential at all. It is checked the
+ * same way the hosted pass checks that credentials are available: by looking at
+ * the one file the hosted pass would have copied.
+ */
+export function checkNoCredentials(layout: ScratchLayout, expectations: Expectation[]): void {
+  const expected = "the offline pass copies no developer credentials into the instance"
+  const present = existsSync(layout.authFile)
+  expectations.push({
+    name: "no-credentials",
+    met: !present,
+    expected,
+    observed: present ? `${layout.authFile} exists` : `no auth.json in ${layout.data}/opencode`,
+  })
+}
+
 /** The instance must own its database and its port; the live service owns neither of them. */
 export function checkIsolation(
   instance: InstanceHandle,

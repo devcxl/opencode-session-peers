@@ -30,11 +30,28 @@ export interface SessionInfo {
   location: { directory: string }
 }
 
+export interface SessionTextPart {
+  type: string
+  text?: string
+}
+
+/** A tool call and its result, as a transcript carries them. */
+export interface SessionToolPart {
+  type: "tool"
+  name: string
+  state?: {
+    status?: string
+    input?: unknown
+    content?: readonly SessionTextPart[]
+    metadata?: Readonly<Record<string, unknown>>
+  }
+}
+
 export interface SessionMessage {
   id: string
   type: string
   text?: string
-  content?: ReadonlyArray<{ type: string; text?: string }>
+  content?: ReadonlyArray<SessionTextPart | SessionToolPart>
   finish?: string
   error?: { type?: string; message?: string }
   model?: { providerID: string; id: string }

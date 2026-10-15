@@ -155,8 +155,15 @@ bun install
 bun test          # unit and seam tests
 bun run typecheck
 bun run harness   # boot a throwaway opencode instance and check the plugin loads
+bun run harness --stub   # drive two sessions through the harness's own stub model, offline
 bun run harness --help
 ```
+
+`bun run harness` is the structural pass and needs no model and no credentials. `--stub` adds the
+driven pass: the harness starts a tiny OpenAI-compatible stub on loopback, installs it as the
+instance's model provider, and asserts that a message sent from the session in one scratch project
+appears in the session in the other. It is deterministic and offline; `--model <provider/id>` remains
+the opt-in pass that drives real hosted turns with the developer's own credentials.
 
 The harness owns its own XDG directories, database and port, hashes the developer's
 `~/.local/state/opencode/service.json` before and after the run, and never touches the live service.

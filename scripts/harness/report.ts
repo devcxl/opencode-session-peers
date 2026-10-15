@@ -6,7 +6,7 @@
  * every file or process outside its own scratch directory that it touched.
  */
 
-export type HarnessMode = "drive" | "structural"
+export type HarnessMode = "drive" | "structural" | "offline"
 
 export interface Expectation {
   name: string
@@ -95,7 +95,7 @@ export function explain(error: unknown): string {
 
 export function renderReport(report: HarnessReport): string {
   const lines: string[] = []
-  lines.push(`session-peers harness — ${report.mode === "drive" ? "model-driven" : "structural"} mode`)
+  lines.push(`session-peers harness — ${modeName(report.mode)} mode`)
   lines.push(`ok        ${report.ok ? "yes" : "NO"}`)
   lines.push(`started   ${report.startedAt}`)
   lines.push(`duration  ${(report.durationMs / 1000).toFixed(1)} s`)
@@ -122,6 +122,10 @@ export function renderReport(report: HarnessReport): string {
 
   if (report.mode === "structural") {
     lines.push("model     not driven (structural pass; pass --model to drive the turns)")
+  } else if (report.mode === "offline") {
+    lines.push(`model     requested: ${report.model.requested ?? "(the harness's stub)"}`)
+    lines.push("          the harness's own stub model: offline, deterministic, no hosted model, no credentials")
+    if (report.model.used.length > 0) lines.push(`          used: ${report.model.used.join(", ")}`)
   } else {
     lines.push(`model     requested: ${report.model.requested ?? "(the instance's own choice)"}`)
     lines.push("          turns depend on the host's model backend serving a fresh instance")
@@ -176,6 +180,13 @@ export function renderReport(report: HarnessReport): string {
 function oneLine(text: string, limit = 120): string {
   const flat = text.replace(/\s+/g, " ").trim()
   return flat.length <= limit ? flat : `${flat.slice(0, limit)}...`
+}
+
+/** The header's word for each pass; the three read differently on purpose. */
+function modeName(mode: HarnessMode): string {
+  if (mode === "drive") return "model-driven"
+  if (mode === "offline") return "offline stub-model"
+  return "structural"
 }
 
 /**

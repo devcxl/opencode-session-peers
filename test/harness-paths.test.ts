@@ -49,6 +49,11 @@ describe("scratch layout", () => {
     expect(layout.probeLog.startsWith(`${layout.root}/`)).toBe(true)
     expect(layout.serverLog.startsWith(`${layout.root}/`)).toBe(true)
   })
+
+  test("the stub provider lives in the instance's own config directory", () => {
+    expect(layout.stubProvider.startsWith(`${layout.config}/`)).toBe(true)
+    expect(layout.stubProvider.endsWith("harness-stub-provider.ts")).toBe(true)
+  })
 })
 
 describe("plugin paths", () => {

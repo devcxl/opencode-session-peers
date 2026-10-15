@@ -15,6 +15,10 @@ import { ApiError, createClient } from "./client.ts"
 import { isProcessAlive } from "./isolation.ts"
 import {
   PROBE_LOG_ENV,
+  STUB_API_KEY,
+  STUB_KEY_ENV,
+  STUB_PLUGIN_SOURCE,
+  STUB_URL_ENV,
   globalConfigText,
   projectConfigText,
   type ScratchLayout,
@@ -27,6 +31,8 @@ export interface ScratchContents {
   pluginDirectories: readonly string[]
   /** Copied into the instance's data dir for the run; never committed, never printed. */
   authSource?: string
+  /** Install the stub provider plugin, so the instance can offer the stub model. */
+  stub?: boolean
 }
 /** Lay out the scratch directories and write every config the instance reads. */
 export function prepareScratch(layout: ScratchLayout, contents: ScratchContents): void {
@@ -42,6 +48,10 @@ export function prepareScratch(layout: ScratchLayout, contents: ScratchContents)
   writeFileSync(join(layout.projectA, ".opencode", "opencode.json"), projectConfig)
   writeFileSync(join(layout.projectB, ".opencode", "opencode.json"), projectConfig)
 
+  if (contents.stub === true) {
+    mkdirSync(join(layout.config, "opencode", "plugins"), { recursive: true })
+    copyFileSync(STUB_PLUGIN_SOURCE, layout.stubProvider)
+  }
   if (contents.authSource !== undefined) {
     copyFileSync(contents.authSource, layout.authFile)
   }
@@ -55,11 +65,16 @@ export function prepareScratch(layout: ScratchLayout, contents: ScratchContents)
  * id, and on some setups a database or config override. The instance must be
  * throwaway, so every `OPENCODE_*` variable is dropped and the four XDG
  * directories and the password are set to values that exist only in scratch.
+ *
+ * `stubBaseUrl` is present only in the offline pass. The key it is paired with
+ * is the literal `stub`: the stub server never checks it, and no developer
+ * credential is read, copied or printed anywhere on that path.
  */
 export function instanceEnvironment(
   layout: ScratchLayout,
   password: string,
   base: NodeJS.ProcessEnv,
+  stubBaseUrl?: string,
 ): NodeJS.ProcessEnv {
   const inherited: NodeJS.ProcessEnv = {}
   for (const [key, value] of Object.entries(base)) {
@@ -74,6 +89,7 @@ export function instanceEnvironment(
     XDG_CONFIG_HOME: layout.config,
     OPENCODE_SERVER_PASSWORD: password,
     [PROBE_LOG_ENV]: layout.probeLog,
+    ...(stubBaseUrl === undefined ? {} : { [STUB_URL_ENV]: stubBaseUrl, [STUB_KEY_ENV]: STUB_API_KEY }),
   }
 }
 
@@ -83,6 +99,8 @@ export interface StartOptions {
   opencodeBin: string
   bootTimeoutMs: number
   env: NodeJS.ProcessEnv
+  /** Base URL of the harness's stub model; set only by the offline pass. */
+  stubBaseUrl?: string
 }
 
 export interface InstanceHandle {
@@ -117,7 +135,7 @@ export async function startInstance(options: StartOptions): Promise<InstanceHand
       ["serve", "--hostname", HOSTNAME, "--port", String(port), "--print-logs", "--log-level", "info"],
       {
         cwd: layout.root,
-        env: instanceEnvironment(layout, password, options.env),
+        env: instanceEnvironment(layout, password, options.env, options.stubBaseUrl),
         stdio: ["ignore", logFd, logFd],
         detached: true,
       },

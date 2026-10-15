@@ -16,6 +16,7 @@ describe("harness arguments", () => {
     expect(options.pluginPath).toBe(REPO_ROOT)
     expect(options.model).toBeUndefined()
     expect(options.driveModel).toBe(false)
+    expect(options.stub).toBe(false)
     expect(options.turnTimeoutMs).toBeGreaterThan(0)
     expect(options.bootTimeoutMs).toBeGreaterThan(0)
     expect(options.scratchRoot).toBe(defaultScratchRoot())

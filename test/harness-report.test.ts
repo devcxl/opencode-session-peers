@@ -149,6 +149,17 @@ describe("report rendering", () => {  const text = renderReport(report())
     expect(text).toContain("used: opencode/free")
   })
 
+  test("offline mode says the stub drove the turns, with no hosted model and no credentials", () => {
+    const rendered = renderReport(
+      report({ mode: "offline", model: { requested: "harness-stub/stub", used: ["harness-stub/stub"] } }),
+    )
+    expect(rendered).toContain("offline stub-model mode")
+    expect(rendered).toContain("model     requested: harness-stub/stub")
+    expect(rendered).toContain("offline, deterministic, no hosted model, no credentials")
+    expect(rendered).toContain("used: harness-stub/stub")
+    expect(rendered).not.toContain("turns depend on the host's model backend")
+  })
+
   test("structural mode and a kept scratch directory read as intended", () => {
     const structural = report({
       mode: "structural",

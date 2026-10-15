@@ -10,14 +10,17 @@
 import { existsSync, rmSync } from "node:fs"
 import type { HarnessOptions } from "./args.ts"
 import type { InstanceHandle } from "./instance.ts"
+import { isPortOpen } from "./instance.ts"
 import type { ScratchLayout } from "./paths.ts"
 import { explain, type CleanupSummary } from "./report.ts"
+import type { StubHandle } from "./stub/model-server.ts"
 
 export async function teardown(
   options: HarnessOptions,
   layout: ScratchLayout,
   instance: InstanceHandle | undefined,
   serviceJson: string,
+  stub?: StubHandle,
 ): Promise<CleanupSummary> {
   const observations: string[] = []
   let processStopped = instance === undefined
@@ -28,6 +31,19 @@ export async function teardown(
     processStopped = outcome.stopped
     portClosed = outcome.portClosed
     observations.push(`instance: ${outcome.observed}`)
+  }
+
+  if (stub !== undefined) {
+    try {
+      await stub.stop()
+      const closed = !(await isPortOpen(stub.port))
+      processStopped = processStopped && closed
+      portClosed = portClosed && closed
+      observations.push(`stub model: stopped, port ${stub.port} ${closed ? "closed" : "still open"}`)
+    } catch (error) {
+      processStopped = false
+      observations.push(`stub model: could not stop: ${explain(error)}`)
+    }
   }
 
   let authFileRemoved = true

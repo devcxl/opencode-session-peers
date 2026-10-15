@@ -5,7 +5,7 @@
  * so every default and every rejection can be tested without booting anything.
  */
 
-import { REPO_ROOT, defaultScratchRoot, resolvePluginPath } from "./paths.ts"
+import { REPO_ROOT, STUB_MODEL_ID, STUB_PROVIDER_ID, defaultScratchRoot, resolvePluginPath } from "./paths.ts"
 
 const DEFAULT_TURN_TIMEOUT_MS = 5 * 60 * 1000
 const DEFAULT_BOOT_TIMEOUT_MS = 60 * 1000
@@ -27,6 +27,12 @@ export interface HarnessOptions {
    * default is the structural pass, which needs no model and no credentials.
    */
   driveModel: boolean
+  /**
+   * True with `--stub`: the two sessions are driven through the harness's own
+   * stub model, offline and with no credentials. Cannot be combined with
+   * `--model` or `--no-model`.
+   */
+  stub: boolean
   turnTimeoutMs: number
   bootTimeoutMs: number
   /** Where the per-run scratch directory is created. */
@@ -46,6 +52,8 @@ Options:
   --model <provider/id>     Drive the two sessions with real turns through this
                             model. Without it the harness runs the structural
                             pass: no turns, no model, no credentials
+  --stub                    Drive the two sessions through the harness's own
+                            stub model, offline: no hosted model, no credentials
   --no-model                The structural pass, stated explicitly (the default)
   --turn-timeout-ms <n>     How long one driven turn may take (default: ${DEFAULT_TURN_TIMEOUT_MS})
   --boot-timeout-ms <n>     How long the instance may take to answer (default: ${DEFAULT_BOOT_TIMEOUT_MS})
@@ -59,12 +67,19 @@ directories, its own database and its own port. The developer's live service is
 never touched; its service.json is hashed before and after the run and the two
 digests are compared.
 
-Without --model nothing is driven and no credentials are read. With --model the
-developer's auth.json is copied into the instance for the run and deleted at
-teardown, and real turns are driven through the instance's own HTTP API. Those
-turns depend on the host's model backend serving a fresh instance, which is not
-guaranteed on this machine: a refused turn is asked again in a fresh session,
-reported with the provider's own words, and leaves the run non-zero.
+Without --model and --stub nothing is driven and no credentials are read. With
+--model the developer's auth.json is copied into the instance for the run and
+deleted at teardown, and real turns are driven through the instance's own HTTP
+API. Those turns depend on the host's model backend serving a fresh instance,
+which is not guaranteed on this machine: a refused turn is asked again in a
+fresh session, reported with the provider's own words, and leaves the run
+non-zero.
+
+--stub replaces the host's model backend with the harness's own: a tiny
+OpenAI-compatible endpoint on a loopback port that answers a scripted turn. It
+is offline and deterministic, so the two sessions can prove that a message sent
+in one directory arrives in the other without a hosted model and without
+reading any credential.
 `
 
 export function wantsHelp(argv: readonly string[]): boolean {
@@ -75,6 +90,8 @@ export function parseArgs(argv: readonly string[], cwd: string = process.cwd()):
   let pluginInput: string | undefined
   let model: ModelRef | undefined
   let driveModel = false
+  let stub = false
+  let noModel = false
   let turnTimeoutMs = DEFAULT_TURN_TIMEOUT_MS
   let bootTimeoutMs = DEFAULT_BOOT_TIMEOUT_MS
   let scratchRoot: string | undefined
@@ -94,7 +111,13 @@ export function parseArgs(argv: readonly string[], cwd: string = process.cwd()):
         driveModel = true
         index += 1
         break
+      case "--stub":
+        if (stub) throw new UsageError("--stub was given more than once")
+        stub = true
+        break
       case "--no-model":
+        if (noModel) throw new UsageError("--no-model was given more than once")
+        noModel = true
         driveModel = false
         break
       case "--turn-timeout-ms":
@@ -123,11 +146,18 @@ export function parseArgs(argv: readonly string[], cwd: string = process.cwd()):
   if (model !== undefined && !driveModel) {
     throw new UsageError("--model and --no-model contradict each other")
   }
+  if (stub && model !== undefined) {
+    throw new UsageError("--stub and --model contradict each other")
+  }
+  if (stub && noModel) {
+    throw new UsageError("--stub and --no-model contradict each other")
+  }
 
   return {
     pluginPath: pluginInput === undefined ? REPO_ROOT : resolvePluginPath(pluginInput, cwd),
     model,
     driveModel,
+    stub,
     turnTimeoutMs,
     bootTimeoutMs,
     scratchRoot: scratchRoot === undefined ? defaultScratchRoot() : resolvePluginPath(scratchRoot, cwd),
@@ -162,6 +192,16 @@ function parseModelRef(value: string): ModelRef {
 
 export function modelLabel(model: ModelRef): string {
   return `${model.providerID}/${model.id}`
+}
+
+/**
+ * The model the two sessions are created with, whichever pass drives them: the
+ * developer's hosted choice with `--model`, the harness's own stub with
+ * `--stub`, and nothing at all in the structural pass.
+ */
+export function drivenModel(options: HarnessOptions): ModelRef | undefined {
+  if (options.stub) return { providerID: STUB_PROVIDER_ID, id: STUB_MODEL_ID }
+  return options.model
 }
 
 /** Scratch directory ids must be unique per run and safe as one path segment. */
