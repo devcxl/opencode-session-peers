@@ -112,7 +112,8 @@ export async function replyAction(deps: ReplyDeps, call: ToolCall, input: unknow
   }
 
   // The wait had already ended, so the answer degrades into an ordinary
-  // message — the asker is no longer listening anywhere else.
+  // message — the asker is no longer listening anywhere else. An answer ends an
+  // exchange rather than opening one, so it carries no reply instruction.
   const asker = view.peers.find((peer) => peer.sessionID === ask.askerSessionID)
   if (asker === undefined) {
     return refusal(failure("E_TARGET_NOT_FOUND", ask.askerTitle), { sessionID: ask.askerSessionID })
@@ -123,7 +124,7 @@ export async function replyAction(deps: ReplyDeps, call: ToolCall, input: unknow
     to: asker,
     body,
     exchange: true,
-    replyHint: deps.config.replyHint,
+    expectsReply: false,
     meta: LATE_ANSWER_META,
     detail: ask.askerTitle,
   })

@@ -80,7 +80,7 @@ server log; `trigger` fails closed to `"never"`.
 | `scope` | `"default"` | Visibility partition. Only sessions with the same scope see each other. |
 | `trigger` | `"always"` | What this session accepts from peers: `always`, `replies` (questions and answers only), `never`. Published on this session's roster record and honoured by the sender. |
 | `busyDelivery` | `"steer"` | How a message reaches a recipient that is mid-turn: `steer` injects it at the next safe boundary, `queue` waits until the recipient is idle. An idle recipient always starts a new turn. |
-| `replyHint` | `true` | Append the `To reply: peers({ action: "reply", ... })` line to inbound messages. A question always carries it. |
+| `replyHint` | `true` | Append the `To reply: peers({ action: "reply", ... })` line to a question. Only an `ask` carries it: a `send`, a reply and a handover leave nothing to answer. |
 | `askTimeoutMs` | `600000` | How long an `ask` waits for its answer (10 minutes) before it stops waiting. |
 | `rosterTtlMs` | `90000` | How long a peer record may go without a heartbeat before other instances stop listing it. The heartbeat runs at a third of this. |
 

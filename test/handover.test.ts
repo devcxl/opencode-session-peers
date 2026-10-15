@@ -247,9 +247,11 @@ describe("delivery", () => {
     const prompt = alpha.host.prompts[0]
     expect(prompt?.sessionID).toBe(BETA.id)
     expect(prompt?.delivery).toBe("queue")
-    // The same inbound body a `send` produces: sender, directory, reply hint.
+    // The same inbound body a `send` produces: sender, directory, then the
+    // handover. A handover starts work rather than asking for an answer, so it
+    // carries no reply instruction.
     expect(prompt?.text).toStartWith(`**From Payments API** (${REPO()})\n`)
-    expect(prompt?.text).toContain(`To reply: peers({ action: "reply", message: "..." })`)
+    expect(prompt?.text).not.toContain("To reply:")
     expect(prompt?.text).toContain("# Handover from Payments API")
     for (const section of HANDOVER_SECTIONS) expect(prompt?.text).toContain(`## ${section}`)
 

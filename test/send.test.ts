@@ -122,13 +122,13 @@ describe("delivering a message", () => {
       self: false,
     })
     // The host was asked to hand the recipient the body its model will read:
-    // sender, sender's directory, reply hint, message.
+    // sender, sender's directory, message — and no reply instruction, because
+    // a plain message leaves nothing to answer (issue #24).
     expect(alpha.host.prompts).toEqual([
       {
         sessionID: BETA.id,
         text: [
           `**From Payments API** (/work/alpha)`,
-          `To reply: peers({ action: "reply", message: "..." })`,
           "",
           "The API is frozen for review.",
         ].join("\n"),
@@ -160,18 +160,6 @@ describe("delivering a message", () => {
     expect(sent?.text).toContain("--- context: notes ---\nwhy we did this")
     expect(sent?.text.indexOf("context attached")).toBeLessThan(
       sent?.text.indexOf("--- snippet: handler.ts ts ---") ?? -1,
-    )
-
-    await unloadAll(alpha, beta)
-  })
-
-  test("leaves the reply hint out when the sender's configuration asks it to", async () => {
-    const { alpha, beta } = await twoDirectories({ alpha: { options: { replyHint: false } } })
-
-    await alpha.host.call("peers", { action: "send", to: BETA.id, message: "no hint please" })
-
-    expect(alpha.host.prompts[0]?.text).toBe(
-      `**From Payments API** (/work/alpha)\n\nno hint please`,
     )
 
     await unloadAll(alpha, beta)

@@ -123,15 +123,15 @@ export async function askAction(deps: AskDeps, call: ToolCall, input: unknown): 
     return refusal(failure("E_NOT_CONNECTED", describeError(error)))
   }
 
-  // The reply instruction always goes out with a question, whatever the
-  // `replyHint` option says: the asker is blocked, and a question nobody can
-  // see how to answer is the one shape of this message that must not happen.
+  // A question is the one message shape that expects a reply, so it is the one
+  // that carries the instruction on how to answer; even here `replyHint: false`
+  // takes it away.
   const attempt = await deliverTo(deps, {
     from: view.self,
     to: peer,
     body: { text: message.value.message, attachments: message.value.attachments },
     exchange: true,
-    replyHint: true,
+    expectsReply: true,
     detail: target,
   })
   if (attempt.kind === "refused") {

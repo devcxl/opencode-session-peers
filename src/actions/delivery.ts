@@ -27,7 +27,12 @@ export interface DeliveryRequest {
   readonly body: MessageBody
   /** True for a question or an answer to one: a peer that declared "replies" admits these. */
   readonly exchange: boolean
-  readonly replyHint: boolean
+  /**
+   * True for a question and nothing else: the asker is blocked, so the hint
+   * tells the receiver how its answer travels back. A send, an answer and a
+   * handover all leave nothing to answer.
+   */
+  readonly expectsReply: boolean
   readonly meta?: string
   /** How the model referred to the target, for the refusal text. */
   readonly detail: string
@@ -50,7 +55,9 @@ export async function deliverTo(deps: DeliveryDeps, request: DeliveryRequest): P
   const text = inboundMessage({
     from: request.from,
     body: request.body,
-    replyHint: request.replyHint,
+    // The option can only take the instruction away: a hint on a message that
+    // expects no reply would send the receiver to a refusal (issue #24).
+    replyHint: request.expectsReply && deps.config.replyHint,
     ...(request.meta === undefined ? {} : { meta: request.meta }),
   })
 

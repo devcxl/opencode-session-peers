@@ -16,7 +16,7 @@ export interface Config {
   /** Visibility partition. Peers only resolve within their own scope. */
   scope: string
   inbound: InboundPolicy
-  /** Append the reply hint to inbound messages. */
+  /** Append the reply instruction to an inbound question. */
   replyHint: boolean
   askTimeoutMs: number
   /** A roster record older than this belongs to a session that has gone away. */
