@@ -8,12 +8,17 @@
  * one enum member and one case each.
  */
 
+import { askAction } from "./actions/ask.ts"
+import { cancelAction } from "./actions/cancel.ts"
 import { listCwdAction } from "./actions/list-cwd.ts"
 import { listAction } from "./actions/list.ts"
+import { pendingAction } from "./actions/pending.ts"
+import { replyAction } from "./actions/reply.ts"
 import { sendAction } from "./actions/send.ts"
 import { statusAction } from "./actions/status.ts"
 import type { Config } from "./config.ts"
 import type { SessionLookup } from "./host/session.ts"
+import type { PluginStorage } from "./host/storage.ts"
 import type { ToolSpec } from "./host/tools.ts"
 import type { Roster } from "./peers/roster.ts"
 
@@ -25,6 +30,10 @@ const PEERS_TOOL_DESCRIPTION =
   `Actions: "list" — every live peer in this session's scope, this session first; ` +
   `"list-cwd" — only the peers working in this session's directory; ` +
   `"send" — deliver a message to one peer and report whether it was delivered; ` +
+  `"ask" — put a question to one peer and wait, inside this call, until it answers or the wait times out; ` +
+  `"reply" — answer a question another peer is waiting on; ` +
+  `"pending" — the questions waiting for this session's answer; ` +
+  `"cancel" — withdraw a question this session asked; ` +
   `"status" — this session's id, its scope, and whether the host is answering.`
 
 const PEERS_TOOL_INPUT = {
@@ -33,25 +42,28 @@ const PEERS_TOOL_INPUT = {
   properties: {
     action: {
       type: "string",
-      enum: ["list", "list-cwd", "send", "status"],
+      enum: ["list", "list-cwd", "send", "ask", "reply", "pending", "cancel", "status"],
       description:
         `Action to run: "list" every live peer in scope, "list-cwd" the peers in this ` +
-        `session's directory, "send" a message to one peer, "status" this session's id ` +
-        `and connectivity.`,
+        `session's directory, "send" a message to one peer, "ask" a question that waits for ` +
+        `its answer inside this call, "reply" the answer to a peer's question, "pending" the ` +
+        `questions waiting here, "cancel" withdraw a question this session asked, "status" ` +
+        `this session's id and connectivity.`,
     },
     to: {
       type: "string",
       description:
-        `Target for "send": a session id, the short id shown in parentheses by "list", ` +
-        `or a session title.`,
+        `Target for "send" and "ask": a session id, the short id shown in parentheses by ` +
+        `"list", or a session title. For "reply": the peer whose question you are answering, ` +
+        `when more than one is waiting.`,
     },
     message: {
       type: "string",
-      description: `Text for "send". A message needs text or at least one attachment.`,
+      description: `Text for "send", "ask" or "reply". A message needs text or at least one attachment.`,
     },
     attachments: {
       type: "array",
-      description: `Attachments for "send", delivered inline inside the message body.`,
+      description: `Attachments for "send", "ask" or "reply", delivered inline inside the message body.`,
       items: {
         type: "object",
         additionalProperties: false,
@@ -68,6 +80,13 @@ const PEERS_TOOL_INPUT = {
         required: ["type", "name", "content"],
       },
     },
+    replyTo: {
+      type: "string",
+      description:
+        `For "reply": the id of the question being answered, as shown by "pending", when ` +
+        `more than one peer is waiting. For "cancel": the id of the question to withdraw; ` +
+        `omit it to withdraw the one this session is waiting on.`,
+    },
   },
   required: ["action"],
 } as const
@@ -75,6 +94,8 @@ const PEERS_TOOL_INPUT = {
 export interface PeersToolDeps {
   readonly config: Config
   readonly sessions: SessionLookup
+  /** The rendezvous every instance shares; where asks and their answers meet. */
+  readonly storage: PluginStorage
   /** Absent exactly when the plugin is disabled: a disabled instance publishes nothing. */
   readonly roster?: Roster
 }
@@ -93,7 +114,15 @@ export function peersTool(deps: PeersToolDeps): ToolSpec {
         case "list-cwd":
           return listCwdAction(deps, call)
         case "send":
-          return sendAction({ config: deps.config, sessions: deps.sessions, roster: deps.roster }, call, input)
+          return sendAction(deps, call, input)
+        case "ask":
+          return askAction(deps, call, input)
+        case "reply":
+          return replyAction(deps, call, input)
+        case "pending":
+          return pendingAction(deps, call)
+        case "cancel":
+          return cancelAction(deps, call, input)
         case "status":
           return statusAction(deps, call)
         default:

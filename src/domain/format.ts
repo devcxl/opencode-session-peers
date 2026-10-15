@@ -7,7 +7,7 @@
  * which existed for a broker that reported receipts.
  */
 
-import type { Attachment, MessageBody, Peer } from "./types.ts"
+import type { AskRecord, Attachment, MessageBody, Peer } from "./types.ts"
 
 export interface RosterRowOptions {
   self: boolean
@@ -62,4 +62,27 @@ export function inboundMessage(options: InboundMessageOptions): string {
   if (attachments.length > 0) lines.push("", formatAttachments(attachments))
 
   return lines.join("\n")
+}
+
+/**
+ * What a blocked asker reads when the answer arrives — the original's result
+ * (`pi-intercom` `index.ts:2804`), attachments and all. The body is the
+ * answerer's own words, so it is not squeezed into one line.
+ */
+export function replyResult(fromTitle: string, body: MessageBody): string {
+  const lines = [`**Reply from ${fromTitle}:**`, body.text]
+  const attachments = body.attachments ?? []
+  if (attachments.length > 0) lines.push("", formatAttachments(attachments))
+  return lines.join("\n")
+}
+
+/**
+ * One pending ask as `pending` lists it: sender, question id, how long it has
+ * been waiting, and a preview — the original's row (`index.ts:2884-2888`),
+ * which is also what a session copies into `replyTo` when several are waiting.
+ */
+export function pendingAskRow(ask: AskRecord, now: number): string {
+  const preview = ask.question.replace(/\s+/g, " ").slice(0, 80)
+  const elapsedSeconds = Math.max(0, Math.floor((now - ask.createdAt) / 1000))
+  return `- ${ask.askerTitle} · ${ask.askID} · ${elapsedSeconds}s ago · ${preview}`
 }

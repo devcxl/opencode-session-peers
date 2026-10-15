@@ -9,6 +9,11 @@
  *
  *   v1/peers/<sessionID>   one roster record per session, written by the
  *                          instance that serves it (`peers/roster.ts`)
+ *   v1/asks/<askID>        one record per question a session is blocked on,
+ *                          written by the asker's instance, so any instance can
+ *                          find the question waiting for its session
+ *   v1/replies/<askID>     the answer, written by the instance that served the
+ *                          answering session and read by the blocked asker
  *
  * `v1` is the layout version: records written by an incompatible earlier build
  * simply fail to appear rather than being half-understood.
@@ -16,7 +21,7 @@
 
 import type { Plugin } from "@opencode/plugin"
 
-import type { Peer } from "../domain/types.ts"
+import type { AskRecord, Peer, ReplyRecord } from "../domain/types.ts"
 
 /** A value the host accepts; JSON is all it promises to store. */
 type StorageValue = Parameters<Plugin.Context["storage"]["set"]>[1]
@@ -39,10 +44,16 @@ export interface RecordStore<T> {
 
 export interface PluginStorage {
   readonly peers: RecordStore<Peer>
+  /** Outstanding asks, keyed by question id. */
+  readonly asks: RecordStore<AskRecord>
+  /** Answers, keyed by the question they answer; read once by the asker. */
+  readonly replies: RecordStore<ReplyRecord>
 }
 
 const LAYOUT = "v1"
 const PEER_PREFIX = `${LAYOUT}/peers/`
+const ASK_PREFIX = `${LAYOUT}/asks/`
+const REPLY_PREFIX = `${LAYOUT}/replies/`
 
 /**
  * Where a session's roster record lives. Exported because a *second* instance
@@ -52,8 +63,22 @@ export function peerKey(sessionID: string): string {
   return `${PEER_PREFIX}${sessionID}`
 }
 
+/** Where a question's ask record lives. Exported for the same reason as `peerKey`. */
+export function askKey(askID: string): string {
+  return `${ASK_PREFIX}${askID}`
+}
+
+/** Where the answer to one question lives. Exported for the same reason as `peerKey`. */
+export function replyKey(askID: string): string {
+  return `${REPLY_PREFIX}${askID}`
+}
+
 export function pluginStorage(storage: RawStorage): PluginStorage {
-  return { peers: recordStore<Peer>(storage, PEER_PREFIX) }
+  return {
+    peers: recordStore<Peer>(storage, PEER_PREFIX),
+    asks: recordStore<AskRecord>(storage, ASK_PREFIX),
+    replies: recordStore<ReplyRecord>(storage, REPLY_PREFIX),
+  }
 }
 
 function recordStore<T>(storage: RawStorage, prefix: string): RecordStore<T> {

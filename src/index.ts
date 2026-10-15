@@ -35,7 +35,7 @@ export default {
     // not listening, and its own session is told why nothing happens.
     const roster = config.enabled ? await startRoster({ config, warn, ...host }) : undefined
 
-    await host.tools.register(peersTool({ config, sessions: host.sessions, roster }))
+    await host.tools.register(peersTool({ config, sessions: host.sessions, storage: host.storage, roster }))
 
     // The host calls this when the location shuts down or the plugin reloads.
     if (roster === undefined) return
