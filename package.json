@@ -22,6 +22,7 @@
     "typescript": "^5.8.2"
   },
   "scripts": {
+    "harness": "bun scripts/harness.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   }
