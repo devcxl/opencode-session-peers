@@ -103,8 +103,115 @@ export interface FakeStorage {
   values(): readonly unknown[]
 }
 
+/** One event the plugin pushed through an RPC registration. */
+export interface FakeRpcEvent {
+  readonly name: string
+  readonly data: Readonly<Record<string, unknown>>
+}
+
+/** One RPC surface the plugin registered. */
+export interface FakeRpc {
+  /** The id the plugin registered under, as clients address it. */
+  readonly id: string
+  readonly methods: readonly string[]
+  /** Events pushed, in order; one subscription sees all of them. */
+  readonly events: readonly FakeRpcEvent[]
+  /** True once the plugin disposed the registration, as it does when unloaded. */
+  readonly disposed: boolean
+  /**
+   * Invokes one method the way the host does, and checks the answer against the
+   * method's own output schema before handing it back — a client would never
+   * see a value the schema rejects.
+   */
+  call(method: string, input?: unknown): Promise<unknown>
+}
+
 /** One scan page. The real host may page; the fake always does, so nothing can rely on a single page. */
 const SCAN_PAGE = 2
+
+/** A portable definition, as much of it as the fake needs. */
+interface FakeRpcDefinition {
+  readonly id: string
+  readonly methods: Readonly<Record<string, { readonly input: unknown; readonly output: unknown }>>
+  readonly events: Readonly<Record<string, { readonly schema: unknown }>>
+}
+
+type FakeRpcHandlers = Readonly<Record<string, ((input: unknown) => Promise<unknown>) | undefined>>
+
+interface FakeRpcRecord {
+  readonly definition: FakeRpcDefinition
+  readonly handlers: FakeRpcHandlers
+  readonly events: FakeRpcEvent[]
+  disposed: boolean
+}
+
+/** The one JSON Schema node shape the plugin's own definitions use. */
+interface SchemaNode {
+  readonly type?: string | readonly string[]
+  readonly properties?: Readonly<Record<string, SchemaNode>>
+  readonly required?: readonly string[]
+  readonly additionalProperties?: boolean
+  readonly items?: SchemaNode
+}
+
+/**
+ * The subset of JSON Schema the host validates portable definitions with, as
+ * far as this project's definitions exercise it: types (including a union with
+ * `null`), `properties`, `required`, `additionalProperties: false` and `items`.
+ * A value that fails here is a value the real host would refuse to deliver, so
+ * the fake refuses it too.
+ */
+function checkSchema(value: unknown, schema: unknown, path: string): void {
+  const node = schema as SchemaNode | undefined
+  if (node === undefined || node === null || typeof node !== "object") return
+
+  const types =
+    node.type === undefined ? undefined : Array.isArray(node.type) ? node.type : [node.type]
+  if (types !== undefined && !types.some((type) => matchesType(value, type))) {
+    throw new Error(`${path} is ${typeof value}, which ${types.join(" | ")} does not allow`)
+  }
+
+  if (Array.isArray(value)) {
+    for (const [index, entry] of value.entries()) checkSchema(entry, node.items, `${path}[${index}]`)
+    return
+  }
+  if (typeof value !== "object" || value === null) return
+
+  const properties = node.properties ?? {}
+  for (const name of node.required ?? []) {
+    if (!(name in value)) throw new Error(`${path}.${name} is required by the schema`)
+  }
+  for (const [name, entry] of Object.entries(value)) {
+    if (entry === undefined) {
+      // JSON transport drops an undefined property, so a client would receive
+      // something other than what the handler returned.
+      throw new Error(`${path}.${name} is undefined, which cannot survive the transport`)
+    }
+    const property = properties[name]
+    if (property === undefined) {
+      if (node.additionalProperties === false) {
+        throw new Error(`${path}.${name} is not allowed by the schema`)
+      }
+      continue
+    }
+    checkSchema(entry, property, `${path}.${name}`)
+  }
+}
+
+function matchesType(value: unknown, type: string): boolean {
+  switch (type) {
+    case "null":
+      return value === null
+    case "array":
+      return Array.isArray(value)
+    case "object":
+      return typeof value === "object" && value !== null && !Array.isArray(value)
+    case "integer":
+      return typeof value === "number" && Number.isInteger(value)
+    default:
+      return typeof value === type
+  }
+}
 
 export function fakeStorage(): FakeStorage {
   const entries = new Map<string, unknown>()
@@ -186,6 +293,8 @@ export interface FakeHost {
   readonly tools: readonly ToolInfo[]
   /** Skills the plugin registered, in order. */
   readonly skills: readonly FakeSkill[]
+  /** RPC surfaces the plugin registered, in order. */
+  readonly rpcs: readonly FakeRpc[]
   /** The storage the plugin wrote to; the same object the host was given. */
   readonly storage: FakeStorage
   /** Delivers an event to the plugin's subscription, as the host would. */
@@ -221,6 +330,7 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
   const vcsLookups: FakeVcsLookup[] = []
   const tools: ToolInfo[] = []
   const skills: FakeSkill[] = []
+  const rpcs: FakeRpcRecord[] = []
   const refused = new Set(options.promptRefuses ?? [])
   const unreadable = new Set(options.contextRefuses ?? [])
   const subscriptions = new Set<FakeSubscription>()
@@ -345,6 +455,35 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
         return { dispose: async () => {} }
       },
     },
+    rpc: {
+      // The real host keeps one registration per definition id and answers
+      // calls at the location it was registered for; the fake keeps them all
+      // and lets a test call one the way the host would.
+      register: async (
+        definition: FakeRpcDefinition,
+        handlers: FakeRpcHandlers,
+      ): Promise<{ events: { emit: (name: string, data: Readonly<Record<string, unknown>>) => Promise<void> }; dispose: () => Promise<void> }> => {
+        const record: FakeRpcRecord = { definition, handlers, events: [], disposed: false }
+        rpcs.push(record)
+        return {
+          events: {
+            async emit(name, data) {
+              const schema = definition.events[name]?.schema
+              // A name the definition does not declare is a bug in the plugin,
+              // and the real host refuses it rather than dropping it.
+              if (schema === undefined) {
+                throw new Error(`No RPC event named "${name}" on ${definition.id}`)
+              }
+              checkSchema(data, schema, `${definition.id}.${name}`)
+              record.events.push({ name, data })
+            },
+          },
+          async dispose() {
+            record.disposed = true
+          },
+        }
+      },
+    },
   }
 
   return {
@@ -358,6 +497,32 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
     vcsLookups,
     tools,
     skills,
+    rpcs: rpcs.map((record) => ({
+      get id() {
+        return record.definition.id
+      },
+      get methods() {
+        return Object.keys(record.definition.methods)
+      },
+      get events() {
+        return record.events
+      },
+      get disposed() {
+        return record.disposed
+      },
+      async call(method, input) {
+        const definition = record.definition.methods[method]
+        if (definition === undefined) {
+          throw new Error(`No RPC method named "${method}" on ${record.definition.id}`)
+        }
+        // The host validates both sides against the portable schemas; a value
+        // a client would never receive must not pass for one here either.
+        checkSchema(input ?? {}, definition.input, `${record.definition.id}.${method} input`)
+        const output = await record.handlers[method]?.(input)
+        checkSchema(output, definition.output, `${record.definition.id}.${method} output`)
+        return output
+      },
+    })),
     storage,
     emit(type, data) {
       eventCounter += 1
