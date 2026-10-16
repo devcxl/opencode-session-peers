@@ -1,10 +1,13 @@
 /**
- * A fake opencode plugin context.
+ * A fake opencode plugin context: the server-side host.
  *
- * `Plugin.Context` is a large, branded surface; the plugin's entry point reads
- * seven of its members. The fake implements exactly those, so a test can call
- * `setup`, drive the registered tool the way the host would, emit events into
- * the subscription, and inspect the storage the plugin wrote.
+ * `Plugin.Context` is a large, branded surface; the plugin reads nine of its
+ * members. The fake implements exactly those, so a test can call `setup`, drive
+ * the registered tool the way the host would, emit events into the subscription,
+ * call a registered RPC the way the host would, and inspect the storage the
+ * plugin wrote. The storage namespace and the RPC surface are fakes of their own
+ * (`fake-storage.ts`, `fake-rpc.ts`); this file is the host the entry point
+ * meets, and one subject: what the host does around a plugin.
  *
  * Two fakes can share one `FakeStorage`, which is how the tests stand in for two
  * locations of one machine: the host's storage is shared per plugin id, while
@@ -20,7 +23,8 @@
 import type { Plugin } from "@opencode/plugin"
 
 import type { HostEvent } from "../src/host/events.ts"
-import { pluginStorage, type PluginStorage } from "../src/host/storage.ts"
+import { fakeRpcSurface, type FakeRpc } from "./fake-rpc.ts"
+import { fakeStorage, type FakeStorage } from "./fake-storage.ts"
 
 /** The session a tool call comes from, unless a test says otherwise. */
 export const CALLER_SESSION_ID = "ses_fake_caller"
@@ -67,12 +71,6 @@ export interface FakeSkill {
   readonly content: string
 }
 
-export interface FakeScanOptions {
-  readonly prefix: string
-  readonly after?: string
-  readonly limit?: number
-}
-
 /** One message the plugin asked the host to hand to a session. */
 export interface FakePrompt {
   readonly sessionID: string
@@ -89,63 +87,6 @@ export interface FakeGeneration {
 /** One version control lookup the plugin made for a directory. */
 export interface FakeVcsLookup {
   readonly directory: string
-}
-
-export interface FakeStorage {
-  readonly get: (key: string) => Promise<unknown>
-  readonly set: (key: string, value: unknown) => Promise<void>
-  readonly remove: (key: string) => Promise<void>
-  readonly scan: (options: FakeScanOptions) => Promise<{
-    readonly entries: readonly { readonly key: string; readonly value: unknown }[]
-    readonly next?: string
-  }>
-  /** Every stored value, in key order: what the plugin asked the host to keep. */
-  values(): readonly unknown[]
-}
-
-/** One scan page. The real host may page; the fake always does, so nothing can rely on a single page. */
-const SCAN_PAGE = 2
-
-export function fakeStorage(): FakeStorage {
-  const entries = new Map<string, unknown>()
-
-  return {
-    async get(key) {
-      return entries.get(key)
-    },
-    async set(key, value) {
-      entries.set(key, value)
-    },
-    async remove(key) {
-      entries.delete(key)
-    },
-    async scan(options) {
-      const matching = [...entries.keys()]
-        .filter((key) => key.startsWith(options.prefix) && (options.after === undefined || key > options.after))
-        .sort()
-      const page = matching.slice(0, options.limit ?? SCAN_PAGE)
-      const next = matching.length > page.length ? page[page.length - 1] : undefined
-      return {
-        entries: page.map((key) => ({ key, value: entries.get(key) })),
-        ...(next === undefined ? {} : { next }),
-      }
-    },
-    values() {
-      return [...entries.keys()].sort().map((key) => entries.get(key))
-    },
-  }
-}
-
-/**
- * The shared storage seen through the plugin's own adapter.
- *
- * The fake keeps values as `unknown` on purpose — it must not quietly mirror the
- * host's JSON type to look more like the host than it is — while the adapter
- * takes that JSON type. The conversion belongs here, next to the fake, rather
- * than in every test that seeds or inspects the namespace.
- */
-export function fakePluginStorage(raw: FakeStorage): PluginStorage {
-  return pluginStorage(raw as unknown as Parameters<typeof pluginStorage>[0])
 }
 
 export interface FakeHostOptions {
@@ -186,6 +127,8 @@ export interface FakeHost {
   readonly tools: readonly ToolInfo[]
   /** Skills the plugin registered, in order. */
   readonly skills: readonly FakeSkill[]
+  /** RPC surfaces the plugin registered, in order. */
+  readonly rpcs: readonly FakeRpc[]
   /** The storage the plugin wrote to; the same object the host was given. */
   readonly storage: FakeStorage
   /** Delivers an event to the plugin's subscription, as the host would. */
@@ -221,6 +164,7 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
   const vcsLookups: FakeVcsLookup[] = []
   const tools: ToolInfo[] = []
   const skills: FakeSkill[] = []
+  const rpc = fakeRpcSurface()
   const refused = new Set(options.promptRefuses ?? [])
   const unreadable = new Set(options.contextRefuses ?? [])
   const subscriptions = new Set<FakeSubscription>()
@@ -345,6 +289,7 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
         return { dispose: async () => {} }
       },
     },
+    rpc: rpc.context,
   }
 
   return {
@@ -358,6 +303,9 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
     vcsLookups,
     tools,
     skills,
+    get rpcs(): readonly FakeRpc[] {
+      return rpc.rpcs()
+    },
     storage,
     emit(type, data) {
       eventCounter += 1

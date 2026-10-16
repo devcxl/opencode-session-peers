@@ -13,7 +13,8 @@ import { RECLAIM_MARGIN, reclaimable } from "../src/domain/reclaim.ts"
 import type { AskRecord, Peer, ReplyRecord } from "../src/domain/types.ts"
 import plugin from "../src/index.ts"
 import { reclaimStale } from "../src/peers/reclaim.ts"
-import { fakeHost, fakePluginStorage, fakeStorage, type FakeStorage } from "./fake-host.ts"
+import { fakeHost } from "./fake-host.ts"
+import { fakePluginStorage, fakeStorage, type FakeStorage } from "./fake-storage.ts"
 
 const TTL = DEFAULT_CONFIG.rosterTtlMs
 const NOW = 1_000_000_000_000

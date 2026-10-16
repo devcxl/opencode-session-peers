@@ -11,6 +11,7 @@ import type { Plugin } from "@opencode/plugin"
 
 import type { EventSource } from "./events.ts"
 import { sessionGeneration, type Generation } from "./generation.ts"
+import { rpcRegistrar, type RpcRegistrar } from "./rpc.ts"
 import { sessionLookup, type SessionLookup } from "./session.ts"
 import { skillRegistrar, type SkillRegistrar } from "./skills.ts"
 import { pluginStorage, type PluginStorage } from "./storage.ts"
@@ -39,6 +40,8 @@ export interface Host {
   readonly tools: ToolRegistrar
   /** The model-facing text this plugin contributes; a skill the model may load. */
   readonly skills: SkillRegistrar
+  /** The plugin's own callable surface, for other plugins to read. */
+  readonly rpc: RpcRegistrar
 }
 
 export function createHost(context: Plugin.Context): Host {
@@ -57,5 +60,6 @@ export function createHost(context: Plugin.Context): Host {
     },
     tools: toolRegistrar(context.tool),
     skills: skillRegistrar(context.skill),
+    rpc: rpcRegistrar(context.rpc),
   }
 }

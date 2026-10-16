@@ -39,6 +39,16 @@ export interface RosterDeps {
   readonly instanceID?: string
 }
 
+/** What one read of the roster saw, and what it can say about an empty one. */
+export interface RosterReport {
+  /** Every live peer in this instance's scope, sorted as `live()` sorts them. */
+  readonly peers: readonly Peer[]
+  /** In-scope records whose heartbeats stopped: the peers that went quiet. */
+  readonly quietInScope: number
+  /** Live records in another scope: sessions this instance may not address. */
+  readonly liveInOtherScopes: number
+}
+
 export interface Roster {
   /**
    * Publishes a session as served by this instance and returns its row. The
@@ -48,6 +58,14 @@ export interface Roster {
   publish(sessionID: SessionID): Promise<Peer>
   /** Every live peer in this instance's scope, this instance's sessions included. */
   live(): Promise<readonly Peer[]>
+  /** `live()` plus what explains an empty answer: who went quiet, who is elsewhere. */
+  report(): Promise<RosterReport>
+  /**
+   * Called when what a reader of `live()` or `report()` would see changes.
+   * Changes a reader cannot observe — a heartbeat refreshing a row that already
+   * reads the same — are not announced.
+   */
+  observe(listener: () => void): void
   /**
    * Stops the heartbeat and the event subscription. The records this instance
    * published are deliberately left behind: the successor that serves this
@@ -70,6 +88,9 @@ export async function startRoster(deps: RosterDeps): Promise<Roster> {
 class LiveRoster implements Roster {
   /** The sessions this instance publishes, and what it last wrote for each. */
   private readonly served = new Map<SessionID, Peer>()
+  private readonly listeners: (() => void)[] = []
+  /** What the last announcement said; a beat that changes nothing stays quiet. */
+  private announced: string | undefined
   private readonly index: SessionIndex
   private readonly heartbeat: Timer
   private disposed = false
@@ -118,25 +139,45 @@ class LiveRoster implements Roster {
       // not write is a decision the plan has not settled (open question 5).
       await this.adopt(peer.sessionID)
     }
+    await this.announce()
   }
 
   async publish(sessionID: SessionID): Promise<Peer> {
     const peer = this.row(await this.deps.sessions.get(sessionID))
     await this.store(peer)
+    await this.announce()
     return peer
   }
 
   async live(): Promise<readonly Peer[]> {
+    return (await this.report()).peers
+  }
+
+  async report(): Promise<RosterReport> {
     const { rosterTtlMs, scope } = this.deps.config
     const now = Date.now()
     const stored = await this.deps.storage.peers.list()
+    const records = stored.map((record) => record.value)
 
-    return stored
-      .map((record) => record.value)
-      // A record from another scope is not a peer, and one whose heartbeats
-      // stopped belongs to a session (or an instance) that has gone away.
-      .filter((peer) => peer.scope === scope && now - peer.updatedAt <= rosterTtlMs)
-      .sort(byDirectoryThenTitle)
+    // A record from another scope is not a peer, and one whose heartbeats
+    // stopped belongs to a session (or an instance) that has gone away. The two
+    // counts are what tells those cases apart from a scope with nobody in it,
+    // which is the difference the view has to report.
+    return {
+      peers: records
+        .filter((peer) => peer.scope === scope && now - peer.updatedAt <= rosterTtlMs)
+        .sort(byDirectoryThenTitle),
+      quietInScope: records.filter(
+        (peer) => peer.scope === scope && now - peer.updatedAt > rosterTtlMs,
+      ).length,
+      liveInOtherScopes: records.filter(
+        (peer) => peer.scope !== scope && now - peer.updatedAt <= rosterTtlMs,
+      ).length,
+    }
+  }
+
+  observe(listener: () => void): void {
+    this.listeners.push(listener)
   }
 
   async dispose(): Promise<void> {
@@ -150,6 +191,7 @@ class LiveRoster implements Roster {
     // they age out of every reader's view at the TTL and are re-published by
     // whoever takes over, or reclaimed by the sweep if nobody does.
     this.served.clear()
+    this.listeners.length = 0
   }
 
   /** Keeps the records of this instance's sessions fresh for as long as it runs. */
@@ -162,7 +204,33 @@ class LiveRoster implements Roster {
         this.deps.warn(`could not refresh ${sessionID} on the roster: ${describeError(error)}`)
       }
     }
-    if (!this.disposed) await this.sweep()
+    if (this.disposed) return
+    await this.sweep()
+    // A peer in another location writes to the shared storage without this
+    // instance ever seeing an event for it, so the beat is when a foreign row
+    // appearing — or going quiet — is noticed at all.
+    await this.announce()
+  }
+
+  /**
+   * Tells the listeners when a read would say something new: a session joining
+   * or leaving the roster, or a row's title or status changing. A refresh that
+   * leaves a row reading the same is not news, so the signature of what a
+   * reader would see is what decides.
+   */
+  private async announce(): Promise<void> {
+    let signature: string
+    try {
+      signature = signatureOf(await this.report())
+    } catch (error) {
+      // A reader's own call reports the failure it sees, and the next beat
+      // tries again: a roster that cannot be read is not made worse here.
+      this.deps.warn(`could not check the roster for changes: ${describeError(error)}`)
+      return
+    }
+    if (signature === this.announced) return
+    this.announced = signature
+    for (const listener of this.listeners) listener()
   }
 
   /**
@@ -191,6 +259,7 @@ class LiveRoster implements Roster {
       // A deleted session is off the roster at once rather than at the TTL.
       if (change.kind === "gone") await this.forget(change.sessionID)
       else await this.adopt(change.session.sessionID)
+      await this.announce()
     } catch (error) {
       this.deps.warn(`could not update ${change.kind} session on the roster: ${describeError(error)}`)
     }
@@ -254,4 +323,21 @@ function byDirectoryThenTitle(left: Peer, right: Peer): number {
   if (left.directory !== right.directory) return left.directory < right.directory ? -1 : 1
   if (left.title !== right.title) return left.title < right.title ? -1 : 1
   return left.sessionID < right.sessionID ? -1 : left.sessionID > right.sessionID ? 1 : 0
+}
+
+/**
+ * What a reader would see, as one string — no timestamps: every heartbeat
+ * rewrites `updatedAt`, and a row that still reads the same is not a change.
+ */
+function signatureOf(report: RosterReport): string {
+  return JSON.stringify({
+    peers: report.peers.map((peer) => [
+      peer.sessionID,
+      peer.title,
+      peer.directory,
+      peer.status ?? null,
+    ]),
+    quietInScope: report.quietInScope,
+    liveInOtherScopes: report.liveInOtherScopes,
+  })
 }

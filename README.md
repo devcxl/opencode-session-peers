@@ -8,7 +8,8 @@ over context to another session.
 - Same machine, same operating-system user: peers meet through opencode's own plugin storage and
   messages are delivered with the host's own session prompt call. There is no daemon, no socket and
   no network service.
-- No user interface: everything the plugin reports, it reports to the calling model as a tool result.
+- A read-only sidebar shows the roster (see [Sidebar](#sidebar)); everything the plugin *does*, it
+  reports to the calling model as a tool result.
 - Not implemented, deliberately: cross-machine messaging, broadcast, message revocation, a standalone
   CLI. See [`SECURITY.md`](./SECURITY.md) for the trust boundary and
   [`docs/adr/`](./docs/adr) for the decisions and the alternatives that were rejected.
@@ -130,6 +131,33 @@ refused at once with guidance instead of waiting out the timeout, and a `send` i
 only when the call returns. **A parent that wants to be asked must spawn the child with
 `background: true`.** The plugin registers a skill with this text, so a parent sees it while deciding
 how to spawn (ADR-0002).
+
+## Sidebar
+
+The same package ships a TUI half, exported as `./tui`, that renders into the host's
+`sidebar.content` slot: one row per live peer with its title, its directory, its status, whether it
+is this session and whether it shares this session's directory — under a header that names the
+scope and says that only sessions loading the plugin appear. It is a view and nothing else: no
+action sends, asks or replies from it.
+
+Declare it in the TUI's own config, `~/.config/opencode/cli.json` (the server half stays in
+`opencode.json` as above):
+
+```json
+{
+  "$schema": "https://opencode.ai/v2/cli.json",
+  "plugins": [{ "package": "/absolute/path/to/opencode-session-peers" }]
+}
+```
+
+The sidebar reads the server plugin through a versioned RPC surface — id `session-peers.v1`, one
+method `roster`, one event `changed` — which is exported as `./rpc` for other plugins: one call when
+the view opens, then the plugin's own change events, with a slow refresh under them. It resolves the
+roster of the location the TUI runs in and asks no other location, so opening it never starts plugin
+instances in someone else's directory. What it cannot know, it says: a session whose instance has
+not seen it run is shown as `unknown` with the reason, and an empty view names which of the three
+situations it is — nobody in this scope loads the plugin, everybody in it went quiet, or the live
+sessions are in another scope.
 
 ## How it works
 

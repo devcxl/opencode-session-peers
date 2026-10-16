@@ -16,7 +16,8 @@ import { join } from "node:path"
 
 import { HANDOVER_SECTIONS } from "../src/domain/handover.ts"
 import plugin from "../src/index.ts"
-import { fakeHost, fakeStorage, type FakeHostOptions } from "./fake-host.ts"
+import { fakeHost, type FakeHostOptions } from "./fake-host.ts"
+import { fakeStorage } from "./fake-storage.ts"
 
 const ALPHA = { id: "ses_aaaa1111", title: "Payments API" }
 const BETA = { id: "ses_bbbb2222", title: "Docs site" }

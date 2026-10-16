@@ -14,7 +14,8 @@ import { describe, expect, test } from "bun:test"
 import { peerKey } from "../src/host/storage.ts"
 import type { Peer } from "../src/domain/types.ts"
 import plugin from "../src/index.ts"
-import { fakeHost, fakeStorage, type FakeHostOptions, type FakeStorage } from "./fake-host.ts"
+import { fakeHost, type FakeHostOptions } from "./fake-host.ts"
+import { fakeStorage, type FakeStorage } from "./fake-storage.ts"
 
 const ALPHA = { id: "ses_aaaa1111", title: "Payments API" }
 const BETA = { id: "ses_bbbb2222", title: "Docs site" }
