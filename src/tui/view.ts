@@ -24,11 +24,24 @@ export type RosterState =
 /** How much secondary emphasis a line asks for. */
 export type LineTone = "base" | "muted" | "error"
 
-export interface ViewLine {
-  readonly text: string
-  readonly tone: LineTone
-  /** The section's own line: the title, not a row. */
-  readonly strong?: true
+/**
+ * The panel's content, as the four stable blocks the view draws.
+ *
+ * Four blocks rather than a line list because of what the host repaints: a text
+ * element whose *content* changes is redrawn, while inserting or removing
+ * elements in a plugin's slot was measured not to reach the screen on its own.
+ * So the panel keeps its shape and changes only what the blocks say.
+ */
+export interface ViewContent {
+  /** The panel's own line: what this list is. */
+  readonly title: string
+  /** Under the title: the scope, and why the list is not the whole machine. */
+  readonly context: readonly string[]
+  /** The peers, one per line. */
+  readonly rows: readonly string[]
+  /** What is left to say: the empty cause, a refusal, a broken answer. */
+  readonly notes: readonly string[]
+  readonly noteTone: LineTone
 }
 
 export interface ViewInput {
@@ -39,38 +52,53 @@ export interface ViewInput {
   readonly sessionDirectory: string | undefined
 }
 
-export function viewLines(input: ViewInput): readonly ViewLine[] {
-  const lines: ViewLine[] = [title(input.state)]
-
+export function viewContent(input: ViewInput): ViewContent {
   switch (input.state.kind) {
     case "loading":
-      lines.push({ text: "reading the roster…", tone: "muted" })
-      return lines
+      return block("Session peers", ["reading the roster…"])
     case "failed":
-      lines.push({ text: input.state.reason, tone: "error" })
-      return lines
+      return {
+        title: "Session peers is unavailable",
+        context: [],
+        rows: [],
+        notes: [input.state.reason],
+        noteTone: "error",
+      }
     case "unreadable":
-      lines.push({
-        text: "the answer was not a roster this view understands",
-        tone: "error",
-      })
-      return lines
+      return {
+        title: "Session peers is unavailable",
+        context: [],
+        rows: [],
+        notes: ["the answer was not a roster this view understands"],
+        noteTone: "error",
+      }
     case "payload": {
       const payload = input.state.payload
       if (!payload.enabled) {
-        lines.push({ text: "off here: enabled is false, so nothing is published", tone: "muted" })
-        return lines
-      }
-      lines.push({ text: scopeLine(payload.scope), tone: "muted" })
-      lines.push({ text: HEADER_LIMIT, tone: "muted" })
-      for (const peer of payload.peers) {
-        lines.push({ text: peerRow(peer, marksFor(peer, input.sessionID, input.sessionDirectory)), tone: "base" })
+        return {
+          title: "Session peers",
+          context: [],
+          rows: [],
+          notes: ["off here: enabled is false, so nothing is published"],
+          noteTone: "muted",
+        }
       }
       const cause = emptyCause(payload, input.sessionID)
-      if (cause !== undefined) lines.push({ text: emptyCauseLine(cause, payload), tone: "muted" })
-      return lines
+      return {
+        title: "Session peers",
+        context: [scopeLine(payload.scope), HEADER_LIMIT],
+        rows: payload.peers.map((peer) =>
+          peerRow(peer, marksFor(peer, input.sessionID, input.sessionDirectory)),
+        ),
+        notes: cause === undefined ? [] : [emptyCauseLine(cause, payload)],
+        noteTone: "muted",
+      }
     }
   }
+}
+
+function block(title: string, context: readonly string[]): ViewContent {
+  return { title, context, rows: [], notes: [], noteTone: "muted" }
 }
 
 /** The header's second line: the reason this list is not the whole machine. */
@@ -78,13 +106,6 @@ export const HEADER_LIMIT = "only sessions loading this plugin appear"
 
 function scopeLine(scope: string): string {
   return `scope: ${scope}`
-}
-
-function title(state: RosterState): ViewLine {
-  if (state.kind === "failed" || state.kind === "unreadable") {
-    return { text: "Session peers is unavailable", tone: "base", strong: true }
-  }
-  return { text: "Session peers", tone: "base", strong: true }
 }
 
 export interface RowMarks {

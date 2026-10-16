@@ -2,6 +2,10 @@
  * What the panel reads: one snapshot when the view opens, then the plugin's own
  * events keep it current.
  *
+ * One snapshot when the view opens, then the plugin's own events keep it
+ * current; the panel's slow refresh is the floor under those events, not a
+ * second mechanism.
+ *
  * The order is what makes the snapshot trustworthy. Events replay nothing, so a
  * reader that subscribed after taking its snapshot could miss a change that
  * happened in between and show it forever. Here the subscription is installed
@@ -23,7 +27,7 @@ import type { RosterState } from "./view.ts"
 
 export interface RosterFeed {
   readonly state: () => RosterState
-  /** The one call the view opens with. */
+  /** One snapshot: the call the view opens with, and the safety refresh. */
   open(): void
   /** Ends the subscription; reads still in flight stop updating the state. */
   dispose(): void

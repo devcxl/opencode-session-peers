@@ -1,10 +1,10 @@
 /**
- * What the sidebar shows, as text.
+ * What the sidebar shows, block by block.
  *
- * The panel itself only draws these lines, so everything a person would read is
- * asserted here — including the promises the view must not break: a status that
- * is not known is never rendered as idle, and an empty view names which of the
- * three situations it is.
+ * The panel itself only draws these blocks, so everything a person would read
+ * is asserted here — including the promises the view must not break: a status
+ * that is not known is never rendered as idle, and an empty view names which of
+ * the three situations it is.
  */
 
 import { describe, expect, test } from "bun:test"
@@ -17,8 +17,9 @@ import {
   HEADER_LIMIT,
   marksFor,
   peerRow,
-  viewLines,
+  viewContent,
   type RosterState,
+  type ViewContent,
 } from "../src/tui/view.ts"
 
 const SELF = "ses_self0000"
@@ -45,8 +46,8 @@ function peer(overrides: Partial<RosterPeer> & { sessionID: string }): RosterPee
   }
 }
 
-function lines(state: RosterState, sessionDirectory: string | undefined = undefined) {
-  return viewLines({ state, sessionID: SELF, sessionDirectory })
+function content(state: RosterState, sessionDirectory: string | undefined = undefined): ViewContent {
+  return viewContent({ state, sessionID: SELF, sessionDirectory })
 }
 
 function state(overrides: Partial<RosterPayload> = {}): RosterState {
@@ -56,10 +57,9 @@ function state(overrides: Partial<RosterPayload> = {}): RosterState {
 describe("the header", () => {
   test("names the scope and says who can appear", () => {
     expect(HEADER_LIMIT).toBe("only sessions loading this plugin appear")
-    const rows = lines(state({ scope: "team-a", peers: [peer({ sessionID: "ses_aaaa1111" })] }))
-    expect(rows[0]).toEqual({ text: "Session peers", tone: "base", strong: true })
-    expect(rows[1]).toEqual({ text: "scope: team-a", tone: "muted" })
-    expect(rows[2]).toEqual({ text: HEADER_LIMIT, tone: "muted" })
+    const blocks = content(state({ scope: "team-a", peers: [peer({ sessionID: "ses_aaaa1111" })] }))
+    expect(blocks.title).toBe("Session peers")
+    expect(blocks.context).toEqual(["scope: team-a", HEADER_LIMIT])
   })
 })
 
@@ -120,8 +120,8 @@ describe("a row", () => {
     })
   })
 
-  test("shows the marks on the line itself", () => {
-    const rows = lines(
+  test("draws the marks on the row itself", () => {
+    const blocks = content(
       state({
         peers: [
           peer({ sessionID: SELF, title: "This one", directory: "/work/alpha" }),
@@ -131,9 +131,9 @@ describe("a row", () => {
       }),
       "/work/alpha",
     )
-    expect(rows[3]?.text).toContain("[this session]")
-    expect(rows[4]?.text).toContain("[same dir]")
-    expect(rows[5]?.text).not.toContain("[")
+    expect(blocks.rows[0]).toContain("[this session]")
+    expect(blocks.rows[1]).toContain("[same dir]")
+    expect(blocks.rows[2]).not.toContain("[")
   })
 })
 
@@ -170,47 +170,48 @@ describe("an empty view", () => {
     )
   })
 
-  test("puts the cause on the panel, and leaves it off when a peer is there", () => {
-    const alone = lines(state({ quietInScope: 1 }))
-    expect(alone.at(-1)?.text).toBe(emptyCauseLine("allWentQuiet", payload({ quietInScope: 1 })))
-    expect(alone.at(-1)?.tone).toBe("muted")
+  test("puts the cause among the notes, and leaves it off when a peer is there", () => {
+    const alone = content(state({ quietInScope: 1 }))
+    expect(alone.rows).toEqual([])
+    expect(alone.notes).toEqual([emptyCauseLine("allWentQuiet", payload({ quietInScope: 1 }))])
+    expect(alone.noteTone).toBe("muted")
 
-    const accompanied = lines(state({ peers: [peer({ sessionID: "ses_b" })] }))
-    expect(accompanied.some((line) => line.text.startsWith("No peer"))).toBe(false)
-    expect(accompanied.some((line) => line.text.startsWith("Every peer"))).toBe(false)
+    const accompanied = content(state({ peers: [peer({ sessionID: "ses_b" })] }))
+    expect(accompanied.rows).toHaveLength(1)
+    expect(accompanied.notes).toEqual([])
   })
 })
 
 describe("the other states", () => {
   test("says it is reading, before the first answer", () => {
-    expect(lines({ kind: "loading" })).toEqual([
-      { text: "Session peers", tone: "base", strong: true },
-      { text: "reading the roster…", tone: "muted" },
-    ])
+    expect(content({ kind: "loading" })).toEqual({
+      title: "Session peers",
+      context: ["reading the roster…"],
+      rows: [],
+      notes: [],
+      noteTone: "muted",
+    })
   })
 
   test("reports a failed call with its reason instead of an old roster", () => {
-    const rows = lines({ kind: "failed", reason: "RPC is unavailable: session-peers.v1" })
-    expect(rows[0]).toEqual({ text: "Session peers is unavailable", tone: "base", strong: true })
-    expect(rows[1]).toEqual({ text: "RPC is unavailable: session-peers.v1", tone: "error" })
+    const blocks = content({ kind: "failed", reason: "RPC is unavailable: session-peers.v1" })
+    expect(blocks.title).toBe("Session peers is unavailable")
+    expect(blocks.notes).toEqual(["RPC is unavailable: session-peers.v1"])
+    expect(blocks.noteTone).toBe("error")
   })
 
   test("refuses to render an answer it does not understand", () => {
-    const rows = lines({ kind: "unreadable" })
-    expect(rows[0]?.text).toBe("Session peers is unavailable")
-    expect(rows[1]).toEqual({
-      text: "the answer was not a roster this view understands",
-      tone: "error",
-    })
+    const blocks = content({ kind: "unreadable" })
+    expect(blocks.title).toBe("Session peers is unavailable")
+    expect(blocks.notes).toEqual(["the answer was not a roster this view understands"])
+    expect(blocks.noteTone).toBe("error")
   })
 
   test("renders a disabled plugin as off, not as an empty roster", () => {
-    const rows = lines(state({ enabled: false, peers: [peer({ sessionID: "ses_b" })] }))
-    expect(rows[1]).toEqual({
-      text: "off here: enabled is false, so nothing is published",
-      tone: "muted",
-    })
+    const blocks = content(state({ enabled: false, peers: [peer({ sessionID: "ses_b" })] }))
+    expect(blocks.context).toEqual([])
+    expect(blocks.rows).toEqual([])
+    expect(blocks.notes).toEqual(["off here: enabled is false, so nothing is published"])
     // No cause is named: the plugin is off, which is not a fact about peers.
-    expect(rows).toHaveLength(2)
   })
 })
