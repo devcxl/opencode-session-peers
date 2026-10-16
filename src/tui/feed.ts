@@ -1,10 +1,7 @@
 /**
  * What the panel reads: one snapshot when the view opens, then the plugin's own
- * events keep it current.
- *
- * One snapshot when the view opens, then the plugin's own events keep it
- * current; the panel's slow refresh is the floor under those events, not a
- * second mechanism.
+ * events keep it current, with the panel's slow refresh as the floor under them
+ * rather than a second mechanism.
  *
  * The order is what makes the snapshot trustworthy. Events replay nothing, so a
  * reader that subscribed after taking its snapshot could miss a change that

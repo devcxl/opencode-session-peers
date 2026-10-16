@@ -60,7 +60,10 @@ export function createTuiPort(context: Plugin.Context): TuiPort {
       read: () =>
         client.roster(
           {},
-          { location: context.location ?? context.data.location.default(), signal: AbortSignal.timeout(RPC_TIMEOUT_MS) },
+          {
+            location: context.location ?? context.data.location.default(),
+            signal: AbortSignal.timeout(RPC_TIMEOUT_MS),
+          },
         ),
       onChange: (listener) => client.events.on("changed", () => listener()),
     },
