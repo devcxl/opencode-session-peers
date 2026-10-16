@@ -1,10 +1,13 @@
 /**
- * A fake opencode plugin context.
+ * A fake opencode plugin context: the server-side host.
  *
- * `Plugin.Context` is a large, branded surface; the plugin's entry point reads
- * seven of its members. The fake implements exactly those, so a test can call
- * `setup`, drive the registered tool the way the host would, emit events into
- * the subscription, and inspect the storage the plugin wrote.
+ * `Plugin.Context` is a large, branded surface; the plugin reads nine of its
+ * members. The fake implements exactly those, so a test can call `setup`, drive
+ * the registered tool the way the host would, emit events into the subscription,
+ * call a registered RPC the way the host would, and inspect the storage the
+ * plugin wrote. The storage namespace and the RPC surface are fakes of their own
+ * (`fake-storage.ts`, `fake-rpc.ts`); this file is the host the entry point
+ * meets, and one subject: what the host does around a plugin.
  *
  * Two fakes can share one `FakeStorage`, which is how the tests stand in for two
  * locations of one machine: the host's storage is shared per plugin id, while
@@ -20,7 +23,8 @@
 import type { Plugin } from "@opencode/plugin"
 
 import type { HostEvent } from "../src/host/events.ts"
-import { pluginStorage, type PluginStorage } from "../src/host/storage.ts"
+import { fakeRpcSurface, type FakeRpc } from "./fake-rpc.ts"
+import { fakeStorage, type FakeStorage } from "./fake-storage.ts"
 
 /** The session a tool call comes from, unless a test says otherwise. */
 export const CALLER_SESSION_ID = "ses_fake_caller"
@@ -67,12 +71,6 @@ export interface FakeSkill {
   readonly content: string
 }
 
-export interface FakeScanOptions {
-  readonly prefix: string
-  readonly after?: string
-  readonly limit?: number
-}
-
 /** One message the plugin asked the host to hand to a session. */
 export interface FakePrompt {
   readonly sessionID: string
@@ -89,170 +87,6 @@ export interface FakeGeneration {
 /** One version control lookup the plugin made for a directory. */
 export interface FakeVcsLookup {
   readonly directory: string
-}
-
-export interface FakeStorage {
-  readonly get: (key: string) => Promise<unknown>
-  readonly set: (key: string, value: unknown) => Promise<void>
-  readonly remove: (key: string) => Promise<void>
-  readonly scan: (options: FakeScanOptions) => Promise<{
-    readonly entries: readonly { readonly key: string; readonly value: unknown }[]
-    readonly next?: string
-  }>
-  /** Every stored value, in key order: what the plugin asked the host to keep. */
-  values(): readonly unknown[]
-}
-
-/** One event the plugin pushed through an RPC registration. */
-export interface FakeRpcEvent {
-  readonly name: string
-  readonly data: Readonly<Record<string, unknown>>
-}
-
-/** One RPC surface the plugin registered. */
-export interface FakeRpc {
-  /** The id the plugin registered under, as clients address it. */
-  readonly id: string
-  readonly methods: readonly string[]
-  /** Events pushed, in order; one subscription sees all of them. */
-  readonly events: readonly FakeRpcEvent[]
-  /** True once the plugin disposed the registration, as it does when unloaded. */
-  readonly disposed: boolean
-  /**
-   * Invokes one method the way the host does, and checks the answer against the
-   * method's own output schema before handing it back — a client would never
-   * see a value the schema rejects.
-   */
-  call(method: string, input?: unknown): Promise<unknown>
-}
-
-/** One scan page. The real host may page; the fake always does, so nothing can rely on a single page. */
-const SCAN_PAGE = 2
-
-/** A portable definition, as much of it as the fake needs. */
-interface FakeRpcDefinition {
-  readonly id: string
-  readonly methods: Readonly<Record<string, { readonly input: unknown; readonly output: unknown }>>
-  readonly events: Readonly<Record<string, { readonly schema: unknown }>>
-}
-
-type FakeRpcHandlers = Readonly<Record<string, ((input: unknown) => Promise<unknown>) | undefined>>
-
-interface FakeRpcRecord {
-  readonly definition: FakeRpcDefinition
-  readonly handlers: FakeRpcHandlers
-  readonly events: FakeRpcEvent[]
-  disposed: boolean
-}
-
-/** The one JSON Schema node shape the plugin's own definitions use. */
-interface SchemaNode {
-  readonly type?: string | readonly string[]
-  readonly properties?: Readonly<Record<string, SchemaNode>>
-  readonly required?: readonly string[]
-  readonly additionalProperties?: boolean
-  readonly items?: SchemaNode
-}
-
-/**
- * The subset of JSON Schema the host validates portable definitions with, as
- * far as this project's definitions exercise it: types (including a union with
- * `null`), `properties`, `required`, `additionalProperties: false` and `items`.
- * A value that fails here is a value the real host would refuse to deliver, so
- * the fake refuses it too.
- */
-function checkSchema(value: unknown, schema: unknown, path: string): void {
-  const node = schema as SchemaNode | undefined
-  if (node === undefined || node === null || typeof node !== "object") return
-
-  const types =
-    node.type === undefined ? undefined : Array.isArray(node.type) ? node.type : [node.type]
-  if (types !== undefined && !types.some((type) => matchesType(value, type))) {
-    throw new Error(`${path} is ${typeof value}, which ${types.join(" | ")} does not allow`)
-  }
-
-  if (Array.isArray(value)) {
-    for (const [index, entry] of value.entries()) checkSchema(entry, node.items, `${path}[${index}]`)
-    return
-  }
-  if (typeof value !== "object" || value === null) return
-
-  const properties = node.properties ?? {}
-  for (const name of node.required ?? []) {
-    if (!(name in value)) throw new Error(`${path}.${name} is required by the schema`)
-  }
-  for (const [name, entry] of Object.entries(value)) {
-    if (entry === undefined) {
-      // JSON transport drops an undefined property, so a client would receive
-      // something other than what the handler returned.
-      throw new Error(`${path}.${name} is undefined, which cannot survive the transport`)
-    }
-    const property = properties[name]
-    if (property === undefined) {
-      if (node.additionalProperties === false) {
-        throw new Error(`${path}.${name} is not allowed by the schema`)
-      }
-      continue
-    }
-    checkSchema(entry, property, `${path}.${name}`)
-  }
-}
-
-function matchesType(value: unknown, type: string): boolean {
-  switch (type) {
-    case "null":
-      return value === null
-    case "array":
-      return Array.isArray(value)
-    case "object":
-      return typeof value === "object" && value !== null && !Array.isArray(value)
-    case "integer":
-      return typeof value === "number" && Number.isInteger(value)
-    default:
-      return typeof value === type
-  }
-}
-
-export function fakeStorage(): FakeStorage {
-  const entries = new Map<string, unknown>()
-
-  return {
-    async get(key) {
-      return entries.get(key)
-    },
-    async set(key, value) {
-      entries.set(key, value)
-    },
-    async remove(key) {
-      entries.delete(key)
-    },
-    async scan(options) {
-      const matching = [...entries.keys()]
-        .filter((key) => key.startsWith(options.prefix) && (options.after === undefined || key > options.after))
-        .sort()
-      const page = matching.slice(0, options.limit ?? SCAN_PAGE)
-      const next = matching.length > page.length ? page[page.length - 1] : undefined
-      return {
-        entries: page.map((key) => ({ key, value: entries.get(key) })),
-        ...(next === undefined ? {} : { next }),
-      }
-    },
-    values() {
-      return [...entries.keys()].sort().map((key) => entries.get(key))
-    },
-  }
-}
-
-/**
- * The shared storage seen through the plugin's own adapter.
- *
- * The fake keeps values as `unknown` on purpose — it must not quietly mirror the
- * host's JSON type to look more like the host than it is — while the adapter
- * takes that JSON type. The conversion belongs here, next to the fake, rather
- * than in every test that seeds or inspects the namespace.
- */
-export function fakePluginStorage(raw: FakeStorage): PluginStorage {
-  return pluginStorage(raw as unknown as Parameters<typeof pluginStorage>[0])
 }
 
 export interface FakeHostOptions {
@@ -330,7 +164,7 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
   const vcsLookups: FakeVcsLookup[] = []
   const tools: ToolInfo[] = []
   const skills: FakeSkill[] = []
-  const rpcs: FakeRpcRecord[] = []
+  const rpc = fakeRpcSurface()
   const refused = new Set(options.promptRefuses ?? [])
   const unreadable = new Set(options.contextRefuses ?? [])
   const subscriptions = new Set<FakeSubscription>()
@@ -455,35 +289,7 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
         return { dispose: async () => {} }
       },
     },
-    rpc: {
-      // The real host keeps one registration per definition id and answers
-      // calls at the location it was registered for; the fake keeps them all
-      // and lets a test call one the way the host would.
-      register: async (
-        definition: FakeRpcDefinition,
-        handlers: FakeRpcHandlers,
-      ): Promise<{ events: { emit: (name: string, data: Readonly<Record<string, unknown>>) => Promise<void> }; dispose: () => Promise<void> }> => {
-        const record: FakeRpcRecord = { definition, handlers, events: [], disposed: false }
-        rpcs.push(record)
-        return {
-          events: {
-            async emit(name, data) {
-              const schema = definition.events[name]?.schema
-              // A name the definition does not declare is a bug in the plugin,
-              // and the real host refuses it rather than dropping it.
-              if (schema === undefined) {
-                throw new Error(`No RPC event named "${name}" on ${definition.id}`)
-              }
-              checkSchema(data, schema, `${definition.id}.${name}`)
-              record.events.push({ name, data })
-            },
-          },
-          async dispose() {
-            record.disposed = true
-          },
-        }
-      },
-    },
+    rpc: rpc.context,
   }
 
   return {
@@ -498,33 +304,7 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
     tools,
     skills,
     get rpcs(): readonly FakeRpc[] {
-      // Built on read: the plugin registers during `setup`, after the fake was.
-      return rpcs.map((record) => ({
-        get id() {
-          return record.definition.id
-        },
-        get methods() {
-          return Object.keys(record.definition.methods)
-        },
-        get events() {
-          return record.events
-        },
-        get disposed() {
-          return record.disposed
-        },
-        async call(method, input) {
-          const definition = record.definition.methods[method]
-          if (definition === undefined) {
-            throw new Error(`No RPC method named "${method}" on ${record.definition.id}`)
-          }
-          // The host validates both sides against the portable schemas; a value
-          // a client would never receive must not pass for one here either.
-          checkSchema(input ?? {}, definition.input, `${record.definition.id}.${method} input`)
-          const output = await record.handlers[method]?.(input)
-          checkSchema(output, definition.output, `${record.definition.id}.${method} output`)
-          return output
-        },
-      }))
+      return rpc.rpcs()
     },
     storage,
     emit(type, data) {

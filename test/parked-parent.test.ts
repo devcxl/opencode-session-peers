@@ -18,7 +18,8 @@ import { describe, expect, test } from "bun:test"
 import { parentParking } from "../src/domain/parked-parent.ts"
 import type { ToolCallRecord } from "../src/domain/types.ts"
 import plugin from "../src/index.ts"
-import { fakeHost, type FakeSession, type FakeStorage } from "./fake-host.ts"
+import { fakeHost, type FakeSession } from "./fake-host.ts"
+import type { FakeStorage } from "./fake-storage.ts"
 
 const PARENT: FakeSession = { id: "ses_pppp0001", title: "Main task" }
 const CHILD: FakeSession = { id: "ses_cccc0002", title: "Fibre probe", parentID: PARENT.id }

@@ -14,7 +14,8 @@ import { peerKey } from "../src/host/storage.ts"
 import plugin from "../src/index.ts"
 import { readRosterPayload, SESSION_PEERS_RPC_ID } from "../src/rpc.ts"
 import type { RosterPayload } from "../src/rpc.ts"
-import { fakeHost, fakeStorage, type FakeHostOptions } from "./fake-host.ts"
+import { fakeHost, type FakeHostOptions } from "./fake-host.ts"
+import { fakeStorage } from "./fake-storage.ts"
 
 /** Load the plugin into a fake host, as the host would, and keep the unload. */
 async function loaded(options: FakeHostOptions = {}) {
