@@ -497,32 +497,35 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
     vcsLookups,
     tools,
     skills,
-    rpcs: rpcs.map((record) => ({
-      get id() {
-        return record.definition.id
-      },
-      get methods() {
-        return Object.keys(record.definition.methods)
-      },
-      get events() {
-        return record.events
-      },
-      get disposed() {
-        return record.disposed
-      },
-      async call(method, input) {
-        const definition = record.definition.methods[method]
-        if (definition === undefined) {
-          throw new Error(`No RPC method named "${method}" on ${record.definition.id}`)
-        }
-        // The host validates both sides against the portable schemas; a value
-        // a client would never receive must not pass for one here either.
-        checkSchema(input ?? {}, definition.input, `${record.definition.id}.${method} input`)
-        const output = await record.handlers[method]?.(input)
-        checkSchema(output, definition.output, `${record.definition.id}.${method} output`)
-        return output
-      },
-    })),
+    get rpcs(): readonly FakeRpc[] {
+      // Built on read: the plugin registers during `setup`, after the fake was.
+      return rpcs.map((record) => ({
+        get id() {
+          return record.definition.id
+        },
+        get methods() {
+          return Object.keys(record.definition.methods)
+        },
+        get events() {
+          return record.events
+        },
+        get disposed() {
+          return record.disposed
+        },
+        async call(method, input) {
+          const definition = record.definition.methods[method]
+          if (definition === undefined) {
+            throw new Error(`No RPC method named "${method}" on ${record.definition.id}`)
+          }
+          // The host validates both sides against the portable schemas; a value
+          // a client would never receive must not pass for one here either.
+          checkSchema(input ?? {}, definition.input, `${record.definition.id}.${method} input`)
+          const output = await record.handlers[method]?.(input)
+          checkSchema(output, definition.output, `${record.definition.id}.${method} output`)
+          return output
+        },
+      }))
+    },
     storage,
     emit(type, data) {
       eventCounter += 1
