@@ -37,12 +37,25 @@ src/host/                the only place `ctx.*` appears
   events.ts              event subscription and the live session index
   storage.ts             namespaced, versioned reads/writes over `ctx.storage`
   tools.ts               tool registration through `ctx.tool.transform`
+  tui.ts                 the TUI context's port: palette, roster RPC, commands, dialogs
 src/peers/roster.ts      publish own sessions, read others, expire stale entries, scope filter
 src/ask/handshake.ts     pending asks, reply routing, timeouts, late-reply degradation
 src/actions/*.ts         one module per action; each returns result text plus details
 src/handover/generate.ts model-written handover through `ctx.session.generate`
 src/skill.ts             model-facing usage text
+src/rpc.ts               the versioned roster contract the TUI half (and other plugins) read
+tui.tsx                  TUI package entry — re-exports src/tui/index.tsx
+src/tui/                 the TUI half; same boundary rules, its own host port
+  index.tsx              wiring: one command (slash + palette) opens the roster dialog
+  feed.ts                one snapshot, then change events, with a slow refresh as the floor
+  view.ts                pure: what the dialog shows, cell by cell
+  dialog.tsx             draws the view's blocks; the table is the host's table renderable
 ```
+
+The TUI half is a second entrypoint (`./tui`), loaded beside the server plugin by one version. It
+renders nothing on its own: `/peers` (or `Session peers` in the palette) opens the host's dialog and
+the roster is drawn in it as a table. `test/boundaries.test.ts` enforces the same import rules for
+the `.tsx` half as for the server half.
 
 Scripts and humans reach this plugin through the host's own CLI (`opencode session list`,
 `opencode run --session <id> "<text>"`, `opencode api`) rather than a CLI of our own; see the scope note
