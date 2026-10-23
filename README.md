@@ -135,7 +135,7 @@ how to spawn (ADR-0002).
 ## Roster dialog
 
 The same package ships a TUI half, exported as `./tui`. It renders nothing until it is asked: `/peers`
-at the prompt, or `Session peers` in the command palette, opens the host's own dialog with the rosteras a table — one row per live peer, one column per fact (session, id, directory, status, marks) —
+at the prompt, or `Session peers` in the command palette, opens the host's own dialog with the roster as a table — one row per live peer, one column per fact (session, id, directory, status, marks) —
 under a header that names the scope and says that only sessions loading the plugin appear. The rows
 update while the dialog is open. It is a view and nothing else: no action sends, asks or replies from
 it.
