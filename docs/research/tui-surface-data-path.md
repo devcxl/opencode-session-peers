@@ -263,6 +263,24 @@ central question.
 
 ---
 
+### 2.4 Proof `[ran]` — the roster dialog: command registration and the TUI half's loading
+
+Three isolated TUI runs (the appendix's recipe; plugin = this package, `a9f97d4` and the
+review-fix branch) measured what a refactor may otherwise assume. Captures are ephemeral
+(`/tmp/peers-repro/*.typescript`), the facts below are the durable part:
+
+1. **`context.keymap.layer` called from `setup()` registers the command** — the `/peers`
+   command showed up in the prompt's slash completion and opened its dialog. The typing's
+   "owned by the calling component" does *not* mean setup-time registration fails on
+   2.0.29; a report of "the command does not appear" on a setup-registered command is
+   more likely the plugin not being loaded at all.
+2. **A server-side declaration loads the package's TUI half beside it** — with
+   `cli.json` `plugins: []`, the dialog still opened. The README's `cli.json`
+   declaration is therefore redundant on 2.0.29 (harmless, and version-proof advice),
+   not a requirement for the TUI half to load.
+3. **The dialog is live**: `reading the roster…` swapped in place to the empty-cause
+   line (`No peer in this scope loads the plugin.`) without reopening.
+
 ## 3. Q3 — every path from a TUI surface to server-side plugin state
 
 Route inventory `[inferred]` (2.0.29 route table in the binary; the plugin-related groups):

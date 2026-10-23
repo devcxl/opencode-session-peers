@@ -51,10 +51,16 @@ export interface TuiCommand {
 export interface TuiPort {
   readonly palette: () => TuiPalette
   readonly roster: RosterSource
-  /** The directory a session works in, when the TUI knows that session. */
-  sessionDirectory(sessionID: string): string | undefined
-  /** The session this TUI has open right now, when it has one. */
-  currentSessionID(): string | undefined
+  /**
+   * The session this TUI has open right now, and the directory it works in
+   * when the TUI knows the session — what the view's marks are relative to.
+   * Both are `undefined` outside a session; `directory` alone is `undefined`
+   * when the session is not one the TUI knows.
+   */
+  currentSession(): {
+    readonly sessionID: string | undefined
+    readonly directory: string | undefined
+  }
   /**
    * Adds a command to the palette and the prompt's slash names. The host owns
    * its lifetime — it lives as long as the plugin does, so there is no
@@ -95,11 +101,14 @@ export function createTuiPort(context: Plugin.Context): TuiPort {
       onChange: (listener) => client.events.on("changed", () => listener()),
     },
 
-    sessionDirectory: (sessionID) => context.data.session.get(sessionID)?.location.directory,
-
-    currentSessionID: () => {
+    currentSession: () => {
       const route = context.ui.router.current()
-      return route.type === "session" ? route.sessionID : undefined
+      const sessionID = route.type === "session" ? route.sessionID : undefined
+      return {
+        sessionID,
+        directory:
+          sessionID === undefined ? undefined : context.data.session.get(sessionID)?.location.directory,
+      }
     },
 
     command: (input) =>

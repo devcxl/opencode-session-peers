@@ -58,8 +58,7 @@ async function rendered(initial: RosterState) {
     () => (
       <RosterDialog
         state={state}
-        sessionID="ses_self0000"
-        sessionDirectory="/work/alpha"
+        viewpoint={{ sessionID: "ses_self0000", directory: "/work/alpha" }}
         palette={() => palette}
       />
     ),
@@ -89,7 +88,7 @@ describe("the dialog draws the roster as a table", () => {
     expect(text()).toContain("…1111")
     expect(text()).toContain("/work/alpha")
     expect(text()).toContain("busy")
-    // The marks are read against this session's directory (/work/alpha).
+    // The marks are read against this viewpoint's directory (/work/alpha).
     expect(text()).toContain("same dir")
   })
 

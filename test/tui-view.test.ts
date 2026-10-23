@@ -53,7 +53,7 @@ function content(
   state: RosterState,
   sessionDirectory: string | undefined = undefined,
 ): ViewContent {
-  return viewContent({ state, sessionID: SELF, sessionDirectory })
+  return viewContent({ state, viewpoint: { sessionID: SELF, directory: sessionDirectory } })
 }
 
 function state(overrides: Partial<RosterPayload> = {}): RosterState {
@@ -129,30 +129,31 @@ describe("a row", () => {
   })
 
   test("marks this session and the peers that share its directory", () => {
-    expect(marksFor(peer({ sessionID: SELF }), SELF, "/work/alpha")).toEqual({
+    const here = { sessionID: SELF, directory: "/work/alpha" }
+    expect(marksFor(peer({ sessionID: SELF }), here)).toEqual({
       self: true,
       sameDirectory: false,
     })
-    expect(marksFor(peer({ sessionID: "ses_b" }), SELF, "/work/alpha")).toEqual({
+    expect(marksFor(peer({ sessionID: "ses_b" }), here)).toEqual({
       self: false,
       sameDirectory: true,
     })
-    expect(marksFor(peer({ sessionID: "ses_c", directory: "/work/beta" }), SELF, "/work/alpha")).toEqual(
+    expect(marksFor(peer({ sessionID: "ses_c", directory: "/work/beta" }), here)).toEqual({
+      self: false,
+      sameDirectory: false,
+    })
+    // The TUI does not know the session: nothing is claimed about its directory.
+    expect(marksFor(peer({ sessionID: "ses_b" }), { sessionID: SELF, directory: undefined })).toEqual({
+      self: false,
+      sameDirectory: false,
+    })
+    // The TUI has no session open: nothing is claimed about this session either.
+    expect(marksFor(peer({ sessionID: "ses_b" }), { sessionID: undefined, directory: undefined })).toEqual(
       {
         self: false,
         sameDirectory: false,
       },
     )
-    // The TUI does not know the session: nothing is claimed about its directory.
-    expect(marksFor(peer({ sessionID: "ses_b" }), SELF, undefined)).toEqual({
-      self: false,
-      sameDirectory: false,
-    })
-    // The TUI has no session open: nothing is claimed about this session either.
-    expect(marksFor(peer({ sessionID: "ses_b" }), undefined, undefined)).toEqual({
-      self: false,
-      sameDirectory: false,
-    })
   })
 
   test("draws the marks in their own column", () => {
@@ -166,7 +167,8 @@ describe("a row", () => {
       }),
       "/work/alpha",
     )
-    const marks = blocks.rows.map((row) => rowTexts(row)[4])
+    const marksColumn = COLUMN_NAMES.indexOf("Marks")
+    const marks = blocks.rows.map((row) => rowTexts(row)[marksColumn])
     expect(marks).toEqual(["this session", "same dir", ""])
   })
 })

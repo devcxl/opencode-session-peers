@@ -25,6 +25,16 @@ export type RosterState =
 /** How much secondary emphasis a cell asks for. */
 export type Tone = "base" | "muted" | "error"
 
+/**
+ * The session the view is read from: what `this session` and `same dir` are
+ * relative to. `directory` is `undefined` when the TUI does not know the
+ * session, and then nothing is claimed about directories at all.
+ */
+export interface Viewpoint {
+  readonly sessionID: string | undefined
+  readonly directory: string | undefined
+}
+
 /** One cell of the table: its text, and how much it stands out. */
 export interface TableCell {
   readonly text: string
@@ -57,10 +67,8 @@ export interface ViewContent {
 
 export interface ViewInput {
   readonly state: RosterState
-  /** The session the dialog is for; only it is marked `this session`. */
-  readonly sessionID: string | undefined
-  /** The directory that session works in, when the TUI knows the session. */
-  readonly sessionDirectory: string | undefined
+  /** The session the dialog is for; its marks are relative to this one. */
+  readonly viewpoint: Viewpoint
 }
 
 export function viewContent(input: ViewInput): ViewContent {
@@ -104,14 +112,12 @@ export function viewContent(input: ViewInput): ViewContent {
           noteTone: "muted",
         }
       }
-      const cause = emptyCause(payload, input.sessionID)
+      const cause = emptyCause(payload, input.viewpoint.sessionID)
       return {
         title: "Session peers",
         contextLines: [scopeLine(payload.scope), HEADER_LIMIT],
         columns: COLUMNS,
-        rows: payload.peers.map((peer) =>
-          peerCells(peer, marksFor(peer, input.sessionID, input.sessionDirectory)),
-        ),
+        rows: payload.peers.map((peer) => peerCells(peer, marksFor(peer, input.viewpoint))),
         notes: cause === undefined ? [] : [emptyCauseLine(cause, payload)],
         noteTone: "muted",
       }
@@ -146,18 +152,13 @@ export interface RowMarks {
   readonly sameDirectory: boolean
 }
 
-export function marksFor(
-  peer: RosterPeer,
-  sessionID: string | undefined,
-  sessionDirectory: string | undefined,
-): RowMarks {
-  const self = sessionID !== undefined && peer.sessionID === sessionID
+export function marksFor(peer: RosterPeer, viewpoint: Viewpoint): RowMarks {
+  const self = viewpoint.sessionID !== undefined && peer.sessionID === viewpoint.sessionID
   return {
     self,
     // Being the session itself already says where it is; tagging it `same dir`
     // as well would only repeat the row.
-    sameDirectory:
-      !self && sessionDirectory !== undefined && peer.directory === sessionDirectory,
+    sameDirectory: !self && viewpoint.directory !== undefined && peer.directory === viewpoint.directory,
   }
 }
 
