@@ -21,7 +21,7 @@ import { extend } from "@opentui/solid"
 import { fg, TextTableRenderable, type TextChunk, type TextTableContent } from "@opentui/core"
 
 import type { TuiPalette } from "../host/tui.ts"
-import type { TableCell, Tone, ViewContent } from "./view.ts"
+import type { TableCell, Tone, ViewContent, Viewpoint } from "./view.ts"
 import { viewContent, type RosterState } from "./view.ts"
 
 // The plugin's JSX is created in the TUI's own @opentui/solid (the loader
@@ -33,9 +33,7 @@ export interface RosterDialogProps {
   /** The state as it stands now; re-read whenever the feed changes it. */
   readonly state: () => RosterState
   /** The session the dialog is for; its marks are relative to this one. */
-  readonly sessionID: string | undefined
-  /** The directory that session works in, when the TUI knows the session. */
-  readonly sessionDirectory: string | undefined
+  readonly viewpoint: Viewpoint
   /** The palette as it stands now, so a theme switch shows. */
   readonly palette: () => TuiPalette
 }
@@ -44,17 +42,11 @@ export function RosterDialog(props: RosterDialogProps) {
   const content = createMemo(() =>
     viewContent({
       state: props.state(),
-      sessionID: props.sessionID,
-      sessionDirectory: props.sessionDirectory,
+      viewpoint: props.viewpoint,
     }),
   )
 
-  const colour = (tone: Tone) => {
-    const palette = props.palette()
-    if (tone === "muted") return palette.muted
-    if (tone === "error") return palette.error
-    return palette.base
-  }
+  const colour = (tone: Tone) => colourFor(tone, props.palette())
 
   return (
     <box flexDirection="column">
@@ -89,7 +81,12 @@ function tableContent(view: ViewContent, palette: TuiPalette): TextTableContent 
 }
 
 function cellChunks(cell: TableCell, palette: TuiPalette): TextChunk[] {
-  const tone = cell.tone
-  const colour = tone === "muted" ? palette.muted : tone === "error" ? palette.error : palette.base
-  return [fg(colour)(cell.text)]
+  return [fg(colourFor(cell.tone, palette))(cell.text)]
+}
+
+/** The one place tone becomes colour. */
+function colourFor(tone: Tone, palette: TuiPalette): TuiPalette["base"] {
+  if (tone === "muted") return palette.muted
+  if (tone === "error") return palette.error
+  return palette.base
 }

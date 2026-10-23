@@ -22,19 +22,34 @@ import type { RosterSource } from "../host/tui.ts"
 import { readRosterPayload } from "../rpc.ts"
 import type { RosterState } from "./view.ts"
 
+/**
+ * How often the feed re-reads even when nothing has been announced. Events are
+ * live-only and measured to arrive in milliseconds, but they can be missed — a
+ * dropped event would otherwise freeze the view forever — so this is the floor
+ * under them, at one request a minute, not the mechanism.
+ */
+const REFRESH_MS = 60_000
+
 export interface RosterFeed {
   readonly state: () => RosterState
-  /** One snapshot: the call the view opens with, and the safety refresh. */
+  /** One snapshot, and the refresh floor starts ticking under the events. */
   open(): void
+  /** Stops the refresh floor; the subscription stays until dispose. */
+  close(): void
   /** Ends the subscription; reads still in flight stop updating the state. */
   dispose(): void
 }
 
-export function createRosterFeed(source: RosterSource): RosterFeed {
+export function createRosterFeed(
+  source: RosterSource,
+  options: { readonly refreshMs?: number } = {},
+): RosterFeed {
+  const refreshMs = options.refreshMs ?? REFRESH_MS
   const [state, setState] = createSignal<RosterState>({ kind: "loading" })
   let reading = false
   let stale = false
   let closed = false
+  let refresh: ReturnType<typeof setInterval> | undefined
 
   const read = (): void => {
     if (closed) return
@@ -72,10 +87,20 @@ export function createRosterFeed(source: RosterSource): RosterFeed {
 
   return {
     state,
-    open: () => read(),
+    open: () => {
+      read()
+      if (refresh === undefined) refresh = setInterval(() => read(), refreshMs)
+    },
+    close: () => {
+      if (refresh === undefined) return
+      clearInterval(refresh)
+      refresh = undefined
+    },
     dispose: () => {
       closed = true
       stop()
+      if (refresh !== undefined) clearInterval(refresh)
+      refresh = undefined
     },
   }
 }
