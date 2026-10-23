@@ -14,7 +14,8 @@ API.
 In scope: `list`, `list-cwd`, `send`, `ask`, `reply`, `pending`, `status`, `cancel`, `handover`;
 attachments (`file` / `snippet` / `context`); scope partitioning; the subagent supervisor channel.
 
-Out of scope, deliberately: cross-machine relay, any human-facing UI, broadcast, message revocation
+Out of scope, deliberately: cross-machine relay, any human-facing UI of our own (the TUI half is
+a read-only roster view inside the host's own dialog), broadcast, message revocation
 (`supersedes` / `retryOf`), the extension bus / outbox, structured interviews, `herdr` / tmux /
 project-pane integration, and a standalone CLI. The original ships a CLI, but the host already provides
 that surface — `opencode session list`, `opencode run --session <id> "<text>"`, `opencode api` — using
