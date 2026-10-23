@@ -1,9 +1,10 @@
 /**
- * What the sidebar shows, as text.
+ * What the dialog shows, as a table.
  *
- * Everything that decides a line lives here, so it can be read and tested
- * without a terminal: the panel component only maps these lines onto coloured
- * `text` elements, and `test/tui-view.test.ts` asserts the lines themselves.
+ * Everything that decides a cell lives here, so it can be read and tested
+ * without a terminal: the dialog component only maps these cells onto the
+ * host's table renderable and its colours, and `test/tui-view.test.ts` asserts
+ * the cells themselves.
  *
  * The vocabulary is the ticket's: this is a read-only view of one scope, a peer
  * with no live status says `unknown` and why, and an empty view names which of
@@ -12,7 +13,7 @@
 
 import type { RosterPayload, RosterPeer } from "../rpc.ts"
 
-/** What the panel is showing right now. */
+/** What the dialog is showing right now. */
 export type RosterState =
   | { readonly kind: "loading" }
   | { readonly kind: "payload"; readonly payload: RosterPayload }
@@ -21,33 +22,43 @@ export type RosterState =
   /** The call itself failed: no plugin here, no answer, a timeout. */
   | { readonly kind: "failed"; readonly reason: string }
 
-/** How much secondary emphasis a line asks for. */
-export type LineTone = "base" | "muted" | "error"
+/** How much secondary emphasis a cell asks for. */
+export type Tone = "base" | "muted" | "error"
+
+/** One cell of the table: its text, and how much it stands out. */
+export interface TableCell {
+  readonly text: string
+  readonly tone: Tone
+}
 
 /**
- * The panel's content, as the four stable blocks the view draws.
+ * The dialog's content, as the four stable blocks it draws.
  *
- * Four blocks rather than a line list because of what the host repaints: a text
- * element whose *content* changes is redrawn, while inserting or removing
- * elements in a plugin's slot was measured not to reach the screen on its own.
- * So the panel keeps its shape and changes only what the blocks say.
+ * Four blocks rather than free composition because of what the host repaints:
+ * an element whose *content* changes is redrawn, while inserting or removing
+ * elements was measured not to reach the screen on its own (measured in a
+ * slot; the dialog keeps the same shape rather than re-testing it). So the
+ * dialog keeps its elements and changes only what the blocks say — a table
+ * with no content draws nothing.
  */
 export interface ViewContent {
-  /** The panel's own line: what this list is. */
+  /** The dialog's own line: what this table is. */
   readonly title: string
-  /** Under the title: the scope, and why the list is not the whole machine. */
-  readonly context: readonly string[]
-  /** The peers, one per line. */
-  readonly rows: readonly string[]
+  /** Under the title: the scope, and why the table is not the whole machine. */
+  readonly contextLines: readonly string[]
+  /** The header row; empty when there is no table to show. */
+  readonly columns: readonly TableCell[]
+  /** The peers, one row each, in the same order as the columns. */
+  readonly rows: readonly (readonly TableCell[])[]
   /** What is left to say: the empty cause, a refusal, a broken answer. */
   readonly notes: readonly string[]
-  readonly noteTone: LineTone
+  readonly noteTone: Tone
 }
 
 export interface ViewInput {
   readonly state: RosterState
-  /** The session whose sidebar this is; only it is marked `this session`. */
-  readonly sessionID: string
+  /** The session the dialog is for; only it is marked `this session`. */
+  readonly sessionID: string | undefined
   /** The directory that session works in, when the TUI knows the session. */
   readonly sessionDirectory: string | undefined
 }
@@ -55,11 +66,19 @@ export interface ViewInput {
 export function viewContent(input: ViewInput): ViewContent {
   switch (input.state.kind) {
     case "loading":
-      return block("Session peers", ["reading the roster…"])
+      return {
+        title: "Session peers",
+        contextLines: ["reading the roster…"],
+        columns: COLUMNS,
+        rows: [],
+        notes: [],
+        noteTone: "muted",
+      }
     case "failed":
       return {
         title: "Session peers is unavailable",
-        context: [],
+        contextLines: [],
+        columns: [],
         rows: [],
         notes: [input.state.reason],
         noteTone: "error",
@@ -67,7 +86,8 @@ export function viewContent(input: ViewInput): ViewContent {
     case "unreadable":
       return {
         title: "Session peers is unavailable",
-        context: [],
+        contextLines: [],
+        columns: [],
         rows: [],
         notes: ["the answer was not a roster this view understands"],
         noteTone: "error",
@@ -77,7 +97,8 @@ export function viewContent(input: ViewInput): ViewContent {
       if (!payload.enabled) {
         return {
           title: "Session peers",
-          context: [],
+          contextLines: [],
+          columns: [],
           rows: [],
           notes: ["off here: enabled is false, so nothing is published"],
           noteTone: "muted",
@@ -86,9 +107,10 @@ export function viewContent(input: ViewInput): ViewContent {
       const cause = emptyCause(payload, input.sessionID)
       return {
         title: "Session peers",
-        context: [scopeLine(payload.scope), HEADER_LIMIT],
+        contextLines: [scopeLine(payload.scope), HEADER_LIMIT],
+        columns: COLUMNS,
         rows: payload.peers.map((peer) =>
-          peerRow(peer, marksFor(peer, input.sessionID, input.sessionDirectory)),
+          peerCells(peer, marksFor(peer, input.sessionID, input.sessionDirectory)),
         ),
         notes: cause === undefined ? [] : [emptyCauseLine(cause, payload)],
         noteTone: "muted",
@@ -97,11 +119,20 @@ export function viewContent(input: ViewInput): ViewContent {
   }
 }
 
-function block(title: string, context: readonly string[]): ViewContent {
-  return { title, context, rows: [], notes: [], noteTone: "muted" }
+function cell(text: string, tone: Tone): TableCell {
+  return { text, tone }
 }
 
-/** The header's second line: the reason this list is not the whole machine. */
+/** The header row: one column per fact, one fact per column. */
+export const COLUMNS: readonly TableCell[] = [
+  cell("Session", "muted"),
+  cell("ID", "muted"),
+  cell("Directory", "muted"),
+  cell("Status", "muted"),
+  cell("Marks", "muted"),
+]
+
+/** The header's second line: the reason this table is not the whole machine. */
 export const HEADER_LIMIT = "only sessions loading this plugin appear"
 
 function scopeLine(scope: string): string {
@@ -109,38 +140,41 @@ function scopeLine(scope: string): string {
 }
 
 export interface RowMarks {
-  /** This is the session the sidebar belongs to. */
+  /** This is the session the dialog is for. */
   readonly self: boolean
-  /** The peer works in the same directory as this session. */
+  /** The peer works in the same directory as that session. */
   readonly sameDirectory: boolean
 }
 
 export function marksFor(
   peer: RosterPeer,
-  sessionID: string,
+  sessionID: string | undefined,
   sessionDirectory: string | undefined,
 ): RowMarks {
-  const self = peer.sessionID === sessionID
+  const self = sessionID !== undefined && peer.sessionID === sessionID
   return {
     self,
     // Being the session itself already says where it is; tagging it `same dir`
     // as well would only repeat the row.
-    sameDirectory: !self && sessionDirectory !== undefined && peer.directory === sessionDirectory,
+    sameDirectory:
+      !self && sessionDirectory !== undefined && peer.directory === sessionDirectory,
   }
 }
 
 /**
- * One peer as one line: title, a folded id, where it works, its status, and
- * what it is relative to this session. The whole id is deliberately not here —
- * a row is read at a glance, and `peers list` is where the full id belongs.
+ * One peer as one row: what it is called, a folded id, where it works, what it
+ * is doing, and what it is relative to this session. The whole id is
+ * deliberately not here — a row is read at a glance, and `peers list` is where
+ * the full id belongs.
  */
-export function peerRow(peer: RosterPeer, marks: RowMarks): string {
-  const facts = statusFacts(peer)
-  const tags: string[] = []
-  if (marks.self) tags.push("this session")
-  if (marks.sameDirectory) tags.push("same dir")
-  const suffix = tags.length > 0 ? ` [${tags.join(", ")}]` : ""
-  return `• ${peer.title} (${foldSessionID(peer.sessionID)}) — ${peer.directory} (${facts.join(" · ")})${suffix}`
+export function peerCells(peer: RosterPeer, marks: RowMarks): readonly TableCell[] {
+  return [
+    cell(peer.title, "base"),
+    cell(foldSessionID(peer.sessionID), "muted"),
+    cell(peer.directory, "base"),
+    cell(statusText(peer), "base"),
+    cell(marksText(marks), "muted"),
+  ]
 }
 
 /** How many characters of a session id the row keeps. */
@@ -152,13 +186,20 @@ export function foldSessionID(sessionID: string): string {
 }
 
 /**
- * The status facts of a row. A status that is not known is said to be unknown —
- * never rendered as idle — and the reason rides on the same line.
+ * The status cell. A status that is not known is said to be unknown — never
+ * rendered as idle — and the reason rides in the same cell.
  */
-function statusFacts(peer: RosterPeer): readonly string[] {
-  if (peer.status !== null) return [peer.status]
-  if (peer.statusReason === null) return ["unknown"]
-  return ["unknown", peer.statusReason]
+export function statusText(peer: RosterPeer): string {
+  if (peer.status !== null) return peer.status
+  if (peer.statusReason === null) return "unknown"
+  return `unknown · ${peer.statusReason}`
+}
+
+function marksText(marks: RowMarks): string {
+  const tags: string[] = []
+  if (marks.self) tags.push("this session")
+  if (marks.sameDirectory) tags.push("same dir")
+  return tags.join(", ")
 }
 
 /** Why this scope has no peer to show. */
@@ -166,12 +207,15 @@ export type EmptyCause = "noPeerLoadsPlugin" | "allWentQuiet" | "anotherScope"
 
 /**
  * The cause, or `undefined` when there is a peer to show. A roster holding only
- * this session is empty in the sense that matters: it can reach nobody. The
- * causes are checked in the order that tells the reader the most — peers that
- * existed and went quiet are a different situation from peers that never were
- * and one from peers that are live somewhere else.
+ * the session itself is empty in the sense that matters: it can reach nobody.
+ * The causes are checked in the order that tells the reader the most — peers
+ * that existed and went quiet are a different situation from peers that never
+ * were and one from peers that are live somewhere else.
  */
-export function emptyCause(payload: RosterPayload, sessionID: string): EmptyCause | undefined {
+export function emptyCause(
+  payload: RosterPayload,
+  sessionID: string | undefined,
+): EmptyCause | undefined {
   if (payload.peers.some((peer) => peer.sessionID !== sessionID)) return undefined
   if (payload.quietInScope > 0) return "allWentQuiet"
   if (payload.liveInOtherScopes > 0) return "anotherScope"

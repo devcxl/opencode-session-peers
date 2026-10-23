@@ -17,7 +17,9 @@ function sourceFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const path = join(directory, entry.name)
     if (entry.isDirectory()) return sourceFiles(path)
-    return entry.isFile() && entry.name.endsWith(".ts") ? [path] : []
+    // .tsx too: the TUI half renders through it, and a boundary the UI can
+    // walk around is not a boundary.
+    return entry.isFile() && /\.tsx?$/.test(entry.name) ? [path] : []
   })
 }
 
