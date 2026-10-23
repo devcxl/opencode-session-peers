@@ -3,8 +3,8 @@
  *
  * One read of the roster, in the shape `src/rpc.ts` documents. The roster's own
  * rules — scope, TTL, ordering — stay in `peers/roster.ts`: this module only
- * selects what a reader may see and names the shape, so the sidebar and the
- * `peers list` tool cannot resolve different sets.
+ * selects what a reader may see and names the shape, so the roster dialog and
+ * the `peers list` tool cannot resolve different sets.
  */
 
 import type { Config } from "./config.ts"

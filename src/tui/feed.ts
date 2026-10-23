@@ -1,6 +1,6 @@
 /**
- * What the panel reads: one snapshot when the view opens, then the plugin's own
- * events keep it current, with the panel's slow refresh as the floor under them
+ * What the dialog reads: one snapshot when the view opens, then the plugin's
+ * own events keep it current, with a slow refresh as the floor under them
  * rather than a second mechanism.
  *
  * The order is what makes the snapshot trustworthy. Events replay nothing, so a
@@ -12,7 +12,7 @@
  * flight when the event arrived, its answer may predate the event, so exactly
  * one more read follows it.
  *
- * A failed read is a state, not silence: the panel says the call failed and why,
+ * A failed read is a state, not silence: the view says the call failed and why,
  * rather than rendering an old roster as if it were current.
  */
 

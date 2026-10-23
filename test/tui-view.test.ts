@@ -1,24 +1,27 @@
 /**
- * What the sidebar shows, block by block.
+ * What the dialog shows, cell by cell.
  *
- * The panel itself only draws these blocks, so everything a person would read
- * is asserted here — including the promises the view must not break: a status
- * that is not known is never rendered as idle, and an empty view names which of
- * the three situations it is.
+ * The dialog only draws these cells, so everything a person would read is
+ * asserted here — including the promises the view must not break: a status
+ * that is not known is never rendered as idle, and an empty view names which
+ * of the three situations it is.
  */
 
 import { describe, expect, test } from "bun:test"
 
 import type { RosterPayload, RosterPeer } from "../src/rpc.ts"
 import {
+  COLUMNS,
   emptyCause,
   emptyCauseLine,
   foldSessionID,
   HEADER_LIMIT,
   marksFor,
-  peerRow,
+  peerCells,
+  statusText,
   viewContent,
   type RosterState,
+  type TableCell,
   type ViewContent,
 } from "../src/tui/view.ts"
 
@@ -46,7 +49,10 @@ function peer(overrides: Partial<RosterPeer> & { sessionID: string }): RosterPee
   }
 }
 
-function content(state: RosterState, sessionDirectory: string | undefined = undefined): ViewContent {
+function content(
+  state: RosterState,
+  sessionDirectory: string | undefined = undefined,
+): ViewContent {
   return viewContent({ state, sessionID: SELF, sessionDirectory })
 }
 
@@ -54,18 +60,32 @@ function state(overrides: Partial<RosterPayload> = {}): RosterState {
   return { kind: "payload", payload: payload(overrides) }
 }
 
+/** The column is what the reader scans; tests read cells by column name. */
+const COLUMN_NAMES = ["Session", "ID", "Directory", "Status", "Marks"]
+
+function rowTexts(row: readonly TableCell[]): string[] {
+  return row.map((cell) => cell.text)
+}
+
 describe("the header", () => {
   test("names the scope and says who can appear", () => {
     expect(HEADER_LIMIT).toBe("only sessions loading this plugin appear")
     const blocks = content(state({ scope: "team-a", peers: [peer({ sessionID: "ses_aaaa1111" })] }))
     expect(blocks.title).toBe("Session peers")
-    expect(blocks.context).toEqual(["scope: team-a", HEADER_LIMIT])
+    expect(blocks.contextLines).toEqual(["scope: team-a", HEADER_LIMIT])
+  })
+
+  test("puts one fact per column, in a fixed order", () => {
+    expect(COLUMNS.map((cell) => cell.text)).toEqual(COLUMN_NAMES)
+    const blocks = content(state({ peers: [peer({ sessionID: "ses_aaaa1111" })] }))
+    expect(blocks.columns).toEqual(COLUMNS)
+    for (const row of blocks.rows) expect(row).toHaveLength(COLUMN_NAMES.length)
   })
 })
 
 describe("a row", () => {
   test("carries the title, a folded id, the directory, the status and its marks", () => {
-    const row = peerRow(
+    const row = peerCells(
       peer({
         sessionID: "ses_aaaa1111",
         title: "Payments API",
@@ -74,7 +94,13 @@ describe("a row", () => {
       }),
       { self: true, sameDirectory: false },
     )
-    expect(row).toBe("• Payments API (…1111) — /work/alpha (busy) [this session]")
+    expect(rowTexts(row)).toEqual([
+      "Payments API",
+      "…1111",
+      "/work/alpha",
+      "busy",
+      "this session",
+    ])
   })
 
   test("keeps only the tail of the session id", () => {
@@ -84,7 +110,7 @@ describe("a row", () => {
   })
 
   test("renders a status it does not have as unknown with the reason, never as idle", () => {
-    const row = peerRow(
+    const status = statusText(
       peer({
         sessionID: "ses_bbbb2222",
         title: "Docs site",
@@ -92,12 +118,14 @@ describe("a row", () => {
         status: null,
         statusReason: "not seen running since this instance started",
       }),
-      { self: false, sameDirectory: false },
     )
-    expect(row).toBe(
-      "• Docs site (…2222) — /work/beta (unknown · not seen running since this instance started)",
+    expect(status).toBe("unknown · not seen running since this instance started")
+    expect(status).not.toContain("idle")
+
+    // No reason to give: it says unknown, and nothing more.
+    expect(statusText(peer({ sessionID: "ses_bbbb2222", status: null, statusReason: null }))).toBe(
+      "unknown",
     )
-    expect(row).not.toContain("idle")
   })
 
   test("marks this session and the peers that share its directory", () => {
@@ -109,18 +137,25 @@ describe("a row", () => {
       self: false,
       sameDirectory: true,
     })
-    expect(marksFor(peer({ sessionID: "ses_c", directory: "/work/beta" }), SELF, "/work/alpha")).toEqual({
-      self: false,
-      sameDirectory: false,
-    })
+    expect(marksFor(peer({ sessionID: "ses_c", directory: "/work/beta" }), SELF, "/work/alpha")).toEqual(
+      {
+        self: false,
+        sameDirectory: false,
+      },
+    )
     // The TUI does not know the session: nothing is claimed about its directory.
     expect(marksFor(peer({ sessionID: "ses_b" }), SELF, undefined)).toEqual({
       self: false,
       sameDirectory: false,
     })
+    // The TUI has no session open: nothing is claimed about this session either.
+    expect(marksFor(peer({ sessionID: "ses_b" }), undefined, undefined)).toEqual({
+      self: false,
+      sameDirectory: false,
+    })
   })
 
-  test("draws the marks on the row itself", () => {
+  test("draws the marks in their own column", () => {
     const blocks = content(
       state({
         peers: [
@@ -131,9 +166,8 @@ describe("a row", () => {
       }),
       "/work/alpha",
     )
-    expect(blocks.rows[0]).toContain("[this session]")
-    expect(blocks.rows[1]).toContain("[same dir]")
-    expect(blocks.rows[2]).not.toContain("[")
+    const marks = blocks.rows.map((row) => rowTexts(row)[4])
+    expect(marks).toEqual(["this session", "same dir", ""])
   })
 })
 
@@ -149,7 +183,9 @@ describe("an empty view", () => {
   test("is not empty while another session is on it", () => {
     expect(emptyCause(payload({ peers: [peer({ sessionID: "ses_b" })] }), SELF)).toBeUndefined()
     // This session alone still means nobody to reach.
-    expect(emptyCause(payload({ peers: [peer({ sessionID: SELF })] }), SELF)).toBe("noPeerLoadsPlugin")
+    expect(emptyCause(payload({ peers: [peer({ sessionID: SELF })] }), SELF)).toBe(
+      "noPeerLoadsPlugin",
+    )
   })
 
   test("names the cause, with the TTL it measured against", () => {
@@ -186,7 +222,8 @@ describe("the other states", () => {
   test("says it is reading, before the first answer", () => {
     expect(content({ kind: "loading" })).toEqual({
       title: "Session peers",
-      context: ["reading the roster…"],
+      contextLines: ["reading the roster…"],
+      columns: COLUMNS,
       rows: [],
       notes: [],
       noteTone: "muted",
@@ -198,6 +235,9 @@ describe("the other states", () => {
     expect(blocks.title).toBe("Session peers is unavailable")
     expect(blocks.notes).toEqual(["RPC is unavailable: session-peers.v1"])
     expect(blocks.noteTone).toBe("error")
+    // No table: there is nothing this build would put in one.
+    expect(blocks.columns).toEqual([])
+    expect(blocks.rows).toEqual([])
   })
 
   test("refuses to render an answer it does not understand", () => {
@@ -209,7 +249,8 @@ describe("the other states", () => {
 
   test("renders a disabled plugin as off, not as an empty roster", () => {
     const blocks = content(state({ enabled: false, peers: [peer({ sessionID: "ses_b" })] }))
-    expect(blocks.context).toEqual([])
+    expect(blocks.contextLines).toEqual([])
+    expect(blocks.columns).toEqual([])
     expect(blocks.rows).toEqual([])
     expect(blocks.notes).toEqual(["off here: enabled is false, so nothing is published"])
     // No cause is named: the plugin is off, which is not a fact about peers.

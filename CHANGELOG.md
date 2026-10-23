@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### The roster dialog (TUI half)
+
+- The roster is no longer rendered as a standing sidebar list. `/peers` at the prompt (or
+  `Session peers` in the command palette) opens the host's dialog and shows the roster as a table:
+  one column per fact (session, id, directory, status, marks), live while the dialog is open. The
+  view keeps every promise of the sidebar it replaces: unknown status is `unknown` with its reason
+  and never `idle`, an empty table names which of the three causes it is, ids are folded to their
+  tail, and this session and same-directory peers are marked.
+
 ## 0.1.0 — 2026-10-15
 
 First release.
