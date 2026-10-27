@@ -17,6 +17,9 @@ import {
   foldSessionID,
   HEADER_LIMIT,
   marksFor,
+  pageNote,
+  pageOf,
+  pageSizeFor,
   peerCells,
   statusText,
   viewContent,
@@ -217,6 +220,84 @@ describe("an empty view", () => {
     const accompanied = content(state({ peers: [peer({ sessionID: "ses_b" })] }))
     expect(accompanied.rows).toHaveLength(1)
     expect(accompanied.notes).toEqual([])
+  })
+})
+
+describe("a page", () => {
+  function manyPeers(amount: number) {
+    return Array.from({ length: amount }, (_, index) =>
+      peer({ sessionID: `ses_p${String(index + 1).padStart(3, "0")}`, title: `Peer ${index + 1}` }),
+    )
+  }
+
+  function paged(state: RosterState, page: number, pageSize: number): ViewContent {
+    return viewContent({
+      state,
+      viewpoint: { sessionID: SELF, directory: undefined },
+      page,
+      pageSize,
+    })
+  }
+
+  /** The Session column of each row: enough to tell which peers are shown. */
+  function titles(blocks: ViewContent): (string | undefined)[] {
+    return blocks.rows.map((row) => row[0]?.text)
+  }
+
+  test("shows only the peers of the page it was asked for", () => {
+    const roster = state({ peers: manyPeers(5) })
+    const first = paged(roster, 0, 2)
+    expect(titles(first)).toEqual(["Peer 1", "Peer 2"])
+    const second = paged(roster, 1, 2)
+    expect(titles(second)).toEqual(["Peer 3", "Peer 4"])
+    const last = paged(roster, 2, 2)
+    expect(titles(last)).toEqual(["Peer 5"])
+  })
+
+  test("clamps a page past the end to the last page, never to a blank one", () => {
+    const roster = state({ peers: manyPeers(5) })
+    expect(titles(paged(roster, 7, 2))).toEqual(["Peer 5"])
+    const empty = paged(state({ peers: [] }), 4, 2)
+    expect(empty.rows).toEqual([])
+    expect(empty.notes).not.toContain("page 1 of 1")
+  })
+
+  test("says where the reader is, and which keys flip the page", () => {
+    const roster = state({ peers: manyPeers(5) })
+    expect(paged(roster, 1, 2).notes).toEqual([
+      "page 2 of 3 · peers 3–4 of 5 · ←/→ to page",
+    ])
+    // One page needs no footer: there is nowhere else to go.
+    expect(paged(roster, 0, 10).notes).toEqual([])
+  })
+
+  test("nothing to page without a page size, or with every peer on one page", () => {
+    const roster = state({ peers: manyPeers(5) })
+    expect(viewContent({ state: roster, viewpoint: { sessionID: SELF, directory: undefined } }).rows)
+      .toHaveLength(5)
+    const window = pageOf(5, undefined)
+    expect(window).toEqual({ index: 0, count: 1, size: 5, start: 0, total: 5 })
+    expect(pageNote(window)).toBeUndefined()
+  })
+
+  test("counts pages from the roster alone", () => {
+    expect(pageOf(0, 4)).toMatchObject({ index: 0, count: 1, start: 0 })
+    expect(pageOf(4, 4)).toMatchObject({ index: 0, count: 1 })
+    expect(pageOf(5, 4)).toMatchObject({ index: 0, count: 2 })
+    expect(pageOf(8, 4)).toMatchObject({ index: 0, count: 2 })
+    expect(pageOf(5, 4, 9)).toMatchObject({ index: 1, count: 2, start: 4 })
+    expect(pageOf(5, 4, -1)).toMatchObject({ index: 0, start: 0 })
+  })
+
+  test("sizes a page to the terminal, within the bounds a page is worth", () => {
+    // Fixed chrome plus three lines per wrapped row must fit the screen.
+    expect(pageSizeFor(24)).toBe(4)
+    expect(pageSizeFor(32)).toBe(7)
+    expect(pageSizeFor(40)).toBe(9)
+    // A terminal too short for any sensible page still gets the minimum,
+    // rather than a page of nothing.
+    expect(pageSizeFor(20)).toBe(3)
+    expect(pageSizeFor(10)).toBe(3)
   })
 })
 

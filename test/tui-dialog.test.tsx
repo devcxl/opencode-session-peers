@@ -114,6 +114,75 @@ describe("the dialog draws the roster as a table", () => {
   })
 })
 
+describe("the dialog pages a long roster", () => {
+  /** More peers than a page holds at the render's 20-line terminal. */
+  function manyPeers(amount: number) {
+    return Array.from({ length: amount }, (_, index) => ({
+      sessionID: `ses_p${String(index + 1).padStart(3, "0")}`,
+      title: `Peer ${index + 1}`,
+      directory: `/work/${index + 1}`,
+      status: "idle" as const,
+      statusReason: null,
+    }))
+  }
+
+  test("shows one page, says which, and flips on the arrow keys", async () => {
+    const { setup, text } = await rendered({
+      kind: "payload",
+      payload: payload({ peers: manyPeers(9) }),
+    })
+    // The first page fits the 20-line dialog (three two-line rows); the rest
+    // is reachable, not drawn.
+    expect(text()).toContain("Peer 1")
+    expect(text()).toContain("Peer 3")
+    expect(text()).not.toContain("Peer 4")
+    expect(text()).toContain("page 1 of 3 · peers 1–3 of 9 · ←/→ to page")
+
+    setup.mockInput.pressArrow("right")
+    await setup.flush()
+    expect(text()).not.toContain("Peer 1")
+    expect(text()).toContain("Peer 4")
+    expect(text()).toContain("page 2 of 3 · peers 4–6 of 9 · ←/→ to page")
+
+    setup.mockInput.pressArrow("right")
+    await setup.flush()
+    expect(text()).toContain("Peer 7")
+    expect(text()).toContain("Peer 9")
+    expect(text()).toContain("page 3 of 3 · peers 7–9 of 9 · ←/→ to page")
+
+    // Past the last page the keys stay put, and the footer says so.
+    setup.mockInput.pressArrow("right")
+    await setup.flush()
+    expect(text()).toContain("page 3 of 3")
+
+    setup.mockInput.pressArrow("left")
+    await setup.flush()
+    expect(text()).toContain("Peer 4")
+    expect(text()).toContain("page 2 of 3")
+  })
+
+  test("a roster that fits on one page has no footer and ignores the keys", async () => {
+    const { setup, text } = await rendered({
+      kind: "payload",
+      payload: payload({
+        peers: [
+          {
+            sessionID: "ses_aaaa1111",
+            title: "Payments API",
+            directory: "/work/alpha",
+            status: "busy",
+            statusReason: null,
+          },
+        ],
+      }),
+    })
+    setup.mockInput.pressArrow("right")
+    await setup.flush()
+    expect(text()).toContain("Payments API")
+    expect(text()).not.toContain("to page")
+  })
+})
+
 describe("the dialog stays open and live", () => {
   test("a state change swaps the rows without reopening", async () => {
     const { setup, frame, text, setState } = await rendered({ kind: "loading" })

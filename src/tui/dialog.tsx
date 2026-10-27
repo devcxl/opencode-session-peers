@@ -16,13 +16,13 @@
  * they say — a table whose content is empty draws nothing at all.
  */
 
-import { createMemo } from "solid-js"
-import { extend } from "@opentui/solid"
+import { createMemo, createSignal } from "solid-js"
+import { extend, useKeyboard, useTerminalDimensions } from "@opentui/solid"
 import { fg, TextTableRenderable, type TextChunk, type TextTableContent } from "@opentui/core"
 
 import type { TuiPalette } from "../host/tui.ts"
 import type { TableCell, Tone, ViewContent, Viewpoint } from "./view.ts"
-import { viewContent, type RosterState } from "./view.ts"
+import { pageOf, pageSizeFor, viewContent, type RosterState } from "./view.ts"
 
 // The plugin's JSX is created in the TUI's own @opentui/solid (the loader
 // resolves the package to it), so this is the catalogue the dialog renders
@@ -39,10 +39,34 @@ export interface RosterDialogProps {
 }
 
 export function RosterDialog(props: RosterDialogProps) {
+  // Starts at the first page on every opening: the dialog is a fresh view of
+  // the roster, not a resumption of the last read.
+  const [page, setPage] = createSignal(0)
+  const dimensions = useTerminalDimensions()
+  // A page is what the terminal can show without spilling past the screen; it
+  // is re-read on resize so the page keeps fitting.
+  const pageSize = createMemo(() => pageSizeFor(dimensions().height))
+
+  const lastPage = createMemo(() => {
+    const state = props.state()
+    if (state.kind !== "payload" || !state.payload.enabled) return 0
+    return pageOf(state.payload.peers.length, pageSize(), 0).count - 1
+  })
+
+  useKeyboard((key) => {
+    const step = pageStep(key.name)
+    if (step === undefined) return
+    // Clamped here too, so a roster that shrank under a deep page still moves
+    // on the very next key rather than needing one press per missing page.
+    setPage((current) => Math.max(0, Math.min(lastPage(), current + step)))
+  })
+
   const content = createMemo(() =>
     viewContent({
       state: props.state(),
       viewpoint: props.viewpoint,
+      page: page(),
+      pageSize: pageSize(),
     }),
   )
 
@@ -73,6 +97,17 @@ export function RosterDialog(props: RosterDialogProps) {
       <text fg={colour(content().noteTone)}>{content().notes.join("\n")}</text>
     </box>
   )
+}
+
+/**
+ * The keys that flip pages. They are read from the renderer's key stream while
+ * the dialog is mounted; the dialog owns no text input, so nothing else here
+ * can be typing.
+ */
+function pageStep(name: string): number | undefined {
+  if (name === "left" || name === "pageup") return -1
+  if (name === "right" || name === "pagedown") return 1
+  return undefined
 }
 
 /** The table's content: the header row first, then one row per peer. */

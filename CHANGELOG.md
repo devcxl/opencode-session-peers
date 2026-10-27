@@ -10,6 +10,9 @@
   view keeps every promise of the sidebar it replaces: unknown status is `unknown` with its reason
   and never `idle`, an empty table names which of the three causes it is, ids are folded to their
   tail, and this session and same-directory peers are marked.
+- A roster larger than the screen is paged instead of spilling past it: the page size follows the
+  terminal height, `←`/`→` and `PageUp`/`PageDown` flip pages, and a footer says which page is shown.
+  A roster that shrinks under a deep page falls back to a page that exists.
 
 ## 0.1.0 — 2026-10-15
 

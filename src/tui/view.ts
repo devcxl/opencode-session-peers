@@ -58,7 +58,7 @@ export interface ViewContent {
   readonly contextLines: readonly string[]
   /** The header row; empty when there is no table to show. */
   readonly columns: readonly TableCell[]
-  /** The peers, one row each, in the same order as the columns. */
+  /** The peers on this page, one row each, in the same order as the columns. */
   readonly rows: readonly (readonly TableCell[])[]
   /** What is left to say: the empty cause, a refusal, a broken answer. */
   readonly notes: readonly string[]
@@ -69,6 +69,13 @@ export interface ViewInput {
   readonly state: RosterState
   /** The session the dialog is for; its marks are relative to this one. */
   readonly viewpoint: Viewpoint
+  /**
+   * Which page of peers to show, 0-based. It is clamped: a roster that shrinks
+   * under the reader falls back to a page that exists rather than showing none.
+   */
+  readonly page?: number
+  /** How many peers one page holds; omitted means every peer on one page. */
+  readonly pageSize?: number
 }
 
 export function viewContent(input: ViewInput): ViewContent {
@@ -112,13 +119,20 @@ export function viewContent(input: ViewInput): ViewContent {
           noteTone: "muted",
         }
       }
+      const page = pageOf(payload.peers.length, input.pageSize, input.page)
       const cause = emptyCause(payload, input.viewpoint.sessionID)
+      const notes: string[] = []
+      if (cause !== undefined) notes.push(emptyCauseLine(cause, payload))
+      const paging = pageNote(page)
+      if (paging !== undefined) notes.push(paging)
       return {
         title: "Session peers",
         contextLines: [scopeLine(payload.scope), HEADER_LIMIT],
         columns: COLUMNS,
-        rows: payload.peers.map((peer) => peerCells(peer, marksFor(peer, input.viewpoint))),
-        notes: cause === undefined ? [] : [emptyCauseLine(cause, payload)],
+        rows: payload.peers
+          .slice(page.start, page.start + page.size)
+          .map((peer) => peerCells(peer, marksFor(peer, input.viewpoint))),
+        notes,
         noteTone: "muted",
       }
     }
@@ -143,6 +157,75 @@ export const HEADER_LIMIT = "only sessions loading this plugin appear"
 
 function scopeLine(scope: string): string {
   return `scope: ${scope}`
+}
+
+/**
+ * One page of the roster: where it starts, how many peers it holds, and which
+ * page of how many it is. `index` is clamped to the pages that exist, so a
+ * reader who paged deep and a roster that shrank never combine into a blank
+ * page; an empty roster still has the one page it is shown on.
+ */
+export interface PageWindow {
+  /** 0-based page shown. */
+  readonly index: number
+  /** How many pages the roster has; at least one. */
+  readonly count: number
+  /** How many peers one page holds. */
+  readonly size: number
+  /** 0-based position of the page's first peer in the roster. */
+  readonly start: number
+  /** How many peers the roster has in total. */
+  readonly total: number
+}
+
+export function pageOf(total: number, size: number | undefined, requested = 0): PageWindow {
+  const pageSize = size === undefined || size < 1 ? Math.max(1, total) : size
+  const count = Math.max(1, Math.ceil(total / pageSize))
+  const index = Math.min(count - 1, Math.max(0, Math.trunc(requested) || 0))
+  return { index, count, size: pageSize, start: index * pageSize, total }
+}
+
+/**
+ * The line under the table that says where the reader is. There is nothing to
+ * say when everything fits on one page.
+ */
+export function pageNote(page: PageWindow): string | undefined {
+  if (page.count <= 1) return undefined
+  const from = page.start + 1
+  const to = Math.min(page.total, page.start + page.size)
+  const span = from === to ? `peer ${from} of ${page.total}` : `peers ${from}–${to} of ${page.total}`
+  return `page ${page.index + 1} of ${page.count} · ${span} · ←/→ to page`
+}
+
+/** The smallest page worth paging. */
+const MIN_PAGE_SIZE = 3
+
+/** Past this, a page is harder to scan than it is to flip. */
+const MAX_PAGE_SIZE = 16
+
+/**
+ * Lines the dialog spends on everything but the peer rows: the host's chrome,
+ * the title, the scope lines, the table's frame and header, and the page
+ * footer.
+ */
+const FIXED_LINES = 11
+
+/**
+ * Lines one peer row takes. A directory is an absolute path and a status can
+ * carry its reason, so the table wraps; the line under each row separates it
+ * from the next. Counting one line per peer would put the last rows, and the
+ * page footer, past the bottom of the screen.
+ */
+const LINES_PER_PEER = 3
+
+/**
+ * How many peers fit in one page of the dialog on a terminal this tall. The
+ * host sizes the dialog to its content, so a page that is too tall loses its
+ * bottom rows instead of scrolling; the page is sized to fit the screen.
+ */
+export function pageSizeFor(terminalHeight: number): number {
+  const peers = Math.floor((terminalHeight - FIXED_LINES) / LINES_PER_PEER)
+  return Math.max(MIN_PAGE_SIZE, Math.min(MAX_PAGE_SIZE, peers))
 }
 
 export interface RowMarks {
