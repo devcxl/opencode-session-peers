@@ -45,7 +45,10 @@ export default {
           // its subscription but stops its refresh floor until the next open.
           () => feed.close(),
         )
-        port.dialog.set({ size: "large", centered: true })
+        // The host offers three widths: 60, 88 and 116 columns (each capped by
+        // the terminal). A directory is an absolute path, so the widest one is
+        // what keeps a row on one line most of the time.
+        port.dialog.set({ size: "xlarge", centered: true })
       },
     })
 

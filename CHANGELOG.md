@@ -13,6 +13,8 @@
 - A roster larger than the screen is paged instead of spilling past it: the page size follows the
   terminal height, `←`/`→` and `PageUp`/`PageDown` flip pages, and a footer says which page is shown.
   A roster that shrinks under a deep page falls back to a page that exists.
+- The dialog opens at the host's widest size (116 columns, capped by the terminal), so absolute
+  directory paths get more room before they wrap.
 
 ## 0.1.0 — 2026-10-15
 
