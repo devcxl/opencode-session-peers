@@ -80,6 +80,14 @@ describe("the header", () => {
     expect(blocks.contextLines).toEqual(["scope: team-a", HEADER_LIMIT])
   })
 
+  test("says when no session is open to mark", () => {
+    const blocks = viewContent({
+      state: state({ peers: [peer({ sessionID: "ses_b" })] }),
+      viewpoint: { sessionID: undefined, directory: undefined },
+    })
+    expect(blocks.notes).toEqual(["no session is open here: no row is marked as this session"])
+  })
+
   test("puts one fact per column, in a fixed order", () => {
     expect(COLUMNS.map((cell) => cell.text)).toEqual(COLUMN_NAMES)
     const blocks = content(state({ peers: [peer({ sessionID: "ses_aaaa1111" })] }))

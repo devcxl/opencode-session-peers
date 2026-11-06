@@ -120,8 +120,12 @@ export function createTuiPort(context: Plugin.Context): TuiPort {
     toast: (message, variant = "info") => context.ui.toast.show({ message, variant }),
 
     currentSession: () => {
+      // The route is the direct answer inside a session. With tabs, the route
+      // can still be `home` while a session tab is the one on screen, and that
+      // tab is the session the reader means by "this one".
       const route = context.ui.router.current()
-      const sessionID = route.type === "session" ? route.sessionID : undefined
+      const sessionID =
+        route.type === "session" ? route.sessionID : activeTabSessionID(context)
       return {
         sessionID,
         directory:
@@ -152,4 +156,10 @@ export function createTuiPort(context: Plugin.Context): TuiPort {
       set: (options) => context.ui.dialog.set(options),
     },
   }
+}
+
+/** The session whose tab is active, when tabs are enabled and one is. */
+function activeTabSessionID(context: Plugin.Context): string | undefined {
+  if (!context.ui.tabs.enabled()) return undefined
+  return context.ui.tabs.list().find((tab) => tab.active)?.sessionID
 }

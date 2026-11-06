@@ -136,6 +136,11 @@ export function viewContent(input: ViewInput): ViewContent {
       if (paging !== undefined) notes.push(paging)
       const scope = scopeHint(payload)
       if (scope !== undefined) notes.push(scope)
+      // With no session to compare against, no row can be called "this one";
+      // saying so is better than a pin that silently never appears.
+      if (input.viewpoint.sessionID === undefined) {
+        notes.push("no session is open here: no row is marked as this session")
+      }
       return {
         title: "Session peers",
         contextLines: [scopeLine(payload.scope), HEADER_LIMIT],
