@@ -10,7 +10,7 @@
  * reference are refused before anything is generated.
  */
 
-import { describeError, failure, type Failure } from "../domain/errors.ts"
+import { describeError, failure } from "../domain/errors.ts"
 import { resolvePeer } from "../domain/addressing.ts"
 import {
   buildHandoverPrompt,
@@ -26,7 +26,7 @@ import type { SessionLookup } from "../host/session.ts"
 import type { ToolCall } from "../host/tools.ts"
 import type { Roster } from "../peers/roster.ts"
 import { peerDetails, readRoster, type RosterView } from "./roster-view.ts"
-import { deliverTo } from "./delivery.ts"
+import { deliverTo, refusal } from "./delivery.ts"
 
 export interface HandoverDeps {
   readonly config: Config
@@ -177,18 +177,4 @@ function readString(value: unknown): string {
  */
 function readArray(value: unknown): readonly Attachment[] {
   return Array.isArray(value) ? (value as readonly Attachment[]) : []
-}
-
-/** A refusal the model reads as text, with the code kept for the result details. */
-function refusal(f: Failure, extra: Readonly<Record<string, unknown>> = {}): ActionResult {
-  return {
-    text: f.reason,
-    details: {
-      delivered: false,
-      code: f.code,
-      reason: f.reason,
-      retryable: f.retryable,
-      ...extra,
-    },
-  }
 }
