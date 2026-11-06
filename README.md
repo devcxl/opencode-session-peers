@@ -208,6 +208,7 @@ bun test          # unit and seam tests
 bun run typecheck
 bun run harness   # boot a throwaway opencode instance and check the plugin loads
 bun run harness --stub   # drive two sessions through the harness's own stub model, offline
+bun scripts/harness/cross-process.ts /path/to/existing/scratch  # two isolated servers, shared database
 bun run harness --help
 ```
 
@@ -220,6 +221,11 @@ timeout text after the configured `askTimeoutMs` — the harness sets one in the
 pass can tell "nobody answered" from "the chain is broken", and can tell either from a wait that ran
 on the ten-minute default. It is deterministic and offline; `--model <provider/id>` remains
 the opt-in pass that drives real hosted turns with the developer's own credentials.
+
+The cross-process experiment starts two isolated servers sharing a scratch database and verifies
+that `ask` and `reply` actually execute in different process IDs. It requires an explicit scratch
+parent and fails if the host runs both tools in the same process. It does not prove cross-process
+cancellation or atomicity of concurrent calls.
 
 The harness owns its own XDG directories, database and port, hashes the developer's
 `~/.local/state/opencode/service.json` before and after the run, and never touches the live service.

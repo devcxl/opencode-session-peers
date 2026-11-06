@@ -2,11 +2,25 @@
 import { expect, test } from "bun:test"
 
 import plugin from "../src/index.ts"
+import { waitForReply } from "../src/ask/handshake.ts"
 import { fakeHost } from "./fake-host.ts"
-import { fakeStorage, type FakeStorage } from "./fake-storage.ts"
+import { fakePluginStorage, fakeStorage, type FakeStorage } from "./fake-storage.ts"
 
 const A = { id: "ses_aaaa1111", title: "A" }
 const B = { id: "ses_bbbb2222", title: "B" }
+
+test("a reply already visible wins over a concurrent cancellation", async () => {
+  const storage = fakePluginStorage(fakeStorage())
+  const controller = new AbortController()
+  await storage.replies.write("ask-1", {
+    askID: "ask-1", fromSessionID: B.id, fromTitle: B.title, text: "answer",
+  })
+  controller.abort()
+  const result = await waitForReply({
+    replies: storage.replies, askID: "ask-1", expiresAt: Date.now() + 1_000, pollMs: 20, signal: controller.signal,
+  })
+  expect(result.kind).toBe("replied")
+})
 
 function synchronizedScans() {
   const raw = fakeStorage()
