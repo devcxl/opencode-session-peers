@@ -321,9 +321,11 @@ describe("the parent-side text", () => {
     const host = fakeHost()
     await plugin.setup(host.context)
 
-    expect(host.skills).toHaveLength(1)
-    const skill = host.skills[0]!
-    expect(skill.id).toBe("session-peers-supervisor")
+    expect(host.skills.map((candidate) => candidate.id).sort()).toEqual([
+      "session-peers",
+      "session-peers-supervisor",
+    ])
+    const skill = host.skills.find((candidate) => candidate.id === "session-peers-supervisor")!
     expect(skill.description).toContain("background: true")
     expect(skill.content).toContain("`background: true`")
     expect(skill.content).toContain('peers({ action: "send", ... })')

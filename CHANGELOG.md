@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Skills
+
+- The plugin registers a general `session-peers` skill beside the existing `session-peers-supervisor`
+  one. It covers the coordination patterns behind the action enum, the delivery and ask/reply rules
+  a session has to work around, the failure codes it should handle, and what the plugin deliberately
+  does not do. It is loaded on demand, not added to the tool description.
+
 ### Session scopes
 
 - A session can be moved out of the scope it was configured with: `/peers-scope <scope>` at the prompt
