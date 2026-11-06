@@ -42,8 +42,8 @@ export type ErrorCode =
 /**
  * How a blocked ask stopped waiting without an answer.
  *
- * Not an `ErrorCode`: nothing was refused and nothing failed to be delivered —
- * the question reached the recipient and stayed answerable.
+ * Not an `ErrorCode`: the host accepted the question, but the wait ended before
+ * the asker received an answer. Admission does not imply the recipient read it.
  */
 export type AskStopCode = "E_ASK_TIMEOUT" | "E_ASK_INTERRUPTED"
 

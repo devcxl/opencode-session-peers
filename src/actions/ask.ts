@@ -7,11 +7,9 @@
  * so it is published before the question is delivered and nothing is left
  * behind if the delivery is refused.
  *
- * The wait ends in exactly one of three ways, and none of them throws the
- * question away: an answer arrives, the deadline passes, or the turn is
- * interrupted. After the wait the asker is no longer listening, so a later
- * answer is delivered as an ordinary message rather than into a slot nobody
- * reads — which is why the timeout text says a timeout is not a cancellation.
+ * A wait may end with an answer, a timeout, interruption or a local cancellation.
+ * Once the waiter has stopped, later answers normally use an ordinary message;
+ * a reply racing that transition can still land in the old slot (ADR-0007).
  */
 
 import { randomUUID } from "node:crypto"
@@ -170,6 +168,7 @@ export async function askAction(deps: AskDeps, call: ToolCall, input: unknown): 
       details: {
         answered: false,
         delivered: true,
+        outcome: "accepted",
         delivery: attempt.delivery,
         code: stopped.code,
         reason: stopped.reason,
@@ -209,6 +208,7 @@ export async function askAction(deps: AskDeps, call: ToolCall, input: unknown): 
       details: {
         answered: false,
         delivered: true,
+        outcome: "accepted",
         delivery: attempt.delivery,
         code: stop.code,
         reason: stop.reason,
@@ -226,6 +226,8 @@ export async function askAction(deps: AskDeps, call: ToolCall, input: unknown): 
       details: {
         answered: false,
         cancelled: true,
+        delivered: true,
+        outcome: "accepted",
         code: "E_ASK_CANCELLED",
         askID,
         ...(recordError === undefined ? {} : { recordError }),
@@ -243,6 +245,7 @@ export async function askAction(deps: AskDeps, call: ToolCall, input: unknown): 
     details: {
       answered: false,
       delivered: true,
+      outcome: "accepted",
       delivery: attempt.delivery,
       code: stop.code,
       reason: stop.reason,

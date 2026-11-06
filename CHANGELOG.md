@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Messaging reliability
+
+- Busy delivery now uses the recipient's declared setting. Unknown status or an older roster record
+  falls back to queueing; mixed versions may still use the old sender-side behaviour.
+- `send` and handover success mean the host accepted the message, not that it was read. Host prompt
+  errors report an unknown outcome rather than claiming the message was not admitted.
+- `cancel` requests stopping an active wait in this plugin instance; it no longer deletes the question
+  or claims to withdraw it. It does not stop work on the recipient's side.
+- Concurrent ask guards are best-effort, not atomic. A reply racing a wait ending can remain unread.
+
 ### Session scopes
 
 - A session can be moved out of the scope it was configured with: `/peers-scope <scope>` at the prompt

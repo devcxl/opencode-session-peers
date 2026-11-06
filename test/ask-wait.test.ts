@@ -137,6 +137,7 @@ describe("a wait that ends without an answer", () => {
     expect(result.details).toEqual({
       answered: false,
       delivered: true,
+      outcome: "accepted",
       delivery: "queue",
       code: "E_ASK_TIMEOUT",
       reason: result.text,
@@ -220,6 +221,7 @@ describe("a wait that ends without an answer", () => {
     expect(result.details).toEqual({
       answered: false,
       delivered: true,
+      outcome: "accepted",
       delivery: "queue",
       code: "E_ASK_INTERRUPTED",
       reason: result.text,
