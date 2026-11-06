@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Session scopes
+
+- A session can be moved out of the scope it was configured with: `/peers-scope <scope>` at the prompt
+  puts the current session into that visibility partition, and `/peers-scope default` puts it back.
+  The move is published on the session's roster row (so it survives a reload), and `list`, `send` and
+  `ask` resolve in the new scope from then on.
+- The roster dialog's `g` key shows the default scope while the session has a scope of its own, and
+  `g` again returns to it. The preview only changes what the dialog reads.
+
 ### The roster dialog (TUI half)
 
 - The roster is no longer rendered as a standing sidebar view. `/peers` at the prompt (or

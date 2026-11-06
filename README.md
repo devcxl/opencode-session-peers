@@ -78,7 +78,7 @@ server log; `trigger` fails closed to `"never"`.
 | Option | Default | What it does |
 | --- | --- | --- |
 | `enabled` | `true` | `false` publishes nothing and refuses every action with "disabled by configuration". |
-| `scope` | `"default"` | Visibility partition. Only sessions with the same scope see each other. |
+| `scope` | `"default"` | Visibility partition. Only sessions with the same scope see each other. This is the scope a session starts in; `/peers-scope <scope>` in the TUI moves the current session to another one. |
 | `trigger` | `"always"` | What this session accepts from peers: `always`, `replies` (questions and answers only), `never`. Published on this session's roster record and honoured by the sender. |
 | `busyDelivery` | `"steer"` | How a message reaches a recipient that is mid-turn: `steer` injects it at the next safe boundary, `queue` waits until the recipient is idle. An idle recipient always starts a new turn. |
 | `replyHint` | `true` | Append the `To reply: peers({ action: "reply", ... })` line to a question. Only an `ask` carries it: a `send`, a reply and a handover leave nothing to answer. |
@@ -140,8 +140,13 @@ under a header that names the scope and says that only sessions loading the plug
 update while the dialog is open. This session's own row is pinned above the rest, separated by an
 `other sessions` band, so it stays visible while the list turns over. A page holds at most eight
 peers (fewer on a short terminal): `←`/`→` or `PageUp`/`PageDown` flip pages, and a footer under the
-table says which page is on screen. It is a view and nothing else: no action sends, asks or replies
-from it.
+table says which page is on screen. When the session's scope is not `default`, `g` shows the default
+scope and `g` again comes back to the session's own; the preview only changes what the dialog reads.
+It is a view and nothing else: no action sends, asks or replies from it.
+
+A session's partition is not fixed by configuration. `/peers-scope <scope>` at the prompt moves the
+current session into that scope — the configured value is where it starts — and the move is
+published on its roster row, so `list`/`send`/`ask` (and every other session's view) follow it.
 
 Declare it in the TUI's own config, `~/.config/opencode/cli.json` (the server half stays in
 `opencode.json` as above):
@@ -153,9 +158,9 @@ Declare it in the TUI's own config, `~/.config/opencode/cli.json` (the server ha
 }
 ```
 
-The dialog reads the server plugin through a versioned RPC surface — id `session-peers.v1`, one
-method `roster`, one event `changed` — which is exported as `./rpc` for other plugins: one call when
-the dialog opens, then the plugin's own change events, with a slow refresh under them. It resolves
+The dialog reads the server plugin through a versioned RPC surface — id `session-peers.v1`, methods
+`roster` and `setScope`, one event `changed` — which is exported as `./rpc` for other plugins: one
+call when the dialog opens, then the plugin's own change events, with a slow refresh under them. It resolves
 the roster of the location the TUI runs in and asks no other location, so opening it never starts
 plugin instances in someone else's directory. What it cannot know, it says: a session whose instance
 has not seen it run is shown as `unknown` with the reason, and an empty table names which of the

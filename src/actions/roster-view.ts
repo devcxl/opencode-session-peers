@@ -20,8 +20,11 @@ export interface RosterView {
 }
 
 export async function readRoster(roster: Roster, caller: SessionID): Promise<RosterView> {
+  // The caller's own row says which scope it belongs to; that row is published
+  // first, so the scope is the one the session was just moved to, not the one
+  // this instance was configured with.
   const published = await roster.publish(caller)
-  const peers = await roster.live()
+  const peers = await roster.live(published.scope)
   return { self: peers.find((peer) => peer.sessionID === caller) ?? published, peers }
 }
 

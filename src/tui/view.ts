@@ -134,6 +134,8 @@ export function viewContent(input: ViewInput): ViewContent {
       if (cause !== undefined) notes.push(emptyCauseLine(cause, payload))
       const paging = pageNote(page)
       if (paging !== undefined) notes.push(paging)
+      const scope = scopeHint(payload)
+      if (scope !== undefined) notes.push(scope)
       return {
         title: "Session peers",
         contextLines: [scopeLine(payload.scope), HEADER_LIMIT],
@@ -179,6 +181,17 @@ function sectionCells(label: string): readonly TableCell[] {
 
 function scopeLine(scope: string): string {
   return `scope: ${scope}`
+}
+
+/**
+ * What `g` would do. A session in the default scope has no other group of its
+ * own to turn to, so there is nothing to offer; a session moved with
+ * `/peers-scope` can look at the default scope and come back.
+ */
+export function scopeHint(payload: RosterPayload): string | undefined {
+  if (payload.sessionScope === "default") return undefined
+  if (payload.scope === payload.sessionScope) return "g: show default (global)"
+  return `g: back to ${payload.sessionScope}`
 }
 
 /**

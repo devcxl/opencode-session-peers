@@ -1,7 +1,8 @@
 /**
  * What the dialog reads: one snapshot when the view opens, then the plugin's
  * own events keep it current, with a slow refresh as the floor under them
- * rather than a second mechanism.
+ * rather than a second mechanism. The snapshot is of the open session's scope;
+ * a preview asks for another scope until the next read returns to the session.
  *
  * The order is what makes the snapshot trustworthy. Events replay nothing, so a
  * reader that subscribed after taking its snapshot could miss a change that
@@ -18,7 +19,7 @@
 
 import { createSignal } from "solid-js"
 
-import type { RosterSource } from "../host/tui.ts"
+import type { RosterRequest, RosterSource } from "../host/tui.ts"
 import { readRosterPayload } from "../rpc.ts"
 import type { RosterState } from "./view.ts"
 
@@ -32,8 +33,16 @@ const REFRESH_MS = 60_000
 
 export interface RosterFeed {
   readonly state: () => RosterState
-  /** One snapshot, and the refresh floor starts ticking under the events. */
-  open(): void
+  /**
+   * One snapshot of the session's own scope, and the refresh floor starts
+   * ticking under the events. The session is what says which scope that is.
+   */
+  open(sessionID?: string): void
+  /**
+   * Reads `scope` instead of the session's own, or the session's own again when
+   * omitted. Used by the dialog's preview of the default scope.
+   */
+  showScope(scope?: string): void
   /** Stops the refresh floor; the subscription stays until dispose. */
   close(): void
   /** Ends the subscription; reads still in flight stop updating the state. */
@@ -50,6 +59,13 @@ export function createRosterFeed(
   let stale = false
   let closed = false
   let refresh: ReturnType<typeof setInterval> | undefined
+  let sessionID: string | undefined
+  let preview: string | undefined
+
+  const request = (): RosterRequest => ({
+    ...(sessionID === undefined ? {} : { sessionID }),
+    ...(preview === undefined ? {} : { scope: preview }),
+  })
 
   const read = (): void => {
     if (closed) return
@@ -61,7 +77,7 @@ export function createRosterFeed(
     }
     reading = true
     void source
-      .read()
+      .read(request())
       .then((answer) => {
         if (closed) return
         const payload = readRosterPayload(answer)
@@ -87,9 +103,17 @@ export function createRosterFeed(
 
   return {
     state,
-    open: () => {
+    open: (openedSessionID) => {
+      sessionID = openedSessionID
+      // Every opening starts at the session's own scope, not at the page the
+      // last opening previewed.
+      preview = undefined
       read()
       if (refresh === undefined) refresh = setInterval(() => read(), refreshMs)
+    },
+    showScope: (scope) => {
+      preview = scope
+      read()
     },
     close: () => {
       if (refresh === undefined) return
@@ -110,7 +134,7 @@ export function createRosterFeed(
  * Error (`docs/research/tui-surface-data-path.md` §1.4); anything else is shown
  * by whatever it can say about itself.
  */
-function failureText(cause: unknown): string {
+export function failureText(cause: unknown): string {
   if (cause !== null && typeof cause === "object" && "message" in cause) {
     const message = (cause as { message: unknown }).message
     if (typeof message === "string") return message

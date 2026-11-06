@@ -41,11 +41,11 @@ export interface RosterDeps {
 
 /** What one read of the roster saw, and what it can say about an empty one. */
 export interface RosterReport {
-  /** Every live peer in this instance's scope, sorted as `live()` sorts them. */
+  /** Every live peer in the requested scope, sorted as `live()` sorts them. */
   readonly peers: readonly Peer[]
   /** In-scope records whose heartbeats stopped: the peers that went quiet. */
   readonly quietInScope: number
-  /** Live records in another scope: sessions this instance may not address. */
+  /** Live records in another scope: sessions this report's scope cannot address. */
   readonly liveInOtherScopes: number
 }
 
@@ -56,10 +56,21 @@ export interface Roster {
    * Rejects when the host does not know the session.
    */
   publish(sessionID: SessionID): Promise<Peer>
-  /** Every live peer in this instance's scope, this instance's sessions included. */
-  live(): Promise<readonly Peer[]>
+  /** Every live peer in `scope` (the configured scope by default). */
+  live(scope?: string): Promise<readonly Peer[]>
   /** `live()` plus what explains an empty answer: who went quiet, who is elsewhere. */
-  report(): Promise<RosterReport>
+  report(scope?: string): Promise<RosterReport>
+  /**
+   * The scope a session belongs to. A session may be moved to another scope at
+   * runtime; the configured scope is what it falls back to.
+   */
+  scopeOf(sessionID: SessionID): Promise<string>
+  /**
+   * Moves a session this instance serves into `scope`, republishes its row so
+   * every reader sees the move, and returns the new row. `undefined` when this
+   * instance does not serve the session — another location's instance owns it.
+   */
+  setScope(sessionID: SessionID, scope: string): Promise<Peer | undefined>
   /**
    * Called when what a reader of `live()` or `report()` would see changes.
    * Changes a reader cannot observe — a heartbeat refreshing a row that already
@@ -88,6 +99,11 @@ export async function startRoster(deps: RosterDeps): Promise<Roster> {
 class LiveRoster implements Roster {
   /** The sessions this instance publishes, and what it last wrote for each. */
   private readonly served = new Map<SessionID, Peer>()
+  /**
+   * The scope each session belongs to, when it is not the configured one. Seeded
+   * from the records a predecessor left behind, so a move survives a restart.
+   */
+  private readonly scopes = new Map<SessionID, string>()
   private readonly listeners: (() => void)[] = []
   /** What the last announcement said; a beat that changes nothing stays quiet. */
   private announced: string | undefined
@@ -134,6 +150,9 @@ class LiveRoster implements Roster {
 
     for (const { value: peer } of stored) {
       if (peer.directory !== this.deps.location.directory) continue
+      // The record is where a session's scope lives, so a move made before a
+      // reload is loaded here rather than being overwritten by the config.
+      this.scopes.set(peer.sessionID, peer.scope)
       // A record whose session is gone is skipped rather than removed: readers
       // already ignore it past the TTL, and reclaiming records this instance did
       // not write is a decision the plan has not settled (open question 5).
@@ -143,18 +162,19 @@ class LiveRoster implements Roster {
   }
 
   async publish(sessionID: SessionID): Promise<Peer> {
-    const peer = this.row(await this.deps.sessions.get(sessionID))
+    const scope = await this.scopeOf(sessionID)
+    const peer = this.row(await this.deps.sessions.get(sessionID), scope)
     await this.store(peer)
     await this.announce()
     return peer
   }
 
-  async live(): Promise<readonly Peer[]> {
-    return (await this.report()).peers
+  async live(scope?: string): Promise<readonly Peer[]> {
+    return (await this.report(scope)).peers
   }
 
-  async report(): Promise<RosterReport> {
-    const { rosterTtlMs, scope } = this.deps.config
+  async report(scope: string = this.deps.config.scope): Promise<RosterReport> {
+    const { rosterTtlMs } = this.deps.config
     const now = Date.now()
     const stored = await this.deps.storage.peers.list()
     const records = stored.map((record) => record.value)
@@ -174,6 +194,48 @@ class LiveRoster implements Roster {
         (peer) => peer.scope !== scope && now - peer.updatedAt <= rosterTtlMs,
       ).length,
     }
+  }
+
+  async scopeOf(sessionID: SessionID): Promise<string> {
+    const known = this.scopes.get(sessionID)
+    if (known !== undefined) return known
+
+    let record: Peer | undefined
+    try {
+      record = await this.deps.storage.peers.read(sessionID)
+    } catch (error) {
+      // The read is what knows where the session was moved to; a failed read
+      // must not be remembered as "it belongs to the configured scope".
+      this.deps.warn(`could not read the scope of ${sessionID}: ${describeError(error)}`)
+      return this.deps.config.scope
+    }
+
+    const scope = record?.scope ?? this.deps.config.scope
+    this.scopes.set(sessionID, scope)
+    return scope
+  }
+
+  async setScope(sessionID: SessionID, scope: string): Promise<Peer | undefined> {
+    // Only the instance that serves a session may republish its row; another
+    // location's instance would write a row it does not own. `sessions.get`
+    // plus the directory check is that test — the session need not have been
+    // published yet for its own scope command to be the thing that publishes it.
+    let session: SessionRecord
+    try {
+      session = await this.deps.sessions.get(sessionID)
+    } catch (error) {
+      this.deps.warn(`could not move ${sessionID} to scope ${scope}: ${describeError(error)}`)
+      return undefined
+    }
+    if (session.directory !== this.deps.location.directory) return undefined
+
+    this.scopes.set(sessionID, scope)
+    const peer = this.row(session, scope)
+    await this.store(peer)
+    // The signature is computed against the configured scope, so a move between
+    // two other scopes would not look like a change; readers still need the nudge.
+    this.notify()
+    return peer
   }
 
   observe(listener: () => void): void {
@@ -230,6 +292,11 @@ class LiveRoster implements Roster {
     }
     if (signature === this.announced) return
     this.announced = signature
+    this.notify()
+  }
+
+  /** Tells every reader that a fresh read may say something different. */
+  private notify(): void {
     for (const listener of this.listeners) listener()
   }
 
@@ -273,7 +340,8 @@ class LiveRoster implements Roster {
   private async adopt(sessionID: SessionID): Promise<void> {
     let peer: Peer
     try {
-      peer = this.row(await this.deps.sessions.get(sessionID))
+      const scope = await this.scopeOf(sessionID)
+      peer = this.row(await this.deps.sessions.get(sessionID), scope)
     } catch {
       // The host does not know this session (or cannot answer right now). Keep
       // the record we have: if the session really is gone, its heartbeats stop
@@ -295,12 +363,13 @@ class LiveRoster implements Roster {
   }
 
   private async forget(sessionID: SessionID): Promise<void> {
+    this.scopes.delete(sessionID)
     if (!this.served.delete(sessionID)) return
     const record = await this.deps.storage.peers.read(sessionID)
     if (record?.instanceID === this.instanceID) await this.deps.storage.peers.remove(sessionID)
   }
 
-  private row(session: SessionRecord): Peer {
+  private row(session: SessionRecord, scope: string): Peer {
     return {
       sessionID: session.id,
       title: session.title ?? FALLBACK_TITLE,
@@ -308,7 +377,7 @@ class LiveRoster implements Roster {
       projectID: session.projectID,
       model: session.modelID,
       status: this.index.statusOf(session.id),
-      scope: this.deps.config.scope,
+      scope,
       // Only this instance can read its own options, so its sessions declare
       // here what they accept: every sender honours the declaration it reads.
       inboundTrigger: this.deps.config.inbound.trigger,

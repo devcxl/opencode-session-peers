@@ -35,10 +35,13 @@ async function settle(): Promise<void> {
 }
 
 /** Ask the one registered surface for the roster, as a client would. */
-async function readRoster(host: Awaited<ReturnType<typeof loaded>>["host"]): Promise<RosterPayload> {
+async function readRoster(
+  host: Awaited<ReturnType<typeof loaded>>["host"],
+  input: Readonly<Record<string, unknown>> = {},
+): Promise<RosterPayload> {
   const rpc = host.rpcs[0]
   if (rpc === undefined) throw new Error("the plugin registered no RPC surface")
-  const answer = await rpc.call("roster", {})
+  const answer = await rpc.call("roster", input)
   const payload = readRosterPayload(answer)
   if (payload === undefined) throw new Error(`the answer is not a roster: ${JSON.stringify(answer)}`)
   return payload
@@ -65,7 +68,7 @@ describe("the registered surface", () => {
     const { host, unload } = await loaded()
     expect(host.rpcs).toHaveLength(1)
     expect(host.rpcs[0]?.id).toBe(SESSION_PEERS_RPC_ID)
-    expect(host.rpcs[0]?.methods).toEqual(["roster"])
+    expect(host.rpcs[0]?.methods).toEqual(["roster", "setScope"])
     await unload()
   })
 
@@ -202,6 +205,7 @@ describe("the roster answer", () => {
     expect(payload).toEqual({
       enabled: false,
       scope: "default",
+      sessionScope: "default",
       rosterTtlMs: 90_000,
       peers: [],
       quietInScope: 0,
@@ -300,6 +304,103 @@ describe("announcing changes", () => {
   })
 })
 
+describe("moving a session between scopes", () => {
+  test("republishes the row, and every read follows the move", async () => {
+    const storage = fakeStorage()
+    const alpha = await loaded({
+      location: "/work/alpha",
+      caller: ALPHA.id,
+      storage,
+      sessions: [ALPHA],
+    })
+    const beta = await loaded({
+      location: "/work/beta",
+      caller: BETA.id,
+      storage,
+      sessions: [BETA],
+    })
+    // One default-scope peer (beta) and one peer already in team-b.
+    await beta.host.call("peers", { action: "list" })
+    await storage.set(
+      peerKey("ses_cccc3333"),
+      peerRecord({ sessionID: "ses_cccc3333", title: "Team peer", scope: "team-b" }),
+    )
+
+    expect((await readRoster(alpha.host)).peers.map((peer) => peer.title)).toEqual(["Docs site"])
+
+    const rpc = alpha.host.rpcs[0]
+    if (rpc === undefined) throw new Error("the plugin registered no RPC surface")
+    expect(await rpc.call("setScope", { sessionID: ALPHA.id, scope: "team-b" })).toEqual({
+      scope: "team-b",
+    })
+
+    const moved = await readRoster(alpha.host, { sessionID: ALPHA.id })
+    expect(moved.scope).toBe("team-b")
+    expect(moved.sessionScope).toBe("team-b")
+    expect(moved.peers.map((peer) => peer.title)).toEqual(["Payments API", "Team peer"])
+
+    // The default scope is still readable as a preview, and the answer says
+    // which scope the session itself is in.
+    const preview = await readRoster(alpha.host, { sessionID: ALPHA.id, scope: "default" })
+    expect(preview.scope).toBe("default")
+    expect(preview.sessionScope).toBe("team-b")
+    expect(preview.peers.map((peer) => peer.title)).toEqual(["Docs site"])
+
+    // The published row carries the new scope, not the configured one.
+    expect(await storage.get(peerKey(ALPHA.id))).toMatchObject({ scope: "team-b" })
+
+    // The tool resolves in the caller's new scope too.
+    const listed = await alpha.host.call("peers", { action: "list" }, ALPHA.id)
+    expect(listed.text).toContain("Team peer")
+    expect(listed.text).not.toContain("Docs site")
+
+    // `status` names the scope the session actually resolves in.
+    const status = await alpha.host.call("peers", { action: "status" }, ALPHA.id)
+    expect(status.text).toContain("Scope: team-b")
+
+    await alpha.unload()
+    await beta.unload()
+  })
+
+  test("the move survives a reload of the instance", async () => {
+    const storage = fakeStorage()
+    const first = await loaded({
+      location: "/work/alpha",
+      caller: ALPHA.id,
+      storage,
+      sessions: [ALPHA],
+    })
+    const rpc = first.host.rpcs[0]
+    if (rpc === undefined) throw new Error("the plugin registered no RPC surface")
+    await rpc.call("setScope", { sessionID: ALPHA.id, scope: "team-b" })
+    await first.unload()
+
+    // The successor seeds from storage, where the row's scope lives.
+    const second = await loaded({
+      location: "/work/alpha",
+      caller: ALPHA.id,
+      storage,
+      sessions: [ALPHA],
+    })
+    expect((await readRoster(second.host, { sessionID: ALPHA.id })).scope).toBe("team-b")
+    await second.unload()
+  })
+
+  test("refuses a session another location serves", async () => {
+    const alpha = await loaded({
+      location: "/work/alpha",
+      caller: ALPHA.id,
+      sessions: [ALPHA],
+    })
+    const rpc = alpha.host.rpcs[0]
+    if (rpc === undefined) throw new Error("the plugin registered no RPC surface")
+    await expect(rpc.call("setScope", { sessionID: "ses_elsewhere", scope: "team-b" })).rejects.toThrowError(
+      "this location does not serve that session",
+    )
+    await alpha.unload()
+  })
+})
+
 describe("the payload guard", () => {
   test("accepts what the surface answers", async () => {
     const alpha = await loaded({ caller: ALPHA.id })
@@ -321,6 +422,7 @@ describe("the payload guard", () => {
       readRosterPayload({
         enabled: true,
         scope: "default",
+        sessionScope: "default",
         rosterTtlMs: 1,
         peers: [{ sessionID: "ses_x", title: "x", directory: "/x", status: 3, statusReason: null }],
         quietInScope: 0,
@@ -331,8 +433,20 @@ describe("the payload guard", () => {
       readRosterPayload({
         enabled: true,
         scope: "default",
+        sessionScope: "default",
         rosterTtlMs: 1,
         peers: [{ sessionID: "ses_x", title: "x", directory: "/x", status: null }],
+        quietInScope: 0,
+        liveInOtherScopes: 0,
+      }),
+    ).toBeUndefined()
+    // The scope the session belongs to is part of the answer the view reads.
+    expect(
+      readRosterPayload({
+        enabled: true,
+        scope: "default",
+        rosterTtlMs: 1,
+        peers: [],
         quietInScope: 0,
         liveInOtherScopes: 0,
       }),

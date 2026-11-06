@@ -24,11 +24,23 @@ export interface RosterSurfaceDeps {
   readonly config: Config
   /** Absent exactly when the plugin is disabled: then nothing was published either. */
   readonly roster?: Roster
+  /**
+   * The session the reader is about. Its own scope is the answer's `scope`, so
+   * a session moved with `/peers-scope` is read from where it now belongs.
+   */
+  readonly sessionID?: string
+  /** A scope to read instead of that session's own: the dialog's preview. */
+  readonly scope?: string
 }
 
 export async function rosterPayload(deps: RosterSurfaceDeps): Promise<RosterPayload> {
-  const { config, roster } = deps
-  const facts = { scope: config.scope, rosterTtlMs: config.rosterTtlMs }
+  const { config, roster, sessionID, scope: preview } = deps
+  const sessionScope =
+    sessionID === undefined || roster === undefined
+      ? config.scope
+      : await roster.scopeOf(sessionID)
+  const shown = preview ?? sessionScope
+  const facts = { scope: shown, sessionScope, rosterTtlMs: config.rosterTtlMs }
 
   // A disabled location still answers, with `enabled: false`: a reader can then
   // tell "off here" from "not loaded here" (`rpc.unavailable`).
@@ -36,7 +48,7 @@ export async function rosterPayload(deps: RosterSurfaceDeps): Promise<RosterPayl
     return { enabled: false, ...facts, peers: [], quietInScope: 0, liveInOtherScopes: 0 }
   }
 
-  const report = await roster.report()
+  const report = await roster.report(shown)
   return {
     enabled: true,
     ...facts,

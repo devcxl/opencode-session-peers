@@ -36,6 +36,11 @@ export interface RosterDialogProps {
   readonly viewpoint: Viewpoint
   /** The palette as it stands now, so a theme switch shows. */
   readonly palette: () => TuiPalette
+  /**
+   * Reads another scope, or the session's own when `undefined` is passed. The
+   * dialog asks; the feed decides when the answer replaces the state.
+   */
+  readonly onScope: (scope: string | undefined) => void
 }
 
 export function RosterDialog(props: RosterDialogProps) {
@@ -61,6 +66,13 @@ export function RosterDialog(props: RosterDialogProps) {
   })
 
   useKeyboard((key) => {
+    if (key.name === "g") {
+      const state = props.state()
+      if (state.kind !== "payload" || state.payload.sessionScope === "default") return
+      setPage(0)
+      props.onScope(state.payload.scope === state.payload.sessionScope ? "default" : undefined)
+      return
+    }
     const step = pageStep(key.name)
     if (step === undefined) return
     // Clamped here too, so a roster that shrank under a deep page still moves

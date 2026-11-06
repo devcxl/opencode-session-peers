@@ -29,6 +29,7 @@ function payload(overrides: Partial<RosterPayload> = {}): RosterPayload {
   return {
     enabled: true,
     scope: "default",
+    sessionScope: "default",
     rosterTtlMs: 90_000,
     peers: [
       {
@@ -52,7 +53,11 @@ function payload(overrides: Partial<RosterPayload> = {}): RosterPayload {
   }
 }
 
-async function rendered(initial: RosterState, height = 20) {
+async function rendered(
+  initial: RosterState,
+  height = 20,
+  onScope: (scope: string | undefined) => void = () => {},
+) {
   const [state, setState] = createSignal<RosterState>(initial)
   const setup = await testRender(
     () => (
@@ -60,6 +65,7 @@ async function rendered(initial: RosterState, height = 20) {
         state={state}
         viewpoint={{ sessionID: "ses_self0000", directory: "/work/alpha" }}
         palette={() => palette}
+        onScope={onScope}
       />
     ),
     { width: 100, height },
@@ -111,6 +117,56 @@ describe("the dialog draws the roster as a table", () => {
     expect(text()).toContain("Session peers is unavailable")
     expect(text()).toContain("RPC is unavailable: session-peers.v1")
     expect(frame()).not.toContain("┌")
+  })
+})
+
+describe("the dialog offers the scope switch", () => {
+  test("g asks for the default scope, and the hint says so", async () => {
+    const asked: (string | undefined)[] = []
+    const { setup, text } = await rendered(
+      {
+        kind: "payload",
+        payload: payload({ scope: "work", sessionScope: "work" }),
+      },
+      20,
+      (scope) => asked.push(scope),
+    )
+    expect(text()).toContain("g: show default (global)")
+
+    setup.mockInput.pressKey("g")
+    await setup.flush()
+    expect(asked).toEqual(["default"])
+  })
+
+  test("while previewing, g goes back to the session's own scope", async () => {
+    const asked: (string | undefined)[] = []
+    const { setup, text } = await rendered(
+      {
+        kind: "payload",
+        payload: payload({ scope: "default", sessionScope: "work" }),
+      },
+      20,
+      (scope) => asked.push(scope),
+    )
+    expect(text()).toContain("g: back to work")
+
+    setup.mockInput.pressKey("g")
+    await setup.flush()
+    expect(asked).toEqual([undefined])
+  })
+
+  test("a session already in the default scope has no switch", async () => {
+    const asked: (string | undefined)[] = []
+    const { setup, text } = await rendered(
+      { kind: "payload", payload: payload() },
+      20,
+      (scope) => asked.push(scope),
+    )
+    expect(text()).not.toContain("g: ")
+
+    setup.mockInput.pressKey("g")
+    await setup.flush()
+    expect(asked).toEqual([])
   })
 })
 

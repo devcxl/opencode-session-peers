@@ -28,13 +28,22 @@ export interface TuiPalette {
   readonly error: ResolvedTheme["text"]["feedback"]["error"]["base"]
 }
 
+/** Which roster a read is about: a session's own scope, or a scope previewed. */
+export interface RosterRequest {
+  readonly sessionID?: string
+  readonly scope?: string
+}
+
 /** The roster, as the plugin at this location answers for it. */
 export interface RosterSource {
   /** One call, at this TUI's own location. Resolves with the raw answer. */
-  read(): Promise<unknown>
+  read(request: RosterRequest): Promise<unknown>
   /** Called when the plugin says a fresh read would say something else. */
   onChange(listener: () => void): () => void
 }
+
+/** How much the toast's message stands out. */
+export type ToastVariant = "info" | "success" | "warning" | "error"
 
 /** One command this plugin puts on the keyboard: the palette and a slash name. */
 export interface TuiCommand {
@@ -44,13 +53,19 @@ export interface TuiCommand {
   readonly group: string
   /** The prompt slash name, without the slash. */
   readonly slash: string
-  readonly run: () => void
+  /** Keeps the slash command's raw input and hands it to `run`. */
+  readonly arguments?: boolean
+  readonly run: (input?: string) => void
 }
 
 /** What the view may ask of the TUI it runs inside. */
 export interface TuiPort {
   readonly palette: () => TuiPalette
   readonly roster: RosterSource
+  /** Moves the session into a scope and reports the applied one. */
+  setScope(sessionID: string, scope: string): Promise<unknown>
+  /** A short message in the host's toast area, for a command with no dialog. */
+  toast(message: string, variant?: ToastVariant): void
   /**
    * The session this TUI has open right now, and the directory it works in
    * when the TUI knows the session — what the view's marks are relative to.
@@ -81,6 +96,10 @@ export interface TuiPort {
 
 export function createTuiPort(context: Plugin.Context): TuiPort {
   const client = context.client.rpc(SESSION_PEERS_RPC)
+  const call = {
+    location: context.location ?? context.data.location.default(),
+    signal: AbortSignal.timeout(RPC_TIMEOUT_MS),
+  }
 
   return {
     palette: () => ({
@@ -90,16 +109,13 @@ export function createTuiPort(context: Plugin.Context): TuiPort {
     }),
 
     roster: {
-      read: () =>
-        client.roster(
-          {},
-          {
-            location: context.location ?? context.data.location.default(),
-            signal: AbortSignal.timeout(RPC_TIMEOUT_MS),
-          },
-        ),
+      read: (request) => client.roster(request, call),
       onChange: (listener) => client.events.on("changed", () => listener()),
     },
+
+    setScope: (sessionID, scope) => client.setScope({ sessionID, scope }, call),
+
+    toast: (message, variant = "info") => context.ui.toast.show({ message, variant }),
 
     currentSession: () => {
       const route = context.ui.router.current()
@@ -120,7 +136,10 @@ export function createTuiPort(context: Plugin.Context): TuiPort {
             title: input.title,
             group: input.group,
             palette: true,
-            slash: { name: input.slash },
+            slash:
+              input.arguments === true
+                ? { name: input.slash, arguments: true }
+                : { name: input.slash },
             run: input.run,
           },
         ],

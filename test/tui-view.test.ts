@@ -21,6 +21,7 @@ import {
   pageOf,
   pageSizeFor,
   peerCells,
+  scopeHint,
   statusText,
   viewContent,
   type RosterState,
@@ -34,6 +35,7 @@ function payload(overrides: Partial<RosterPayload> = {}): RosterPayload {
   return {
     enabled: true,
     scope: "default",
+    sessionScope: "default",
     rosterTtlMs: 90_000,
     peers: [],
     quietInScope: 0,
@@ -221,6 +223,25 @@ describe("an empty view", () => {
     const accompanied = content(state({ peers: [peer({ sessionID: "ses_b" })] }))
     expect(accompanied.rows).toHaveLength(1)
     expect(accompanied.notes).toEqual([])
+  })
+})
+
+describe("the scope switch", () => {
+  test("offers the default scope only to a session that has one of its own", () => {
+    // The default scope is the whole group; there is nowhere else to turn.
+    expect(scopeHint(payload())).toBeUndefined()
+    expect(scopeHint(payload({ scope: "work", sessionScope: "work" }))).toBe(
+      "g: show default (global)",
+    )
+    // While previewing, the same key goes back to the session's own group.
+    expect(scopeHint(payload({ scope: "default", sessionScope: "work" }))).toBe("g: back to work")
+  })
+
+  test("rides among the notes, under the page footer", () => {
+    const blocks = content(
+      state({ scope: "work", sessionScope: "work", peers: [peer({ sessionID: "ses_b" })] }),
+    )
+    expect(blocks.notes).toEqual(["g: show default (global)"])
   })
 })
 

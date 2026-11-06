@@ -6,15 +6,21 @@
 
 import { describe, expect, test } from "bun:test"
 
-import type { RosterSource } from "../src/host/tui.ts"
+import type { RosterRequest, RosterSource } from "../src/host/tui.ts"
 import { createRosterFeed } from "../src/tui/feed.ts"
 
-function source(): RosterSource & { readonly reads: () => number; announce(): void } {
+function source(): RosterSource & {
+  readonly reads: () => number
+  readonly requests: () => readonly RosterRequest[]
+  announce(): void
+} {
   let reads = 0
+  const requests: RosterRequest[] = []
   let listener: (() => void) | undefined
   return {
-    read: () => {
+    read: (request) => {
       reads += 1
+      requests.push(request)
       return Promise.resolve({})
     },
     onChange: (on) => {
@@ -24,6 +30,7 @@ function source(): RosterSource & { readonly reads: () => number; announce(): vo
       }
     },
     reads: () => reads,
+    requests: () => requests,
     announce: () => listener?.(),
   }
 }
@@ -64,6 +71,34 @@ describe("the refresh floor", () => {
     await tick(45)
     // Two floors would double the cadence; one floor stays near 1 per 10ms.
     expect(src.reads()).toBeLessThan(8)
+    feed.dispose()
+  })
+})
+
+describe("the scope the feed reads", () => {
+  test("reads the session's own scope first, and a preview only until it is dropped", async () => {
+    const src = source()
+    const feed = createRosterFeed(src, { refreshMs: 60_000 })
+
+    feed.open("ses_self")
+    await tick(0)
+    expect(src.requests()).toEqual([{ sessionID: "ses_self" }])
+
+    feed.showScope("default")
+    await tick(0)
+    expect(src.requests()[1]).toEqual({ sessionID: "ses_self", scope: "default" })
+
+    feed.showScope(undefined)
+    await tick(0)
+    expect(src.requests()[2]).toEqual({ sessionID: "ses_self" })
+
+    // Reopening starts at the session's own scope again, not at the preview.
+    feed.showScope("default")
+    await tick(0)
+    feed.open("ses_self")
+    await tick(0)
+    expect(src.requests().at(-1)).toEqual({ sessionID: "ses_self" })
+
     feed.dispose()
   })
 })

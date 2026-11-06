@@ -10,21 +10,32 @@
  *
  * The shape, as of `session-peers.v1`:
  *
- *   method `roster`, input `{}`, output:
+ *   method `roster`, input `{ sessionID?: string, scope?: string }`, output:
  *     {
  *       enabled: boolean          // false: the plugin is off at the answering
  *                                 // location, which is not an empty roster
  *       scope: string             // the visibility partition the rows were
  *                                 // resolved in, named by the header
+ *       sessionScope: string      // the scope the named session belongs to;
+ *                                 // the configured scope when none was named
  *       rosterTtlMs: number       // how long a record is trusted without a
  *                                 // heartbeat; rows are already filtered by it
- *       peers: RosterPeer[]       // every live peer in scope, in `peers list`
+ *       peers: RosterPeer[]       // every live peer in `scope`, in `peers list`
  *                                 // order (directory, title, id)
  *       quietInScope: number      // in-scope records whose heartbeat stopped:
  *                                 // the peers that went quiet
  *       liveInOtherScopes: number // live records in another scope: sessions
  *                                 // this view cannot reach
  *     }
+ *
+ *   `sessionID` reads the scope that session belongs to; `scope` reads another
+ *   scope instead (the dialog's default preview). `scope` wins when both are
+ *   given, and `sessionScope` still reports the session's own.
+ *
+ *   method `setScope`, input `{ sessionID: string, scope: string }`, output
+ *   `{ scope: string }`: moves a session this location serves into a scope and
+ *   republishes its roster row. It fails when the location does not serve it.
+ *   This is what `/peers-scope` calls; `scope` is the group the session joins.
  *
  *   event `changed`, data `{ at: number }`: the roster this definition's handler
  *   answers from may have changed, so a reader should take a fresh snapshot.
@@ -57,7 +68,10 @@ export interface RosterPeer {
 /** The answer to one `roster` call. */
 export interface RosterPayload {
   readonly enabled: boolean
+  /** The scope the rows were resolved in. */
   readonly scope: string
+  /** The scope the named session belongs to; the configured one when unnamed. */
+  readonly sessionScope: string
   readonly rosterTtlMs: number
   readonly peers: readonly RosterPeer[]
   readonly quietInScope: number
@@ -83,7 +97,10 @@ export const SESSION_PEERS_RPC = {
     roster: {
       input: {
         type: "object",
-        properties: {},
+        properties: {
+          sessionID: { type: "string", minLength: 1 },
+          scope: { type: "string", minLength: 1 },
+        },
         additionalProperties: false,
       },
       output: {
@@ -91,6 +108,7 @@ export const SESSION_PEERS_RPC = {
         properties: {
           enabled: { type: "boolean" },
           scope: { type: "string" },
+          sessionScope: { type: "string" },
           rosterTtlMs: { type: "number" },
           peers: { type: "array", items: peerSchema },
           quietInScope: { type: "number" },
@@ -99,11 +117,29 @@ export const SESSION_PEERS_RPC = {
         required: [
           "enabled",
           "scope",
+          "sessionScope",
           "rosterTtlMs",
           "peers",
           "quietInScope",
           "liveInOtherScopes",
         ],
+        additionalProperties: false,
+      },
+    },
+    setScope: {
+      input: {
+        type: "object",
+        properties: {
+          sessionID: { type: "string", minLength: 1 },
+          scope: { type: "string", minLength: 1 },
+        },
+        required: ["sessionID", "scope"],
+        additionalProperties: false,
+      },
+      output: {
+        type: "object",
+        properties: { scope: { type: "string" } },
+        required: ["scope"],
         additionalProperties: false,
       },
     },
@@ -131,10 +167,12 @@ export const SESSION_PEERS_RPC = {
 export function readRosterPayload(value: unknown): RosterPayload | undefined {
   const payload = asRecord(value)
   if (payload === undefined) return undefined
-  const { enabled, scope, rosterTtlMs, peers, quietInScope, liveInOtherScopes } = payload
+  const { enabled, scope, sessionScope, rosterTtlMs, peers, quietInScope, liveInOtherScopes } =
+    payload
   if (typeof enabled !== "boolean" || typeof scope !== "string" || typeof rosterTtlMs !== "number") {
     return undefined
   }
+  if (typeof sessionScope !== "string") return undefined
   if (typeof quietInScope !== "number" || typeof liveInOtherScopes !== "number") return undefined
   if (!Array.isArray(peers)) return undefined
 
@@ -144,7 +182,15 @@ export function readRosterPayload(value: unknown): RosterPayload | undefined {
     if (peer === undefined) return undefined
     rows.push(peer)
   }
-  return { enabled, scope, rosterTtlMs, peers: rows, quietInScope, liveInOtherScopes }
+  return {
+    enabled,
+    scope,
+    sessionScope,
+    rosterTtlMs,
+    peers: rows,
+    quietInScope,
+    liveInOtherScopes,
+  }
 }
 
 function readRosterPeer(value: unknown): RosterPeer | undefined {

@@ -44,7 +44,26 @@ export default {
     // "not loaded here". It is the plugin's public surface for other plugins:
     // versioned, and documented in `src/rpc.ts`.
     const surface = await host.rpc.register(SESSION_PEERS_RPC, {
-      roster: () => rosterPayload({ config, roster }),
+      roster: (input) =>
+        rosterPayload({
+          config,
+          roster,
+          sessionID: inputString(input, "sessionID"),
+          scope: inputString(input, "scope"),
+        }),
+      async setScope(input) {
+        const sessionID = inputString(input, "sessionID")
+        const scope = inputString(input, "scope")
+        // The host validates against the definition's schema first; this only
+        // turns `unknown` into the two strings the handler was promised.
+        if (sessionID === undefined || scope === undefined) {
+          throw new Error("setScope needs a session id and a scope")
+        }
+        if (roster === undefined) throw new Error("the plugin is disabled at this location")
+        const peer = await roster.setScope(sessionID, scope)
+        if (peer === undefined) throw new Error("this location does not serve that session")
+        return { scope: peer.scope }
+      },
     })
 
     await host.tools.register(
@@ -86,3 +105,10 @@ export default {
     }
   },
 } satisfies Plugin.Plugin
+
+/** One optional string field of an RPC input, which the transport hands over untyped. */
+function inputString(input: unknown, key: string): string | undefined {
+  if (typeof input !== "object" || input === null) return undefined
+  const value = (input as Record<string, unknown>)[key]
+  return typeof value === "string" && value.length > 0 ? value : undefined
+}

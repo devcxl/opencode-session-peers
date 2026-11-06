@@ -11,10 +11,13 @@ import { describeError, failure, type ErrorCode } from "../domain/errors.ts"
 import type { ActionResult } from "../domain/types.ts"
 import type { SessionLookup } from "../host/session.ts"
 import type { ToolCall } from "../host/tools.ts"
+import type { Roster } from "../peers/roster.ts"
 
 export interface StatusDeps {
   readonly config: Config
   readonly sessions: SessionLookup
+  /** Absent while the plugin is disabled; then the configured scope is all there is. */
+  readonly roster?: Roster
 }
 
 export async function statusAction(deps: StatusDeps, call: ToolCall): Promise<ActionResult> {
@@ -23,14 +26,18 @@ export async function statusAction(deps: StatusDeps, call: ToolCall): Promise<Ac
 
   try {
     const session = await deps.sessions.get(call.sessionID)
+    // The session may have been moved with `/peers-scope`; its own scope is the
+    // one its calls resolve in.
+    const scope =
+      deps.roster === undefined ? deps.config.scope : await deps.roster.scopeOf(call.sessionID)
     return {
       text: [
         "**Session peers status:**",
         "Connected: yes",
         `Session ID: ${session.id}`,
-        `Scope: ${deps.config.scope}`,
+        `Scope: ${scope}`,
       ].join("\n"),
-      details: { connected: true, sessionID: session.id, scope: deps.config.scope },
+      details: { connected: true, sessionID: session.id, scope },
     }
   } catch (error) {
     return failureResult("E_NOT_CONNECTED", describeError(error), deps, call)
