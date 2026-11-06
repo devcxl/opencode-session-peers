@@ -22,7 +22,6 @@ export type ErrorCode =
   | "E_TARGET_REFUSES"
   | "E_TARGET_REPLIES_ONLY"
   | "E_TARGET_POLICY_UNKNOWN"
-  | "E_DELIVERY_FAILED"
   | "E_TARGET_UNREACHABLE"
   | "E_ASK_IN_FLIGHT"
   | "E_MUTUAL_ASK"
@@ -60,12 +59,6 @@ export interface Failure {
   retryable: boolean
 }
 
-export type DeliveryResult = { delivered: true; delivery: Delivery } | Failure
-
-export function delivered(delivery: Delivery): DeliveryResult {
-  return { delivered: true, delivery }
-}
-
 /**
  * `detail` is the thing the failure is about — a target as the caller wrote it,
  * a session title — interpolated into the text when the code calls for it.
@@ -99,8 +92,6 @@ function reasonFor(code: ErrorCode, detail: string): string {
       return `Session "${detail}" accepts peer messages only as answers to its own questions, and this is a new message.`
     case "E_TARGET_POLICY_UNKNOWN":
       return `Session "${detail}" has not declared what it accepts from peers, so this message is refused. It may still be running an older build.`
-    case "E_DELIVERY_FAILED":
-      return `Message to "${detail}" was not delivered: the host no longer runs that session. Use "list" to see who is still connected.`
     case "E_TARGET_UNREACHABLE":
       return `"${detail}" is your parent session and cannot answer inside this turn: it is inside a subagent call that has not returned. Use "send" to hand it the question together with your recommendation, or raise it in your final report.`
     case "E_ASK_IN_FLIGHT":
