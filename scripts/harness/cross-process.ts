@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { createClient } from "./client.ts"
 import { isPortOpen, prepareScratch, sleep, startInstance, type InstanceHandle } from "./instance.ts"
-import { REPO_ROOT, scratchLayout } from "./paths.ts"
+import { REPO_ROOT, STUB_MODEL_ID, STUB_PROVIDER_ID, scratchLayout } from "./paths.ts"
 import { startStubModel, type StubHandle } from "./stub/model-server.ts"
 import { askPrompt, LIST_PROMPT, STUB_REPLY_DIRECTIVE } from "./stub/model-server.ts"
 import { promptForResult } from "./stub/transcript.ts"
@@ -46,7 +46,7 @@ async function main(): Promise<void> {
     const b = createClient(serverB.url, serverB.password)
     await a.models(layout.projectA)
     await b.models(layout.projectB)
-    const model = { providerID: "harness-stub", id: "stub" }
+    const model = { providerID: STUB_PROVIDER_ID, id: STUB_MODEL_ID }
     const sessionA = await a.createSession({ directory: layout.projectA, title: "cross-a", model })
     const sessionB = await b.createSession({ directory: layout.projectB, title: "cross-b", model })
     const options = { turnTimeoutMs: 30_000 } as HarnessOptions
