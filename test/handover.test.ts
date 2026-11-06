@@ -282,6 +282,18 @@ describe("delivery", () => {
     await unloadAll(alpha, beta)
   })
 
+  test("uses the busy recipient's queue setting, not the sender's", async () => {
+    const { alpha, beta } = await twoDirectories({ beta: { options: { busyDelivery: "queue" } } })
+    beta.host.emit("session.execution.started", { sessionID: BETA.id })
+    await settle()
+
+    const result = await alpha.host.call("peers", { action: "handover", to: BETA.id, message: "Take over." })
+
+    expect(result.details).toMatchObject({ delivered: true, delivery: "queue" })
+    expect(alpha.host.prompts[0]?.delivery).toBe("queue")
+    await unloadAll(alpha, beta)
+  })
+
   test("honours the recipient's declaration: a peer that accepts only answers refuses one", async () => {
     const { alpha, beta } = await twoDirectories({ beta: { options: { trigger: "replies" } } })
 

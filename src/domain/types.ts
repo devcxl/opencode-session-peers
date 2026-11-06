@@ -88,6 +88,8 @@ export interface Peer {
   scope: string
   /** What this session accepts from peers, as it declared it. Absent on a record that predates the field. */
   inboundTrigger?: InboundTrigger
+  /** How this session accepts messages while busy; old roster records may omit it. */
+  busyDelivery?: Delivery
   /** Parent session, for sessions spawned as subagents. */
   parentID?: SessionID
   instanceID: string

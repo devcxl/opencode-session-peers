@@ -209,8 +209,8 @@ describe("the delivery decision", () => {
     await unloadAll(alpha, beta)
   })
 
-  test("uses the configured busy delivery when the recipient is mid-turn", async () => {
-    const { alpha, beta } = await twoDirectories({ alpha: { options: { busyDelivery: "queue" } } })
+  test("uses the recipient's queue setting when the sender prefers steer", async () => {
+    const { alpha, beta } = await twoDirectories({ beta: { options: { busyDelivery: "queue" } } })
     beta.host.emit("session.execution.started", { sessionID: BETA.id })
     await settle()
 
@@ -222,7 +222,19 @@ describe("the delivery decision", () => {
     await unloadAll(alpha, beta)
   })
 
-  test("assumes the recipient is not idle when the roster has no status for it", async () => {
+  test("uses the recipient's steer setting when the sender prefers queue", async () => {
+    const { alpha, beta } = await twoDirectories({ alpha: { options: { busyDelivery: "queue" } } })
+    beta.host.emit("session.execution.started", { sessionID: BETA.id })
+    await settle()
+
+    const result = await alpha.host.call("peers", { action: "send", to: BETA.id, message: "ping" })
+
+    expect(result.details).toMatchObject({ delivered: true, delivery: "steer" })
+    expect(alpha.host.prompts[0]?.delivery).toBe("steer")
+    await unloadAll(alpha, beta)
+  })
+
+  test("queues when the roster has no status or delivery policy for the recipient", async () => {
     const { alpha, beta, storage } = await twoDirectories()
     // A record written by an instance that never saw a status, as one seeded
     // from storage before its session ran a turn is.
@@ -233,7 +245,7 @@ describe("the delivery decision", () => {
 
     const result = await alpha.host.call("peers", { action: "send", to: BETA.id, message: "ping" })
 
-    expect(result.details).toMatchObject({ delivered: true, delivery: "steer" })
+    expect(result.details).toMatchObject({ delivered: true, delivery: "queue" })
 
     await unloadAll(alpha, beta)
   })

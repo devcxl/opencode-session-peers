@@ -51,7 +51,7 @@ export async function deliverTo(deps: DeliveryDeps, request: DeliveryRequest): P
     }
   }
 
-  const delivery = deliveryFor({ recipientIdle: request.to.status === "idle", policy: deps.config.inbound })
+  const delivery = deliveryFor({ status: request.to.status, busyDelivery: request.to.busyDelivery })
   const text = inboundMessage({
     from: request.from,
     body: request.body,

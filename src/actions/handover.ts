@@ -115,9 +115,8 @@ export async function handoverAction(
     verdict.body,
   )
 
-  // The roster is everything this instance knows about the target; a status it
-  // never saw counts as "not idle", so a handover never starts a turn on a guess.
-  const delivery = deliveryFor({ recipientIdle: peer.status === "idle", policy: deps.config.inbound })
+  // Unknown status or an old roster record is queued rather than steered on a guess.
+  const delivery = deliveryFor({ status: peer.status, busyDelivery: peer.busyDelivery })
   const inbound = inboundMessage({
     from: view.self,
     body: { text },

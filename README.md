@@ -80,7 +80,7 @@ server log; `trigger` fails closed to `"never"`.
 | `enabled` | `true` | `false` publishes nothing and refuses every action with "disabled by configuration". |
 | `scope` | `"default"` | Visibility partition. Only sessions with the same scope see each other. This is the scope a session starts in; `/peers-scope <scope>` in the TUI moves the current session to another one. |
 | `trigger` | `"always"` | What this session accepts from peers: `always`, `replies` (questions and answers only), `never`. Published on this session's roster record and honoured by the sender. |
-| `busyDelivery` | `"steer"` | How a message reaches a recipient that is mid-turn: `steer` injects it at the next safe boundary, `queue` waits until the recipient is idle. An idle recipient always starts a new turn. |
+| `busyDelivery` | `"steer"` | How this session receives a message while mid-turn: `steer` injects it at the next safe boundary, `queue` waits until it is idle. The recipient publishes its setting for senders to honour. |
 | `replyHint` | `true` | Append the `To reply: peers({ action: "reply", ... })` line to a question. Only an `ask` carries it: a `send`, a reply and a handover leave nothing to answer. |
 | `askTimeoutMs` | `600000` | How long an `ask` waits for its answer (10 minutes) before it stops waiting. |
 | `rosterTtlMs` | `90000` | How long a peer record may go without a heartbeat before other instances stop listing it. The heartbeat runs at a third of this. |
@@ -114,6 +114,9 @@ Behaviour worth knowing before you rely on it:
   sessions cannot ask each other simultaneously, and while a session holds an unanswered question a
   `send` to anyone but the asker is refused.
 - **Peers expire.** A session whose host stopped running disappears from `list` after `rosterTtlMs`.
+- **Delivery uses the latest observed status.** An idle recipient is queued. When its status or
+  `busyDelivery` declaration is unknown, a sender queues rather than steering on a guess; status can
+  change between observation and delivery. Older plugin instances may not honour this declaration.
 - **A peer appears once its host has noticed it.** An instance can only learn that a session exists from an
   event about it — being created counts — or from one call that reads the roster by that session itself:
   `list`, `list-cwd`, `send`, `ask`, `reply` or `handover`. (`status`, `pending` and `cancel` do not publish

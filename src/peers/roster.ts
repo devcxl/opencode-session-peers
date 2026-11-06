@@ -381,6 +381,7 @@ class LiveRoster implements Roster {
       // Only this instance can read its own options, so its sessions declare
       // here what they accept: every sender honours the declaration it reads.
       inboundTrigger: this.deps.config.inbound.trigger,
+      busyDelivery: this.deps.config.inbound.busyDelivery,
       parentID: session.parentID,
       instanceID: this.instanceID,
       updatedAt: Date.now(),
