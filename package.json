@@ -32,7 +32,7 @@
     "bun": ">=1.2.0"
   },
   "devDependencies": {
-    "@opencode/plugin": "2.0.16",
+    "@opencode/plugin": "2.2.5",
     "@opencode/theme": "2.0.16",
     "@opentui/core": "0.5.12",
     "@opentui/solid": "0.5.12",
