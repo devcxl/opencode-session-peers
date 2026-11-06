@@ -10,11 +10,14 @@
   view keeps every promise of the sidebar it replaces: unknown status is `unknown` with its reason
   and never `idle`, an empty table names which of the three causes it is, ids are folded to their
   tail, and this session and same-directory peers are marked.
-- A roster larger than the screen is paged instead of spilling past it: the page size follows the
-  terminal height, `←`/`→` and `PageUp`/`PageDown` flip pages, and a footer says which page is shown.
-  A roster that shrinks under a deep page falls back to a page that exists.
-- The dialog opens at the host's widest size (116 columns, capped by the terminal), so absolute
-  directory paths get more room before they wrap.
+- A roster larger than one page is paged instead of spilling past the screen: a page holds at most
+  eight peers (fewer on a short terminal), `←`/`→` and `PageUp`/`PageDown` flip pages, and a footer
+  says which page is shown. A roster that shrinks under a deep page falls back to a page that exists.
+- This session's own row is pinned above the pages and separated by an `other sessions` band, so it
+  stays visible while the rest turns over.
+- The dialog opens at the host's widest size (116 columns, capped by the terminal) with two columns of
+  padding, so absolute directory paths get more room before they wrap and the content is not flush
+  against the dialog's edge.
 
 ## 0.1.0 — 2026-10-15
 

@@ -43,9 +43,16 @@ export function RosterDialog(props: RosterDialogProps) {
   // the roster, not a resumption of the last read.
   const [page, setPage] = createSignal(0)
   const dimensions = useTerminalDimensions()
+  // The pinned row above the pages costs lines the pages cannot use.
+  const pinnedSelf = createMemo(() => {
+    const state = props.state()
+    if (state.kind !== "payload" || !state.payload.enabled) return false
+    const selfID = props.viewpoint.sessionID
+    return selfID !== undefined && state.payload.peers.some((peer) => peer.sessionID === selfID)
+  })
   // A page is what the terminal can show without spilling past the screen; it
   // is re-read on resize so the page keeps fitting.
-  const pageSize = createMemo(() => pageSizeFor(dimensions().height))
+  const pageSize = createMemo(() => pageSizeFor(dimensions().height, pinnedSelf()))
 
   const lastPage = createMemo(() => {
     const state = props.state()
@@ -73,7 +80,7 @@ export function RosterDialog(props: RosterDialogProps) {
   const colour = (tone: Tone) => colourFor(tone, props.palette())
 
   return (
-    <box flexDirection="column">
+    <box flexDirection="column" paddingTop={1} paddingBottom={1} paddingLeft={2} paddingRight={2}>
       <text fg={colour("base")}>
         <b>{content().title}</b>
       </text>

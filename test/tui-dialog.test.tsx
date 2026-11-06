@@ -52,7 +52,7 @@ function payload(overrides: Partial<RosterPayload> = {}): RosterPayload {
   }
 }
 
-async function rendered(initial: RosterState) {
+async function rendered(initial: RosterState, height = 20) {
   const [state, setState] = createSignal<RosterState>(initial)
   const setup = await testRender(
     () => (
@@ -62,7 +62,7 @@ async function rendered(initial: RosterState) {
         palette={() => palette}
       />
     ),
-    { width: 100, height: 20 },
+    { width: 100, height },
   )
   await setup.flush()
   const frame = () => setup.captureCharFrame()
@@ -159,6 +159,39 @@ describe("the dialog pages a long roster", () => {
     await setup.flush()
     expect(text()).toContain("Peer 4")
     expect(text()).toContain("page 2 of 3")
+  })
+
+  test("keeps this session above the pages while they turn", async () => {
+    const { setup, text } = await rendered(
+      {
+        kind: "payload",
+        payload: payload({
+          peers: [
+            {
+              sessionID: "ses_self0000",
+              title: "This session",
+              directory: "/work/alpha",
+              status: "idle",
+              statusReason: null,
+            },
+            ...manyPeers(5),
+          ],
+        }),
+      },
+      32,
+    )
+    expect(text()).toContain("This session")
+    expect(text()).toContain("this session")
+    expect(text()).toContain("other sessions")
+    expect(text()).toContain("page 1 of 2 · peers 1–4 of 5 · ←/→ to page")
+
+    setup.mockInput.pressArrow("right")
+    await setup.flush()
+    expect(text()).toContain("This session")
+    expect(text()).toContain("this session")
+    expect(text()).toContain("other sessions")
+    expect(text()).toContain("Peer 5")
+    expect(text()).toContain("page 2 of 2 · peer 5 of 5 · ←/→ to page")
   })
 
   test("a roster that fits on one page has no footer and ignores the keys", async () => {

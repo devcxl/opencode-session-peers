@@ -172,7 +172,8 @@ describe("a row", () => {
     )
     const marksColumn = COLUMN_NAMES.indexOf("Marks")
     const marks = blocks.rows.map((row) => rowTexts(row)[marksColumn])
-    expect(marks).toEqual(["this session", "same dir", ""])
+    // This session is pinned, then the band that names the rest.
+    expect(marks).toEqual(["this session", "", "same dir", ""])
   })
 })
 
@@ -271,6 +272,32 @@ describe("a page", () => {
     expect(paged(roster, 0, 10).notes).toEqual([])
   })
 
+  test("pins this session above the pages, separated from the rest", () => {
+    const roster = state({
+      peers: [
+        peer({ sessionID: "ses_aaaa1111", title: "Another session" }),
+        peer({ sessionID: SELF, title: "This one" }),
+        peer({ sessionID: "ses_zzzz9999", title: "The other one" }),
+      ],
+    })
+
+    const first = paged(roster, 0, 1)
+    expect(titles(first)).toEqual(["This one", "other sessions", "Another session"])
+    expect(first.rows[0]?.[4]?.text).toBe("this session")
+    expect(first.notes).toEqual(["page 1 of 2 · peer 1 of 2 · ←/→ to page"])
+
+    // The pinned row is on every page; only the others turn over.
+    const second = paged(roster, 1, 1)
+    expect(titles(second)).toEqual(["This one", "other sessions", "The other one"])
+    expect(second.rows[0]?.[4]?.text).toBe("this session")
+  })
+
+  test("names no section when this session is the only peer", () => {
+    const blocks = paged(state({ peers: [peer({ sessionID: SELF, title: "Only me" })] }), 0, 4)
+    expect(titles(blocks)).toEqual(["Only me"])
+    expect(blocks.notes).toEqual([emptyCauseLine("noPeerLoadsPlugin", payload())])
+  })
+
   test("nothing to page without a page size, or with every peer on one page", () => {
     const roster = state({ peers: manyPeers(5) })
     expect(viewContent({ state: roster, viewpoint: { sessionID: SELF, directory: undefined } }).rows)
@@ -291,9 +318,12 @@ describe("a page", () => {
 
   test("sizes a page to the terminal, within the bounds a page is worth", () => {
     // Fixed chrome plus three lines per wrapped row must fit the screen.
-    expect(pageSizeFor(24)).toBe(4)
-    expect(pageSizeFor(32)).toBe(7)
-    expect(pageSizeFor(40)).toBe(9)
+    expect(pageSizeFor(24)).toBe(3)
+    expect(pageSizeFor(32)).toBe(6)
+    expect(pageSizeFor(40)).toBe(8)
+    // The pinned row above the pages costs lines the pages cannot use.
+    expect(pageSizeFor(32, true)).toBe(4)
+    expect(pageSizeFor(40, true)).toBe(7)
     // A terminal too short for any sensible page still gets the minimum,
     // rather than a page of nothing.
     expect(pageSizeFor(20)).toBe(3)

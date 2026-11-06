@@ -119,7 +119,16 @@ export function viewContent(input: ViewInput): ViewContent {
           noteTone: "muted",
         }
       }
-      const page = pageOf(payload.peers.length, input.pageSize, input.page)
+      // This session is drawn once, above the pages, so it stays visible while
+      // the reader flips through everyone else.
+      const self =
+        input.viewpoint.sessionID === undefined
+          ? undefined
+          : payload.peers.find((peer) => peer.sessionID === input.viewpoint.sessionID)
+      const others =
+        self === undefined ? payload.peers : payload.peers.filter((peer) => peer !== self)
+
+      const page = pageOf(others.length, input.pageSize, input.page)
       const cause = emptyCause(payload, input.viewpoint.sessionID)
       const notes: string[] = []
       if (cause !== undefined) notes.push(emptyCauseLine(cause, payload))
@@ -129,9 +138,13 @@ export function viewContent(input: ViewInput): ViewContent {
         title: "Session peers",
         contextLines: [scopeLine(payload.scope), HEADER_LIMIT],
         columns: COLUMNS,
-        rows: payload.peers
-          .slice(page.start, page.start + page.size)
-          .map((peer) => peerCells(peer, marksFor(peer, input.viewpoint))),
+        rows: [
+          ...(self === undefined ? [] : [peerCells(self, marksFor(self, input.viewpoint))]),
+          ...(self === undefined || others.length === 0 ? [] : [sectionCells("other sessions")]),
+          ...others
+            .slice(page.start, page.start + page.size)
+            .map((peer) => peerCells(peer, marksFor(peer, input.viewpoint))),
+        ],
         notes,
         noteTone: "muted",
       }
@@ -154,6 +167,15 @@ export const COLUMNS: readonly TableCell[] = [
 
 /** The header's second line: the reason this table is not the whole machine. */
 export const HEADER_LIMIT = "only sessions loading this plugin appear"
+
+/**
+ * The band that separates this session's row from the peers below it. The
+ * label rides in the first column, the others stay empty, so the table keeps
+ * one cell per column without inventing a fact.
+ */
+function sectionCells(label: string): readonly TableCell[] {
+  return COLUMNS.map((_, index) => cell(index === 0 ? label : "", "muted"))
+}
 
 function scopeLine(scope: string): string {
   return `scope: ${scope}`
@@ -201,14 +223,20 @@ export function pageNote(page: PageWindow): string | undefined {
 const MIN_PAGE_SIZE = 3
 
 /** Past this, a page is harder to scan than it is to flip. */
-const MAX_PAGE_SIZE = 16
+const MAX_PAGE_SIZE = 8
 
 /**
  * Lines the dialog spends on everything but the peer rows: the host's chrome,
- * the title, the scope lines, the table's frame and header, and the page
- * footer.
+ * the dialog's own padding, the title, the scope lines, the table's frame and
+ * header, and the page footer.
  */
-const FIXED_LINES = 11
+const FIXED_LINES = 13
+
+/**
+ * Lines the pinned row costs when this session is above the pages: its own
+ * wrapped row, the separators around it, and the band naming the others.
+ */
+const PINNED_SELF_LINES = 5
 
 /**
  * Lines one peer row takes. A directory is an absolute path and a status can
@@ -223,8 +251,9 @@ const LINES_PER_PEER = 3
  * host sizes the dialog to its content, so a page that is too tall loses its
  * bottom rows instead of scrolling; the page is sized to fit the screen.
  */
-export function pageSizeFor(terminalHeight: number): number {
-  const peers = Math.floor((terminalHeight - FIXED_LINES) / LINES_PER_PEER)
+export function pageSizeFor(terminalHeight: number, pinnedSelf = false): number {
+  const fixed = FIXED_LINES + (pinnedSelf ? PINNED_SELF_LINES : 0)
+  const peers = Math.floor((terminalHeight - fixed) / LINES_PER_PEER)
   return Math.max(MIN_PAGE_SIZE, Math.min(MAX_PAGE_SIZE, peers))
 }
 
