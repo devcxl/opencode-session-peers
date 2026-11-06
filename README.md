@@ -91,7 +91,7 @@ server log; `trigger` fails closed to `"never"`.
 | --- | --- |
 | `list` | Every live peer in this session's scope, this session first. Run it before addressing a peer. |
 | `list-cwd` | Only the peers working in this session's directory. |
-| `send` | Deliver a message to one peer and report whether it was delivered. Does not wait for anything else. |
+| `send` | Submit a message to one peer and report whether the host accepted it. Does not wait for the recipient to read it. |
 | `ask` | Put a question to one peer and wait inside the call until it is answered, the ask timeout passes, or the turn is interrupted. |
 | `reply` | Answer a question another peer is waiting on. |
 | `pending` | The questions waiting for this session's answer, each with the question id to name in `replyTo`. |
@@ -106,8 +106,14 @@ reply reference, because its body is written by the model and it starts a new ex
 
 Behaviour worth knowing before you rely on it:
 
-- **A `send` is not queued.** If the target session is gone, the message is reported undelivered
-  immediately, with the host's own error (ADR-0005).
+- **The plugin has no offline mailbox.** It submits a `send` to the host once (ADR-0005). A successful
+  submission means host admission, not that the recipient read or processed it. The `delivered: true`
+  result field is retained for compatibility and means admission, not a read receipt.
+- **A host error can leave delivery unknown.** The result has `outcome: "unknown"` and no `delivered`
+  field: the message may already have been accepted, so retrying can duplicate it. An ask in this state
+  stops waiting but retains its record so a later reply can still be routed.
+- **A reply may be stored rather than read.** `outcome: "stored"` means an answer was written to the
+  waiting ask's reply slot; `outcome: "accepted"` means a message was admitted by the host.
 - **A timeout is not a cancellation.** After an `ask` times out, the question stays in the recipient's
   hands; an answer that arrives later is delivered as an ordinary message instead of being dropped.
 - **One question at a time.** A session with an outstanding question cannot start another, two

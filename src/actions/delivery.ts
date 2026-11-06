@@ -41,6 +41,7 @@ export interface DeliveryRequest {
 export type DeliveryAttempt =
   | { readonly kind: "delivered"; readonly delivery: Delivery }
   | { readonly kind: "refused"; readonly refusal: ActionResult }
+  | { readonly kind: "unknown"; readonly result: ActionResult }
 
 export async function deliverTo(deps: DeliveryDeps, request: DeliveryRequest): Promise<DeliveryAttempt> {
   const admission = admitInbound({ declared: request.to.inboundTrigger, exchange: request.exchange })
@@ -64,14 +65,18 @@ export async function deliverTo(deps: DeliveryDeps, request: DeliveryRequest): P
   try {
     await deps.sessions.prompt({ sessionID: request.to.sessionID, text, delivery })
   } catch (error) {
-    // The message was admitted but the host would not take it. Reporting it is
-    // the point: a message the sender believes was delivered is worse.
     return {
-      kind: "refused",
-      refusal: refusal(failure("E_DELIVERY_FAILED", request.detail), {
-        sessionID: request.to.sessionID,
-        hostError: describeError(error),
-      }),
+      kind: "unknown",
+      result: {
+        text: `Delivery to ${JSON.stringify(request.detail)} is unknown: the message may have been accepted. Retrying could create a duplicate.`,
+        details: {
+          outcome: "unknown",
+          code: "E_DELIVERY_FAILED",
+          retryable: false,
+          sessionID: request.to.sessionID,
+          hostError: describeError(error),
+        },
+      },
     }
   }
 

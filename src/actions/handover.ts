@@ -12,14 +12,13 @@
 
 import { describeError, failure, type Failure } from "../domain/errors.ts"
 import { resolvePeer } from "../domain/addressing.ts"
-import { inboundMessage } from "../domain/format.ts"
 import {
   buildHandoverPrompt,
   checkHandoverShape,
   handoverBody,
   handoverMessage,
 } from "../domain/handover.ts"
-import { admitInbound, deliveryFor } from "../domain/policy.ts"
+import { admitInbound } from "../domain/policy.ts"
 import type { ActionResult, Attachment } from "../domain/types.ts"
 import type { Config } from "../config.ts"
 import type { HandoverSupport } from "../host/handover.ts"
@@ -27,6 +26,7 @@ import type { SessionLookup } from "../host/session.ts"
 import type { ToolCall } from "../host/tools.ts"
 import type { Roster } from "../peers/roster.ts"
 import { peerDetails, readRoster, type RosterView } from "./roster-view.ts"
+import { deliverTo } from "./delivery.ts"
 
 export interface HandoverDeps {
   readonly config: Config
@@ -115,30 +115,23 @@ export async function handoverAction(
     verdict.body,
   )
 
-  // Unknown status or an old roster record is queued rather than steered on a guess.
-  const delivery = deliveryFor({ status: peer.status, busyDelivery: peer.busyDelivery })
-  const inbound = inboundMessage({
+  const attempt = await deliverTo(deps, {
     from: view.self,
+    to: peer,
     body: { text },
-    // A handover starts work rather than asking for an answer, so there is no
-    // ask for a reply instruction to name.
-    replyHint: false,
+    exchange: false,
+    expectsReply: false,
+    detail: parsed.target,
   })
-
-  try {
-    await deps.sessions.prompt({ sessionID: peer.sessionID, text: inbound, delivery })
-  } catch (error) {
-    return refusal(failure("E_DELIVERY_FAILED", parsed.target), {
-      sessionID: peer.sessionID,
-      hostError: describeError(error),
-    })
-  }
+  if (attempt.kind === "refused") return attempt.refusal
+  if (attempt.kind === "unknown") return attempt.result
 
   return {
-    text: `Handover sent to ${peer.title}`,
+    text: `Handover accepted by the host for ${peer.title}; this does not mean it was read or processed.`,
     details: {
       delivered: true,
-      delivery,
+      outcome: "accepted",
+      delivery: attempt.delivery,
       ...peerDetails(peer, call.sessionID),
     },
   }

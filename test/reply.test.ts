@@ -177,7 +177,7 @@ describe("pending questions", () => {
       replyTo: forGamma.askID,
       message: "Answer chosen by id",
     })
-    expect(answered.text).toBe("Reply sent to Release notes")
+    expect(answered.text).toBe("Reply stored for Release notes; this does not mean it was read.")
     expect((await fromGamma).text).toBe("**Reply from Docs site:**\nAnswer chosen by id")
 
     await beta.host.call("peers", { action: "reply", message: "the remaining answer" })
@@ -211,7 +211,7 @@ describe("answering a question whose wait has ended", () => {
     await settle()
 
     const answered = await beta.host.call("peers", { action: "reply", message: "An answer after the fact." })
-    expect(answered.text).toContain("(late:")
+    expect(answered.text).toContain("Late reply accepted")
     expect(beta.host.prompts).toHaveLength(1)
     // An answer is not a question: the message it becomes carries no reply
     // instruction (issue #24).
@@ -301,7 +301,7 @@ describe("withdrawing a question", () => {
 
     // The record was left alone: the answer still has a path to the asker.
     const answered = await beta.host.call("peers", { action: "reply", message: "An answer, eventually." })
-    expect(answered.text).toContain("(late:")
+    expect(answered.text).toContain("Late reply accepted")
     expect(beta.host.prompts).toHaveLength(1)
 
     await unloadAll(alpha, beta)

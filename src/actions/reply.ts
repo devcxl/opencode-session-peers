@@ -101,9 +101,10 @@ export async function replyAction(deps: ReplyDeps, call: ToolCall, input: unknow
       return refusal(failure("E_NOT_CONNECTED", describeError(error)))
     }
     return {
-      text: `Reply sent to ${ask.askerTitle}`,
+      text: `Reply stored for ${ask.askerTitle}; this does not mean it was read.`,
       details: {
         delivered: true,
+        outcome: "stored",
         askID: ask.askID,
         sessionID: ask.askerSessionID,
         title: ask.askerTitle,
@@ -129,6 +130,7 @@ export async function replyAction(deps: ReplyDeps, call: ToolCall, input: unknow
     detail: ask.askerTitle,
   })
   if (attempt.kind === "refused") return attempt.refusal
+  if (attempt.kind === "unknown") return attempt.result
 
   let cleanupError: string | undefined
   try {
@@ -138,9 +140,10 @@ export async function replyAction(deps: ReplyDeps, call: ToolCall, input: unknow
   }
 
   return {
-    text: `Reply sent to ${ask.askerTitle} (late: the wait for its answer had ended, so it arrived as an ordinary message)`,
+    text: `Late reply accepted by the host for ${ask.askerTitle}; this does not mean it was read.`,
     details: {
       delivered: true,
+      outcome: "accepted",
       late: true,
       delivery: attempt.delivery,
       askID: ask.askID,

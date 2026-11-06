@@ -31,7 +31,7 @@ const PEERS_TOOL_DESCRIPTION =
   `Use "list" before addressing a peer, so the target is one this session actually saw. ` +
   `Actions: "list" — every live peer in this session's scope, this session first; ` +
   `"list-cwd" — only the peers working in this session's directory; ` +
-  `"send" — deliver a message to one peer and report whether it was delivered; ` +
+  `"send" — submit a message to one peer and report whether the host accepted it; ` +
   `"ask" — put a question to one peer and wait, inside this call, until it answers or the wait times out; ` +
   `"reply" — answer a question another peer is waiting on; ` +
   `"pending" — the questions waiting for this session's answer; ` +

@@ -167,7 +167,7 @@ export function askTimeout(input: {
     code: "E_ASK_TIMEOUT",
     reason:
       `No reply from ${quote(input.target)} for message ${input.askID} within ${within}. ` +
-      `Last known delivery state: ${input.delivery}. ` +
+      `Host accepted with delivery mode: ${input.delivery}. ` +
       `This waiter timeout is not cancellation; the delivered message may still be queued or actionable in the recipient session.`,
   }
 }
@@ -178,7 +178,7 @@ export function askInterrupted(input: { readonly target: string; readonly askID:
     code: "E_ASK_INTERRUPTED",
     reason:
       `Waiting for a reply from ${quote(input.target)} for message ${input.askID} was interrupted. ` +
-      `The question was delivered; an answer that arrives later will arrive as an ordinary message.`,
+      `The host accepted the question; a later answer may arrive as an ordinary message.`,
   }
 }
 

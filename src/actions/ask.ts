@@ -139,6 +139,13 @@ export async function askAction(deps: AskDeps, call: ToolCall, input: unknown): 
     const cleanupError = await clearRecords(storage, askID)
     return withDetail(attempt.refusal, "cleanupError", cleanupError)
   }
+  if (attempt.kind === "unknown") {
+    const recordError = await endWait(storage, ask)
+    return {
+      text: attempt.result.text,
+      details: { ...attempt.result.details, askID, ...(recordError === undefined ? {} : { recordError }) },
+    }
+  }
 
   let wait: ReplyWait
   try {

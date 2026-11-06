@@ -112,9 +112,10 @@ describe("delivering a message", () => {
       message: "The API is frozen for review.",
     })
 
-    expect(result.text).toBe("Message sent to Docs site")
+    expect(result.text).toBe("Message accepted by the host for Docs site; this does not mean it was read or processed.")
     expect(result.details).toEqual({
       delivered: true,
+      outcome: "accepted",
       delivery: "queue",
       sessionID: BETA.id,
       title: "Docs site",
@@ -154,7 +155,7 @@ describe("delivering a message", () => {
       ],
     })
 
-    expect(result.text).toBe("Message sent to Docs site")
+    expect(result.text).toBe("Message accepted by the host for Docs site; this does not mean it was read or processed.")
     const sent = alpha.host.prompts[0]
     expect(sent?.sessionID).toBe(BETA.id)
     expect(sent?.text).toContain("--- snippet: handler.ts ts ---\nexport const x = 1")
@@ -462,12 +463,11 @@ describe("a recipient that has gone away", () => {
 
     const result = await alpha.host.call("peers", { action: "send", to: "Docs site", message: "anyone there?" })
 
-    const reason = `Message to "Docs site" was not delivered: the host no longer runs that session. Use "list" to see who is still connected.`
+    const reason = `Delivery to "Docs site" is unknown: the message may have been accepted. Retrying could create a duplicate.`
     expect(result.text).toBe(reason)
     expect(result.details).toEqual({
-      delivered: false,
+      outcome: "unknown",
       code: "E_DELIVERY_FAILED",
-      reason,
       retryable: false,
       sessionID: BETA.id,
       hostError: "Session.NotFoundError",

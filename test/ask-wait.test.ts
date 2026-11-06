@@ -93,7 +93,7 @@ describe("a wait that ends without an answer", () => {
     const askID = (result.details as { askID: string }).askID
 
     expect(result.text).toBe(
-      `No reply from "Docs site" for message ${askID} within 60ms. Last known delivery state: queue. ` +
+      `No reply from "Docs site" for message ${askID} within 60ms. Host accepted with delivery mode: queue. ` +
         `This waiter timeout is not cancellation; the delivered message may still be queued or actionable in the recipient session.`,
     )
     expect(result.details).toEqual({
@@ -125,10 +125,11 @@ describe("a wait that ends without an answer", () => {
 
     const answered = await beta.host.call("peers", { action: "reply", message: "Answering anyway." })
     expect(answered.text).toBe(
-      "Reply sent to Payments API (late: the wait for its answer had ended, so it arrived as an ordinary message)",
+      "Late reply accepted by the host for Payments API; this does not mean it was read.",
     )
     expect(answered.details).toEqual({
       delivered: true,
+      outcome: "accepted",
       late: true,
       delivery: "queue",
       askID,
@@ -176,7 +177,7 @@ describe("a wait that ends without an answer", () => {
 
     expect(result.text).toBe(
       `Waiting for a reply from "Docs site" for message ${askID} was interrupted. ` +
-        `The question was delivered; an answer that arrives later will arrive as an ordinary message.`,
+        `The host accepted the question; a later answer may arrive as an ordinary message.`,
     )
     expect(result.details).toEqual({
       answered: false,
@@ -196,7 +197,7 @@ describe("a wait that ends without an answer", () => {
     expect(pending.text).toBe("No unresolved inbound asks.")
 
     const answered = await beta.host.call("peers", { action: "reply", message: "Answering a stopped wait." })
-    expect(answered.text).toContain("(late:")
+    expect(answered.text).toContain("Late reply accepted")
 
     await unloadAll(alpha, beta)
   })
