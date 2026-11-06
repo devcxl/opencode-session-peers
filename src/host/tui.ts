@@ -96,10 +96,12 @@ export interface TuiPort {
 
 export function createTuiPort(context: Plugin.Context): TuiPort {
   const client = context.client.rpc(SESSION_PEERS_RPC)
-  const call = {
+  // Built per call: an `AbortSignal.timeout` starts counting when it is made,
+  // so one made here would be long expired by the time a dialog opens.
+  const call = () => ({
     location: context.location ?? context.data.location.default(),
     signal: AbortSignal.timeout(RPC_TIMEOUT_MS),
-  }
+  })
 
   return {
     palette: () => ({
@@ -109,11 +111,11 @@ export function createTuiPort(context: Plugin.Context): TuiPort {
     }),
 
     roster: {
-      read: (request) => client.roster(request, call),
+      read: (request) => client.roster(request, call()),
       onChange: (listener) => client.events.on("changed", () => listener()),
     },
 
-    setScope: (sessionID, scope) => client.setScope({ sessionID, scope }, call),
+    setScope: (sessionID, scope) => client.setScope({ sessionID, scope }, call()),
 
     toast: (message, variant = "info") => context.ui.toast.show({ message, variant }),
 
