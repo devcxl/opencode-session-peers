@@ -68,11 +68,6 @@ export function askKey(askID: string): string {
   return `${ASK_PREFIX}${askID}`
 }
 
-/** Where the answer to one question lives. Exported for the same reason as `peerKey`. */
-export function replyKey(askID: string): string {
-  return `${REPLY_PREFIX}${askID}`
-}
-
 export function pluginStorage(storage: RawStorage): PluginStorage {
   return {
     peers: recordStore<Peer>(storage, PEER_PREFIX),
