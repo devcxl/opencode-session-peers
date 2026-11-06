@@ -30,6 +30,7 @@ export type ErrorCode =
   | "E_REPLY_AMBIGUOUS"
   | "E_ASK_UNANSWERED"
   | "E_NO_ASK_TO_CANCEL"
+  | "E_CANCEL_AMBIGUOUS"
   | "E_HANDOVER_NO_GOAL"
   | "E_HANDOVER_ATTACHMENTS"
   | "E_HANDOVER_REPLY"
@@ -119,6 +120,8 @@ function reasonFor(code: ErrorCode, detail: string): string {
       return detail.length > 0
         ? `No question with id "${detail}" is outstanding for this session.`
         : "This session has no question waiting for an answer."
+    case "E_CANCEL_AMBIGUOUS":
+      return "More than one local wait matches. Specify its question id with replyTo."
     // The original refused these three shape violations with its own text; the
     // reader of a refused handover is the model that asked for it, so it is
     // told which combination is impossible and what to do instead.

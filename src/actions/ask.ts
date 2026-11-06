@@ -26,7 +26,7 @@ import type { SessionLookup } from "../host/session.ts"
 import type { PluginStorage } from "../host/storage.ts"
 import type { ToolCall } from "../host/tools.ts"
 import type { Roster } from "../peers/roster.ts"
-import { readAsks, replyPollMs, waitForReply, type ReplyWait } from "../ask/handshake.ts"
+import { readAsks, replyPollMs, waitForReply, type LocalAskWaits, type ReplyWait } from "../ask/handshake.ts"
 import { deliverTo, refusal } from "./delivery.ts"
 import { readMessage, readText } from "./input.ts"
 import { probeParent } from "./parked-parent.ts"
@@ -40,6 +40,7 @@ export interface AskDeps {
   readonly roster?: Roster
   /** Reports what went wrong in a way the caller can see but the ask survives. */
   readonly warn: (message: string) => void
+  readonly waits: LocalAskWaits
 }
 
 export async function askAction(deps: AskDeps, call: ToolCall, input: unknown): Promise<ActionResult> {
@@ -148,13 +149,15 @@ export async function askAction(deps: AskDeps, call: ToolCall, input: unknown): 
   }
 
   let wait: ReplyWait
+  const cancellation = new AbortController()
+  deps.waits.set(askID, { sessionID: call.sessionID, controller: cancellation })
   try {
     wait = await waitForReply({
       replies: storage.replies,
       askID,
       expiresAt: ask.expiresAt,
       pollMs: replyPollMs(deps.config.askTimeoutMs),
-      signal: call.signal,
+      signal: AbortSignal.any([call.signal, cancellation.signal]),
     })
   } catch (error) {
     // The host stopped answering our reads of the reply slot. The question is
@@ -175,6 +178,8 @@ export async function askAction(deps: AskDeps, call: ToolCall, input: unknown): 
         ...peerDetails(peer, call.sessionID),
       },
     }
+  } finally {
+    deps.waits.delete(askID)
   }
 
   if (wait.kind === "replied") {
@@ -209,6 +214,21 @@ export async function askAction(deps: AskDeps, call: ToolCall, input: unknown): 
         reason: stop.reason,
         retryable: false,
         askID,
+        ...peerDetails(peer, call.sessionID),
+      },
+    }
+  }
+
+  if (cancellation.signal.aborted) {
+    const recordError = await endWait(storage, ask)
+    return {
+      text: `Local wait for ${askID} was cancelled. The question was not withdrawn; the recipient may still act on it.`,
+      details: {
+        answered: false,
+        cancelled: true,
+        code: "E_ASK_CANCELLED",
+        askID,
+        ...(recordError === undefined ? {} : { recordError }),
         ...peerDetails(peer, call.sessionID),
       },
     }

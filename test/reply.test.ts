@@ -251,8 +251,8 @@ describe("answering a question whose wait has ended", () => {
   })
 })
 
-describe("withdrawing a question", () => {
-  test("withdraws one that is still waiting, and reports it", async () => {
+describe("cancelling a local wait", () => {
+  test("does not delete a stale question whose waiter is not local", async () => {
     const { alpha, beta, storage } = await threeDirectories()
 
     // The question of an asker whose instance has gone away: recorded, not
@@ -263,18 +263,11 @@ describe("withdrawing a question", () => {
     expect((await beta.host.call("peers", { action: "pending" })).text).toContain("Payments API")
 
     const result = await alpha.host.call("peers", { action: "cancel" })
-    expect(result.text).toBe("Cancellation requested for ask_waiting")
-    expect(result.details).toEqual({
-      delivered: true,
-      cancelled: true,
-      askID: "ask_waiting",
-      sessionID: BETA.id,
-    })
-    expect((await beta.host.call("peers", { action: "pending" })).text).toBe("No unresolved inbound asks.")
+    expect(result.details).toMatchObject({ code: "E_NO_ASK_TO_CANCEL" })
+    expect((await beta.host.call("peers", { action: "pending" })).text).toContain("Payments API")
 
-    // Withdrawn means withdrawn: a reply now has no question to answer.
     const late = await beta.host.call("peers", { action: "reply", message: "too late?" })
-    expect(late.details).toMatchObject({ code: "E_NO_PENDING_ASK" })
+    expect(late.details).toMatchObject({ outcome: "stored" })
 
     await unloadAll(alpha, beta)
   })
@@ -287,17 +280,7 @@ describe("withdrawing a question", () => {
     await settle()
 
     const result = await alpha.host.call("peers", { action: "cancel" })
-    expect(result.text).toBe(
-      "Cancellation for ask_ended was not delivered: its wait had already ended, so an answer " +
-        "that arrives later will arrive as an ordinary message.",
-    )
-    expect(result.details).toEqual({
-      delivered: false,
-      cancelled: false,
-      ended: true,
-      askID: "ask_ended",
-      sessionID: BETA.id,
-    })
+    expect(result.details).toMatchObject({ code: "E_NO_ASK_TO_CANCEL" })
 
     // The record was left alone: the answer still has a path to the asker.
     const answered = await beta.host.call("peers", { action: "reply", message: "An answer, eventually." })
@@ -331,7 +314,7 @@ describe("withdrawing a question", () => {
     expect(named.details).toMatchObject({ code: "E_NO_ASK_TO_CANCEL" })
 
     const mine = await alpha.host.call("peers", { action: "cancel", replyTo: "ask_mine" })
-    expect(mine.text).toBe("Cancellation requested for ask_mine")
+    expect(mine.details).toMatchObject({ code: "E_NO_ASK_TO_CANCEL" })
 
     await unloadAll(alpha, beta)
   })

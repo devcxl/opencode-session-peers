@@ -95,7 +95,7 @@ server log; `trigger` fails closed to `"never"`.
 | `ask` | Put a question to one peer and wait inside the call until it is answered, the ask timeout passes, or the turn is interrupted. |
 | `reply` | Answer a question another peer is waiting on. |
 | `pending` | The questions waiting for this session's answer, each with the question id to name in `replyTo`. |
-| `cancel` | Withdraw a question this session asked (`replyTo` names it; omit it to withdraw the one whose wait is still running). |
+| `cancel` | Request a stop to this session's local ask wait (`replyTo` names it; omit it if only one is waiting). It does not withdraw the question or stop the recipient. |
 | `handover` | Summarise this session with this session's own model and send the summary to one peer, which continues the work. |
 | `status` | This session's id, its scope, and whether the host is answering. |
 
@@ -115,7 +115,13 @@ Behaviour worth knowing before you rely on it:
 - **A reply may be stored rather than read.** `outcome: "stored"` means an answer was written to the
   waiting ask's reply slot; `outcome: "accepted"` means a message was admitted by the host.
 - **A timeout is not a cancellation.** After an `ask` times out, the question stays in the recipient's
-  hands; an answer that arrives later is delivered as an ordinary message instead of being dropped.
+  hands; a later answer is normally submitted as an ordinary message. A reply racing the end of the
+  wait can still be written to the old reply slot; the plugin cannot guarantee delivery in that race.
+- **Cancellation is local.** The result reports a request, not a completed cancellation; the blocked
+  `ask` reports when it actually stops. It works only while the waiting call belongs to the same plugin
+  instance and another call can run for that session. A session blocked in its own tool call may not be
+  able to issue `cancel` itself; interrupting the turn is a separate host operation. Questions already
+  submitted remain actionable, and a reply racing cancellation may require manual follow-up.
 - **One question at a time.** A session with an outstanding question cannot start another, two
   sessions cannot ask each other simultaneously, and while a session holds an unanswered question a
   `send` to anyone but the asker is refused.

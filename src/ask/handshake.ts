@@ -16,6 +16,9 @@
 import type { AskRecord, ReplyRecord } from "../domain/types.ts"
 import type { PluginStorage, RecordStore } from "../host/storage.ts"
 
+/** Waiters owned by this tool instance; cancellation does not cross processes. */
+export type LocalAskWaits = Map<string, { readonly sessionID: string; readonly controller: AbortController }>
+
 /** Every ask record the machine has published, as plain values. */
 export async function readAsks(storage: PluginStorage): Promise<readonly AskRecord[]> {
   const records = await storage.asks.list()
