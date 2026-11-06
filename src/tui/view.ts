@@ -42,9 +42,9 @@ export interface TableCell {
 }
 
 /**
- * The dialog's content, as the four stable blocks it draws.
+ * The dialog's content, as the five stable blocks it draws.
  *
- * Four blocks rather than free composition because of what the host repaints:
+ * Five blocks rather than free composition because of what the host repaints:
  * an element whose *content* changes is redrawn, while inserting or removing
  * elements was measured not to reach the screen on its own (measured in a
  * slot; the dialog keeps the same shape rather than re-testing it). So the
@@ -58,6 +58,8 @@ export interface ViewContent {
   readonly contextLines: readonly string[]
   /** The header row; empty when there is no table to show. */
   readonly columns: readonly TableCell[]
+  /** This session's own row, drawn in its own table above the others. */
+  readonly selfRows: readonly (readonly TableCell[])[]
   /** The peers on this page, one row each, in the same order as the columns. */
   readonly rows: readonly (readonly TableCell[])[]
   /** What is left to say: the empty cause, a refusal, a broken answer. */
@@ -85,6 +87,7 @@ export function viewContent(input: ViewInput): ViewContent {
         title: "Session peers",
         contextLines: ["reading the roster…"],
         columns: COLUMNS,
+        selfRows: [],
         rows: [],
         notes: [],
         noteTone: "muted",
@@ -94,6 +97,7 @@ export function viewContent(input: ViewInput): ViewContent {
         title: "Session peers is unavailable",
         contextLines: [],
         columns: [],
+        selfRows: [],
         rows: [],
         notes: [input.state.reason],
         noteTone: "error",
@@ -103,6 +107,7 @@ export function viewContent(input: ViewInput): ViewContent {
         title: "Session peers is unavailable",
         contextLines: [],
         columns: [],
+        selfRows: [],
         rows: [],
         notes: ["the answer was not a roster this view understands"],
         noteTone: "error",
@@ -114,6 +119,7 @@ export function viewContent(input: ViewInput): ViewContent {
           title: "Session peers",
           contextLines: [],
           columns: [],
+          selfRows: [],
           rows: [],
           notes: ["off here: enabled is false, so nothing is published"],
           noteTone: "muted",
@@ -145,13 +151,11 @@ export function viewContent(input: ViewInput): ViewContent {
         title: "Session peers",
         contextLines: [scopeLine(payload.scope), HEADER_LIMIT],
         columns: COLUMNS,
-        rows: [
-          ...(self === undefined ? [] : [peerCells(self, marksFor(self, input.viewpoint))]),
-          ...(self === undefined || others.length === 0 ? [] : [sectionCells("other sessions")]),
-          ...others
-            .slice(page.start, page.start + page.size)
-            .map((peer) => peerCells(peer, marksFor(peer, input.viewpoint))),
-        ],
+        selfRows:
+          self === undefined ? [] : [peerCells(self, marksFor(self, input.viewpoint))],
+        rows: others
+          .slice(page.start, page.start + page.size)
+          .map((peer) => peerCells(peer, marksFor(peer, input.viewpoint))),
         notes,
         noteTone: "muted",
       }
@@ -175,14 +179,7 @@ export const COLUMNS: readonly TableCell[] = [
 /** The header's second line: the reason this table is not the whole machine. */
 export const HEADER_LIMIT = "only sessions loading this plugin appear"
 
-/**
- * The band that separates this session's row from the peers below it. The
- * label rides in the first column, the others stay empty, so the table keeps
- * one cell per column without inventing a fact.
- */
-function sectionCells(label: string): readonly TableCell[] {
-  return COLUMNS.map((_, index) => cell(index === 0 ? label : "", "muted"))
-}
+
 
 function scopeLine(scope: string): string {
   return `scope: ${scope}`
@@ -251,10 +248,11 @@ const MAX_PAGE_SIZE = 8
 const FIXED_LINES = 13
 
 /**
- * Lines the pinned row costs when this session is above the pages: its own
- * wrapped row, the separators around it, and the band naming the others.
+ * Lines the pinned section costs when this session is above the pages: its own
+ * table (border, header, separator, the wrapped row, border) and the blank line
+ * that separates it from the peers' table.
  */
-const PINNED_SELF_LINES = 5
+const PINNED_SELF_LINES = 7
 
 /**
  * Lines one peer row takes. A directory is an absolute path and a status can

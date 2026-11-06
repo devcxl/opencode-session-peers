@@ -218,7 +218,7 @@ describe("the dialog pages a long roster", () => {
   })
 
   test("keeps this session above the pages while they turn", async () => {
-    const { setup, text } = await rendered(
+    const { setup, frame, text } = await rendered(
       {
         kind: "payload",
         payload: payload({
@@ -238,14 +238,14 @@ describe("the dialog pages a long roster", () => {
     )
     expect(text()).toContain("This session")
     expect(text()).toContain("this session")
-    expect(text()).toContain("other sessions")
+    // Two boxed sections, not one table with a divider row.
+    expect(frame().split("\n").filter((line) => line.includes("┌"))).toHaveLength(2)
     expect(text()).toContain("page 1 of 2 · peers 1–4 of 5 · ←/→ to page")
 
     setup.mockInput.pressArrow("right")
     await setup.flush()
     expect(text()).toContain("This session")
     expect(text()).toContain("this session")
-    expect(text()).toContain("other sessions")
     expect(text()).toContain("Peer 5")
     expect(text()).toContain("page 2 of 2 · peer 5 of 5 · ←/→ to page")
   })

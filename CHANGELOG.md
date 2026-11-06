@@ -22,8 +22,8 @@
 - A roster larger than one page is paged instead of spilling past the screen: a page holds at most
   eight peers (fewer on a short terminal), `←`/`→` and `PageUp`/`PageDown` flip pages, and a footer
   says which page is shown. A roster that shrinks under a deep page falls back to a page that exists.
-- This session's own row is pinned above the pages and separated by an `other sessions` band, so it
-  stays visible while the rest turns over.
+- This session's own row is drawn in its own table above the peers' table (the two share their
+  column widths), so it stays visibly apart while the rest turns over.
 - The dialog opens at the host's widest size (116 columns, capped by the terminal) with two columns of
   padding, so absolute directory paths get more room before they wrap and the content is not flush
   against the dialog's edge.

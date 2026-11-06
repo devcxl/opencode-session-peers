@@ -137,8 +137,8 @@ how to spawn (ADR-0002).
 The same package ships a TUI half, exported as `./tui`. It renders nothing until it is asked: `/peers`
 at the prompt, or `Session peers` in the command palette, opens the host's own dialog with the roster as a table — one row per live peer, one column per fact (session, id, directory, status, marks) —
 under a header that names the scope and says that only sessions loading the plugin appear. The rows
-update while the dialog is open. This session's own row is pinned above the rest, separated by an
-`other sessions` band, so it stays visible while the list turns over. A page holds at most eight
+update while the dialog is open. This session's own row is drawn in a table of its own above the
+peers, so it stays visible while their table turns over. A page holds at most eight
 peers (fewer on a short terminal): `←`/`→` or `PageUp`/`PageDown` flip pages, and a footer under the
 table says which page is on screen. When the session's scope is not `default`, `g` shows the default
 scope and `g` again comes back to the session's own; the preview only changes what the dialog reads.

@@ -18,10 +18,10 @@
 
 import { createMemo, createSignal } from "solid-js"
 import { extend, useKeyboard, useTerminalDimensions } from "@opentui/solid"
-import { fg, TextTableRenderable, type TextChunk, type TextTableContent } from "@opentui/core"
+import { fg, TextTableRenderable, type TextChunk, type TextTableContent, type TextTableOptions } from "@opentui/core"
 
 import type { TuiPalette } from "../host/tui.ts"
-import type { TableCell, Tone, ViewContent, Viewpoint } from "./view.ts"
+import type { TableCell, Tone, Viewpoint } from "./view.ts"
 import { pageOf, pageSizeFor, viewContent, type RosterState } from "./view.ts"
 
 // The plugin's JSX is created in the TUI's own @opentui/solid (the loader
@@ -48,7 +48,7 @@ export function RosterDialog(props: RosterDialogProps) {
   // the roster, not a resumption of the last read.
   const [page, setPage] = createSignal(0)
   const dimensions = useTerminalDimensions()
-  // The pinned row above the pages costs lines the pages cannot use.
+  // The pinned table above the pages costs lines the pages cannot use.
   const pinnedSelf = createMemo(() => {
     const state = props.state()
     if (state.kind !== "payload" || !state.payload.enabled) return false
@@ -62,7 +62,10 @@ export function RosterDialog(props: RosterDialogProps) {
   const lastPage = createMemo(() => {
     const state = props.state()
     if (state.kind !== "payload" || !state.payload.enabled) return 0
-    return pageOf(state.payload.peers.length, pageSize(), 0).count - 1
+    // Pages hold the peers below this session's table, not this session's row.
+    const selfID = props.viewpoint.sessionID
+    const others = state.payload.peers.filter((peer) => peer.sessionID !== selfID)
+    return pageOf(others.length, pageSize(), 0).count - 1
   })
 
   useKeyboard((key) => {
@@ -97,21 +100,16 @@ export function RosterDialog(props: RosterDialogProps) {
         <b>{content().title}</b>
       </text>
       <text fg={colour("muted")}>{content().contextLines.join("\n")}</text>
+      {/* Two tables, not one with a divider row: this session sits in a table
+          of its own above the peers, so the break is the table's own border. */}
       <text_table
-        style={{
-          content: tableContent(content(), props.palette()),
-          width: "100%",
-          columnWidthMode: "full",
-          columnFitter: "balanced",
-          wrapMode: "word",
-          showBorders: true,
-          border: true,
-          outerBorder: true,
-          cellPaddingX: 1,
-          columnGap: 2,
-          fg: props.palette().base,
-          borderColor: props.palette().muted,
-        }}
+        style={tableStyle(content().columns, content().selfRows, props.palette(), content().rows)}
+      />
+      {/* A blank line between the two tables, and nothing at all when there is
+          no first table to separate from. */}
+      <text>{content().selfRows.length > 0 ? " " : ""}</text>
+      <text_table
+        style={tableStyle(content().columns, content().rows, props.palette(), content().selfRows)}
       />
       <text fg={colour(content().noteTone)}>{content().notes.join("\n")}</text>
     </box>
@@ -129,9 +127,69 @@ function pageStep(name: string): number | undefined {
   return undefined
 }
 
+/** One table's look; both tables share it so their columns line up. */
+function tableStyle(
+  columns: readonly TableCell[],
+  rows: readonly (readonly TableCell[])[],
+  palette: TuiPalette,
+  measuredWith: readonly (readonly TableCell[])[],
+): TextTableOptions {
+  return {
+    content: tableContent(columns, rows, palette, measuredWith),
+    width: "100%",
+    columnWidthMode: "full",
+    columnFitter: "balanced",
+    wrapMode: "word",
+    showBorders: true,
+    border: true,
+    outerBorder: true,
+    cellPaddingX: 1,
+    columnGap: 2,
+    fg: palette.base,
+    borderColor: palette.muted,
+  }
+}
+
 /** The table's content: the header row first, then one row per peer. */
-function tableContent(view: ViewContent, palette: TuiPalette): TextTableContent {
-  return [view.columns, ...view.rows].map((row) => row.map((cell) => cellChunks(cell, palette)))
+function tableContent(
+  columns: readonly TableCell[],
+  rows: readonly (readonly TableCell[])[],
+  palette: TuiPalette,
+  measuredWith: readonly (readonly TableCell[])[],
+): TextTableContent {
+  // No rows means no table at all: a header floating over nothing would claim
+  // a section the roster does not have.
+  if (rows.length === 0) return []
+  // Both tables must lay their columns out the same way, or the two sections
+  // read as two unrelated tables. They are measured against the same cells, so
+  // every column's widest cell is the same in both.
+  const widths = sharedWidths(columns, rows, measuredWith)
+  return [columns, ...rows].map((row) =>
+    row.map((cell, index) => cellChunks(padCell(cell, widths[index] ?? 0), palette)),
+  )
+}
+
+/** The widest display width of every column, across both tables. */
+function sharedWidths(
+  columns: readonly TableCell[],
+  ...groups: readonly (readonly (readonly TableCell[])[])[]
+): readonly number[] {
+  return columns.map((column, index) => {
+    let width = displayWidth(column.text)
+    for (const group of groups) {
+      for (const row of group) width = Math.max(width, displayWidth(row[index]?.text ?? ""))
+    }
+    return width
+  })
+}
+
+function padCell(cell: TableCell, width: number): TableCell {
+  const pad = width - displayWidth(cell.text)
+  return pad <= 0 ? cell : { ...cell, text: cell.text + " ".repeat(pad) }
+}
+
+function displayWidth(text: string): number {
+  return Bun.stringWidth(text)
 }
 
 function cellChunks(cell: TableCell, palette: TuiPalette): TextChunk[] {

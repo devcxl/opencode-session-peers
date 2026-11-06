@@ -181,9 +181,9 @@ describe("a row", () => {
       "/work/alpha",
     )
     const marksColumn = COLUMN_NAMES.indexOf("Marks")
-    const marks = blocks.rows.map((row) => rowTexts(row)[marksColumn])
-    // This session is pinned, then the band that names the rest.
-    expect(marks).toEqual(["this session", "", "same dir", ""])
+    // This session has its own table; the rest are in the page's table.
+    const marks = [...blocks.selfRows, ...blocks.rows].map((row) => rowTexts(row)[marksColumn])
+    expect(marks).toEqual(["this session", "same dir", ""])
   })
 })
 
@@ -274,6 +274,11 @@ describe("a page", () => {
     return blocks.rows.map((row) => row[0]?.text)
   }
 
+  /** Both tables, self first: what the dialog draws from top to bottom. */
+  function allTitles(blocks: ViewContent): (string | undefined)[] {
+    return [...blocks.selfRows, ...blocks.rows].map((row) => row[0]?.text)
+  }
+
   test("shows only the peers of the page it was asked for", () => {
     const roster = state({ peers: manyPeers(5) })
     const first = paged(roster, 0, 2)
@@ -311,19 +316,20 @@ describe("a page", () => {
     })
 
     const first = paged(roster, 0, 1)
-    expect(titles(first)).toEqual(["This one", "other sessions", "Another session"])
-    expect(first.rows[0]?.[4]?.text).toBe("this session")
+    expect(allTitles(first)).toEqual(["This one", "Another session"])
+    expect(first.selfRows[0]?.[4]?.text).toBe("this session")
     expect(first.notes).toEqual(["page 1 of 2 · peer 1 of 2 · ←/→ to page"])
 
-    // The pinned row is on every page; only the others turn over.
+    // The pinned table is on every page; only the others turn over.
     const second = paged(roster, 1, 1)
-    expect(titles(second)).toEqual(["This one", "other sessions", "The other one"])
-    expect(second.rows[0]?.[4]?.text).toBe("this session")
+    expect(allTitles(second)).toEqual(["This one", "The other one"])
+    expect(second.selfRows[0]?.[4]?.text).toBe("this session")
   })
 
-  test("names no section when this session is the only peer", () => {
+  test("has no second table when this session is the only peer", () => {
     const blocks = paged(state({ peers: [peer({ sessionID: SELF, title: "Only me" })] }), 0, 4)
-    expect(titles(blocks)).toEqual(["Only me"])
+    expect(allTitles(blocks)).toEqual(["Only me"])
+    expect(blocks.rows).toEqual([])
     expect(blocks.notes).toEqual([emptyCauseLine("noPeerLoadsPlugin", payload())])
   })
 
@@ -352,7 +358,7 @@ describe("a page", () => {
     expect(pageSizeFor(40)).toBe(8)
     // The pinned row above the pages costs lines the pages cannot use.
     expect(pageSizeFor(32, true)).toBe(4)
-    expect(pageSizeFor(40, true)).toBe(7)
+    expect(pageSizeFor(40, true)).toBe(6)
     // A terminal too short for any sensible page still gets the minimum,
     // rather than a page of nothing.
     expect(pageSizeFor(20)).toBe(3)
@@ -366,6 +372,7 @@ describe("the other states", () => {
       title: "Session peers",
       contextLines: ["reading the roster…"],
       columns: COLUMNS,
+      selfRows: [],
       rows: [],
       notes: [],
       noteTone: "muted",
