@@ -41,7 +41,7 @@ export interface RosterDeps {
 
 /** What one read of the roster saw, and what it can say about an empty one. */
 export interface RosterReport {
-  /** Every live peer in the requested scope, sorted as `live()` sorts them. */
+  /** Every live peer in the requested scope, sorted by directory and title. */
   readonly peers: readonly Peer[]
   /** In-scope records whose heartbeats stopped: the peers that went quiet. */
   readonly quietInScope: number
@@ -56,9 +56,7 @@ export interface Roster {
    * Rejects when the host does not know the session.
    */
   publish(sessionID: SessionID): Promise<Peer>
-  /** Every live peer in `scope` (the configured scope by default). */
-  live(scope?: string): Promise<readonly Peer[]>
-  /** `live()` plus what explains an empty answer: who went quiet, who is elsewhere. */
+  /** Live peers and what explains an empty answer: who went quiet, who is elsewhere. */
   report(scope?: string): Promise<RosterReport>
   /**
    * The scope a session belongs to. A session may be moved to another scope at
@@ -72,7 +70,7 @@ export interface Roster {
    */
   setScope(sessionID: SessionID, scope: string): Promise<Peer | undefined>
   /**
-   * Called when what a reader of `live()` or `report()` would see changes.
+   * Called when what a reader of `report()` would see changes.
    * Changes a reader cannot observe — a heartbeat refreshing a row that already
    * reads the same — are not announced.
    */
@@ -167,10 +165,6 @@ class LiveRoster implements Roster {
     await this.store(peer)
     await this.announce()
     return peer
-  }
-
-  async live(scope?: string): Promise<readonly Peer[]> {
-    return (await this.report(scope)).peers
   }
 
   async report(scope: string = this.deps.config.scope): Promise<RosterReport> {

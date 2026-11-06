@@ -8,10 +8,11 @@
  */
 
 import { describeError } from "../domain/errors.ts"
+import { rosterRow } from "../domain/format.ts"
 import type { ActionResult } from "../domain/types.ts"
 import type { ToolCall } from "../host/tools.ts"
 import type { Roster } from "../peers/roster.ts"
-import { failed, peerDetails, readRoster, rowFor } from "./roster-view.ts"
+import { failed, peerDetails, readRoster } from "./roster-view.ts"
 
 export interface ListDeps {
   /** Absent while the plugin is disabled: a disabled instance publishes nothing. */
@@ -24,11 +25,11 @@ export async function listAction(deps: ListDeps, call: ToolCall): Promise<Action
 
   try {
     const view = await readRoster(roster, call.sessionID)
-    const selfRow = rowFor(view.self, view, { self: true, sameDirectory: false })
+    const selfRow = rosterRow(view.self, { self: true, sameDirectory: false })
     const others = view.peers
       .filter((peer) => peer.sessionID !== view.self.sessionID)
       .map((peer) =>
-        rowFor(peer, view, { self: false, sameDirectory: peer.directory === view.self.directory }),
+        rosterRow(peer, { self: false, sameDirectory: peer.directory === view.self.directory }),
       )
 
     return {
