@@ -122,9 +122,10 @@ Behaviour worth knowing before you rely on it:
   instance and another call can run for that session. A session blocked in its own tool call may not be
   able to issue `cancel` itself; interrupting the turn is a separate host operation. Questions already
   submitted remain actionable, and a reply racing cancellation may require manual follow-up.
-- **One question at a time.** A session with an outstanding question cannot start another, two
-  sessions cannot ask each other simultaneously, and while a session holds an unanswered question a
-  `send` to anyone but the asker is refused.
+- **Ask guards are not atomic.** Ordinarily a session with an outstanding question cannot start another,
+  and two sessions cannot ask each other. Simultaneous calls can pass the read-before-write checks, so
+  these are not cross-process mutual-exclusion guarantees. While a session holds an unanswered question,
+  a `send` to anyone but the asker is refused.
 - **Peers expire.** A session whose host stopped running disappears from `list` after `rosterTtlMs`.
 - **Delivery uses the latest observed status.** An idle recipient is queued. When its status or
   `busyDelivery` declaration is unknown, a sender queues rather than steering on a guess; status can

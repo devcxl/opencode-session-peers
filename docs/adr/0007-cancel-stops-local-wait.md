@@ -20,4 +20,6 @@ session may be unable to make another tool call, and the host's interrupt is a
 separate operation. A reply racing cancellation or expiry can still be written
 to a reply slot after the asker has stopped: storage exposes no documented
 atomic transition to settle that race. The result does not claim that a late
-reply is guaranteed in that case.
+reply is guaranteed in that case. `test/ask-concurrency.test.ts` forces this
+interleaving and also shows simultaneous asks passing the read-before-write
+guards; those tests describe limitations, not a mutual-exclusion guarantee.

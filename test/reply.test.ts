@@ -294,11 +294,11 @@ describe("cancelling a local wait", () => {
     const { alpha, beta, storage } = await threeDirectories()
 
     const none = await alpha.host.call("peers", { action: "cancel" })
-    expect(none.text).toBe("This session has no question waiting for an answer.")
+    expect(none.text).toBe("This session has no active local ask wait.")
     expect(none.details).toEqual({
       delivered: false,
       code: "E_NO_ASK_TO_CANCEL",
-      reason: "This session has no question waiting for an answer.",
+      reason: "This session has no active local ask wait.",
       retryable: false,
     })
 
@@ -310,7 +310,7 @@ describe("cancelling a local wait", () => {
     await settle()
 
     const named = await alpha.host.call("peers", { action: "cancel", replyTo: "ask_nope" })
-    expect(named.text).toBe(`No question with id "ask_nope" is outstanding for this session.`)
+    expect(named.text).toBe(`No local wait for question "ask_nope" is active in this session.`)
     expect(named.details).toMatchObject({ code: "E_NO_ASK_TO_CANCEL" })
 
     const mine = await alpha.host.call("peers", { action: "cancel", replyTo: "ask_mine" })

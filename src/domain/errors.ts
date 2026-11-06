@@ -118,8 +118,8 @@ function reasonFor(code: ErrorCode, detail: string): string {
       return `This session has an unanswered question from ${quote(detail)}. Answer it with "reply" before sending to another peer.`
     case "E_NO_ASK_TO_CANCEL":
       return detail.length > 0
-        ? `No question with id "${detail}" is outstanding for this session.`
-        : "This session has no question waiting for an answer."
+        ? `No local wait for question "${detail}" is active in this session.`
+        : "This session has no active local ask wait."
     case "E_CANCEL_AMBIGUOUS":
       return "More than one local wait matches. Specify its question id with replyTo."
     // The original refused these three shape violations with its own text; the
