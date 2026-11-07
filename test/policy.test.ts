@@ -9,19 +9,22 @@ import {
   outstandingAsksFrom,
   pendingAsksFor,
 } from "../src/domain/policy.ts"
-import type { InboundPolicy } from "../src/domain/policy.ts"
 import type { AskRecord } from "../src/domain/types.ts"
-
-const ALWAYS_STEER: InboundPolicy = { trigger: "always", busyDelivery: "steer" }
 
 describe("deliveryFor", () => {
   test("queues for an idle recipient so the message starts its own turn", () => {
-    expect(deliveryFor({ recipientIdle: true, policy: ALWAYS_STEER })).toBe("queue")
+    expect(deliveryFor({ status: "idle", busyDelivery: "steer" })).toBe("queue")
   })
 
   test("uses the configured delivery for a recipient that is mid-turn", () => {
-    expect(deliveryFor({ recipientIdle: false, policy: ALWAYS_STEER })).toBe("steer")
-    expect(deliveryFor({ recipientIdle: false, policy: { trigger: "always", busyDelivery: "queue" } })).toBe("queue")
+    expect(deliveryFor({ status: "busy", busyDelivery: "steer" })).toBe("steer")
+    expect(deliveryFor({ status: "busy", busyDelivery: "queue" })).toBe("queue")
+  })
+
+  test("queues when status or the recipient's policy is unknown", () => {
+    expect(deliveryFor({ status: "busy" })).toBe("queue")
+    expect(deliveryFor({ busyDelivery: "steer" })).toBe("queue")
+    expect(deliveryFor({ status: "retry", busyDelivery: "steer" })).toBe("queue")
   })
 })
 

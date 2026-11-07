@@ -23,6 +23,7 @@ import type { SessionLookup } from "./host/session.ts"
 import type { PluginStorage } from "./host/storage.ts"
 import type { ToolSpec } from "./host/tools.ts"
 import type { Roster } from "./peers/roster.ts"
+import type { LocalAskWaits } from "./ask/handshake.ts"
 
 export const PEERS_TOOL_NAME = "peers"
 
@@ -31,11 +32,11 @@ const PEERS_TOOL_DESCRIPTION =
   `Use "list" before addressing a peer, so the target is one this session actually saw. ` +
   `Actions: "list" — every live peer in this session's scope, this session first; ` +
   `"list-cwd" — only the peers working in this session's directory; ` +
-  `"send" — deliver a message to one peer and report whether it was delivered; ` +
+  `"send" — submit a message to one peer and report whether the host accepted it; ` +
   `"ask" — put a question to one peer and wait, inside this call, until it answers or the wait times out; ` +
   `"reply" — answer a question another peer is waiting on; ` +
   `"pending" — the questions waiting for this session's answer; ` +
-  `"cancel" — withdraw a question this session asked; ` +
+  `"cancel" — request a stop to this session's local ask wait; it cannot withdraw the message; ` +
   `"handover" — summarize this session with this session's own model and send the summary ` +
   `to one peer, which continues the work; ` +
   `"status" — this session's id, its scope, and whether the host is answering.`
@@ -51,7 +52,7 @@ const PEERS_TOOL_INPUT = {
         `Action to run: "list" every live peer in scope, "list-cwd" the peers in this ` +
         `session's directory, "send" a message to one peer, "ask" a question that waits for ` +
         `its answer inside this call, "reply" the answer to a peer's question, "pending" the ` +
-        `questions waiting here, "cancel" withdraw a question this session asked, "handover" ` +
+        `questions waiting here, "cancel" request a stop to this session's local wait, "handover" ` +
         `summarize this session and send the summary to one peer, "status" this session's id ` +
         `and connectivity.`,
     },
@@ -94,8 +95,8 @@ const PEERS_TOOL_INPUT = {
       type: "string",
       description:
         `For "reply": the id of the question being answered, as shown by "pending", when ` +
-        `more than one peer is waiting. For "cancel": the id of the question to withdraw; ` +
-        `omit it to withdraw the one this session is waiting on. Not for "send", "ask" or ` +
+        `more than one peer is waiting. For "cancel": the question whose local wait should stop; ` +
+        `omit it when only one local wait exists. Not for "send", "ask" or ` +
         `"handover": a handover that carries a reply reference is refused.`,
     },
   },
@@ -116,6 +117,7 @@ export interface PeersToolDeps {
 }
 
 export function peersTool(deps: PeersToolDeps): ToolSpec {
+  const waits: LocalAskWaits = new Map()
   return {
     name: PEERS_TOOL_NAME,
     description: PEERS_TOOL_DESCRIPTION,
@@ -131,13 +133,13 @@ export function peersTool(deps: PeersToolDeps): ToolSpec {
         case "send":
           return sendAction(deps, call, input)
         case "ask":
-          return askAction(deps, call, input)
+          return askAction({ ...deps, waits }, call, input)
         case "reply":
           return replyAction(deps, call, input)
         case "pending":
           return pendingAction(deps, call)
         case "cancel":
-          return cancelAction(deps, call, input)
+          return cancelAction({ ...deps, waits }, call, input)
         case "handover":
           return handoverAction(deps, call, input)
         case "status":

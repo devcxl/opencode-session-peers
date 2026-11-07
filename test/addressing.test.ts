@@ -21,20 +21,20 @@ describe("resolvePeer", () => {
   test("resolves an exact session id", () => {
     const target = peer("ses_aaaaaaaaaaaa1111", "Payments API")
     const result = resolvePeer(target.sessionID, [target], SELF)
-    expect(result).toEqual({ kind: "resolved", peer: target, matchedBy: "id" })
+    expect(result).toEqual({ kind: "resolved", peer: target })
   })
 
   test("resolves a title case-insensitively", () => {
     const target = peer("ses_aaaaaaaaaaaa1111", "Payments API")
     const result = resolvePeer("payments api", [target], SELF)
-    expect(result).toEqual({ kind: "resolved", peer: target, matchedBy: "title" })
+    expect(result).toEqual({ kind: "resolved", peer: target })
   })
 
   test("resolves a unique id prefix", () => {
     const target = peer("ses_aaaaaaaaaaaa1111", "Payments API")
     const other = peer("ses_bbbbbbbbbbbb2222", "Ops console")
     const result = resolvePeer("ses_aaaa", [target, other], SELF)
-    expect(result).toEqual({ kind: "resolved", peer: target, matchedBy: "id-prefix" })
+    expect(result).toEqual({ kind: "resolved", peer: target })
   })
 
   test("prefers an id match over a title match", () => {
@@ -43,6 +43,12 @@ describe("resolvePeer", () => {
     const result = resolvePeer("ses_aaaaaaaaaaaa1111", [byID, byTitle], SELF)
     expect(result.kind).toBe("resolved")
     expect(result.kind === "resolved" && result.peer).toBe(byID)
+  })
+
+  test("prefers an exact title over an id prefix", () => {
+    const byTitle = peer("ses_bbbbbbbbbbbb2222", "ses_aaaa")
+    const byPrefix = peer("ses_aaaaaaaaaaaa1111", "other")
+    expect(resolvePeer("ses_aaaa", [byTitle, byPrefix], SELF)).toEqual({ kind: "resolved", peer: byTitle })
   })
 
   test("fails closed when a title matches more than one peer", () => {

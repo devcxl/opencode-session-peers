@@ -93,6 +93,7 @@ export async function sendAction(deps: SendDeps, call: ToolCall, input: unknown)
     detail: target,
   })
   if (attempt.kind === "refused") return attempt.refusal
+  if (attempt.kind === "unknown") return attempt.result
 
   // A progress report to a parent that is inside a `subagent` call is admitted
   // now and read when that call returns — the one thing a child cannot see for
@@ -107,10 +108,11 @@ export async function sendAction(deps: SendDeps, call: ToolCall, input: unknown)
 
   return {
     text: parked
-      ? `Message sent to ${peer.title}; its turn is inside a subagent call that has not returned, so it will read the message when that call returns.`
-      : `Message sent to ${peer.title}`,
+      ? `Message accepted by the host for ${peer.title}; its turn is inside a subagent call, so processing is deferred until that call returns. This does not mean it was read.`
+      : `Message accepted by the host for ${peer.title}; this does not mean it was read or processed.`,
     details: {
       delivered: true,
+      outcome: "accepted",
       delivery: attempt.delivery,
       ...(parked ? { parentProbe: probe.parking } : {}),
       ...peerDetails(peer, call.sessionID),

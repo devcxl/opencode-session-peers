@@ -68,11 +68,6 @@ export function askKey(askID: string): string {
   return `${ASK_PREFIX}${askID}`
 }
 
-/** Where the answer to one question lives. Exported for the same reason as `peerKey`. */
-export function replyKey(askID: string): string {
-  return `${REPLY_PREFIX}${askID}`
-}
-
 export function pluginStorage(storage: RawStorage): PluginStorage {
   return {
     peers: recordStore<Peer>(storage, PEER_PREFIX),
@@ -84,9 +79,8 @@ export function pluginStorage(storage: RawStorage): PluginStorage {
 /**
  * Deletes a record only while it still looks stale.
  *
- * A writer may have refreshed the record between the scan that found it and
- * this removal, and the refreshed one is the live record; re-reading is what
- * makes it safe for any number of instances to sweep the same storage at once.
+ * Re-reading catches refreshes between the scan and this read. It is not an
+ * atomic compare-and-delete: a writer can still refresh before the removal.
  */
 export async function removeIfStill<T>(
   store: RecordStore<T>,

@@ -2,10 +2,9 @@
  * The ask handshake: how a blocked question learns its answer.
  *
  * The asker's instance writes an ask record to the shared storage and waits for
- * the reply slot beside it to fill. Nothing about the wait lives in memory: the
- * instance that serves the answering session may be a different one — a
- * different directory, a different server process — and storage is the only
- * namespace they share (ADR-0001), so both sides meet there.
+ * the reply slot beside it to fill. A cancellation signal lives only in the
+ * asker's instance. The answering session may be served by a different
+ * directory or server process, so the two sides meet in storage (ADR-0001).
  *
  * The wait is bounded twice over: by the ask's own deadline, and by the tool
  * call's abort signal, so an interrupted turn returns instead of hanging. It is
@@ -15,6 +14,9 @@
 
 import type { AskRecord, ReplyRecord } from "../domain/types.ts"
 import type { PluginStorage, RecordStore } from "../host/storage.ts"
+
+/** Waiters owned by this tool instance; cancellation does not cross processes. */
+export type LocalAskWaits = Map<string, { readonly sessionID: string; readonly controller: AbortController }>
 
 /** Every ask record the machine has published, as plain values. */
 export async function readAsks(storage: PluginStorage): Promise<readonly AskRecord[]> {

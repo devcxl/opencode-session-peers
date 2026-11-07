@@ -147,9 +147,10 @@ describe("a question that is answered", () => {
 
     const answered = await beta.host.call("peers", { action: "reply", message: "Yes, frozen for review." })
     const askID = (answered.details as { askID: string }).askID
-    expect(answered.text).toBe("Reply sent to Payments API")
+    expect(answered.text).toBe("Reply stored for Payments API; this does not mean it was read.")
     expect(answered.details).toEqual({
       delivered: true,
+      outcome: "stored",
       askID,
       sessionID: ALPHA.id,
       title: "Payments API",
@@ -211,7 +212,7 @@ describe("a question that is answered", () => {
     await waitFor("the question to be delivered", () => host.prompts.length === 1)
 
     const answered = await host.call("peers", { action: "reply", message: "Same answer." }, BETA.id)
-    expect(answered.text).toBe("Reply sent to Payments API")
+    expect(answered.text).toBe("Reply stored for Payments API; this does not mean it was read.")
 
     const result = await asking
     expect(result.text).toBe("**Reply from Docs site:**\nSame answer.")
@@ -348,7 +349,7 @@ describe("admission", () => {
 
     // The asker itself is not a third session: a send there is delivered.
     const toTheAsker = await beta.host.call("peers", { action: "send", to: ALPHA.id, message: "a note, not the answer" })
-    expect(toTheAsker.text).toBe("Message sent to Payments API")
+    expect(toTheAsker.text).toBe("Message accepted by the host for Payments API; this does not mean it was read or processed.")
     expect(beta.host.prompts).toHaveLength(1)
 
     await beta.host.call("peers", { action: "reply", message: "the actual answer" })

@@ -86,6 +86,44 @@ async function unloadAll(...instances: Instance[]): Promise<void> {
 }
 
 describe("a wait that ends without an answer", () => {
+  test("cancel stops the local wait without withdrawing the peer's question", async () => {
+    const { alpha, beta } = await twoDirectories()
+    try {
+      const asking = alpha.host.call("peers", { action: "ask", to: BETA.id, message: "Please investigate" })
+      await waitFor("question admission", () => alpha.host.prompts.length === 1)
+
+      const cancellation = await alpha.host.call("peers", { action: "cancel" })
+      expect(cancellation.details).toMatchObject({ requested: true, cancelled: false })
+      const stopped = await asking
+      expect(stopped.details).toMatchObject({ code: "E_ASK_CANCELLED", cancelled: true })
+      expect(stopped.text).toContain("not withdrawn")
+
+      const answer = await beta.host.call("peers", { action: "reply", message: "Found it" })
+      expect(answer.details).toMatchObject({ late: true, outcome: "accepted" })
+      expect(beta.host.prompts[0]?.text).toContain("Found it")
+    } finally {
+      await unloadAll(alpha, beta)
+    }
+  })
+
+  test("a different session cannot cancel a named local wait", async () => {
+    const { alpha, beta, storage } = await twoDirectories()
+    try {
+      const asking = alpha.host.call("peers", { action: "ask", to: BETA.id, message: "Scoped wait" })
+      await waitFor("question admission", () => alpha.host.prompts.length === 1)
+      const record = storage.values().find((value) =>
+        typeof value === "object" && value !== null && "askID" in value,
+      ) as { askID: string }
+      const foreign = await alpha.host.call("peers", { action: "cancel", replyTo: record.askID }, BETA.id)
+      expect(foreign.details).toMatchObject({ code: "E_NO_ASK_TO_CANCEL" })
+      const own = await alpha.host.call("peers", { action: "cancel", replyTo: record.askID })
+      expect(own.details).toMatchObject({ requested: true, askID: record.askID })
+      expect((await asking).details).toMatchObject({ code: "E_ASK_CANCELLED" })
+    } finally {
+      await unloadAll(alpha, beta)
+    }
+  })
+
   test("returns the ported timeout text and leaves the question answerable", async () => {
     const { alpha, beta } = await twoDirectories({ alpha: { options: { askTimeoutMs: 60 } } })
 
@@ -93,12 +131,13 @@ describe("a wait that ends without an answer", () => {
     const askID = (result.details as { askID: string }).askID
 
     expect(result.text).toBe(
-      `No reply from "Docs site" for message ${askID} within 60ms. Last known delivery state: queue. ` +
+      `No reply from "Docs site" for message ${askID} within 60ms. Host accepted with delivery mode: queue. ` +
         `This waiter timeout is not cancellation; the delivered message may still be queued or actionable in the recipient session.`,
     )
     expect(result.details).toEqual({
       answered: false,
       delivered: true,
+      outcome: "accepted",
       delivery: "queue",
       code: "E_ASK_TIMEOUT",
       reason: result.text,
@@ -125,10 +164,11 @@ describe("a wait that ends without an answer", () => {
 
     const answered = await beta.host.call("peers", { action: "reply", message: "Answering anyway." })
     expect(answered.text).toBe(
-      "Reply sent to Payments API (late: the wait for its answer had ended, so it arrived as an ordinary message)",
+      "Late reply accepted by the host for Payments API; this does not mean it was read.",
     )
     expect(answered.details).toEqual({
       delivered: true,
+      outcome: "accepted",
       late: true,
       delivery: "queue",
       askID,
@@ -176,11 +216,12 @@ describe("a wait that ends without an answer", () => {
 
     expect(result.text).toBe(
       `Waiting for a reply from "Docs site" for message ${askID} was interrupted. ` +
-        `The question was delivered; an answer that arrives later will arrive as an ordinary message.`,
+        `The host accepted the question; a later answer may arrive as an ordinary message.`,
     )
     expect(result.details).toEqual({
       answered: false,
       delivered: true,
+      outcome: "accepted",
       delivery: "queue",
       code: "E_ASK_INTERRUPTED",
       reason: result.text,
@@ -196,7 +237,7 @@ describe("a wait that ends without an answer", () => {
     expect(pending.text).toBe("No unresolved inbound asks.")
 
     const answered = await beta.host.call("peers", { action: "reply", message: "Answering a stopped wait." })
-    expect(answered.text).toContain("(late:")
+    expect(answered.text).toContain("Late reply accepted")
 
     await unloadAll(alpha, beta)
   })

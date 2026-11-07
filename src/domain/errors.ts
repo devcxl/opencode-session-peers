@@ -22,7 +22,6 @@ export type ErrorCode =
   | "E_TARGET_REFUSES"
   | "E_TARGET_REPLIES_ONLY"
   | "E_TARGET_POLICY_UNKNOWN"
-  | "E_DELIVERY_FAILED"
   | "E_TARGET_UNREACHABLE"
   | "E_ASK_IN_FLIGHT"
   | "E_MUTUAL_ASK"
@@ -30,6 +29,7 @@ export type ErrorCode =
   | "E_REPLY_AMBIGUOUS"
   | "E_ASK_UNANSWERED"
   | "E_NO_ASK_TO_CANCEL"
+  | "E_CANCEL_AMBIGUOUS"
   | "E_HANDOVER_NO_GOAL"
   | "E_HANDOVER_ATTACHMENTS"
   | "E_HANDOVER_REPLY"
@@ -41,8 +41,8 @@ export type ErrorCode =
 /**
  * How a blocked ask stopped waiting without an answer.
  *
- * Not an `ErrorCode`: nothing was refused and nothing failed to be delivered —
- * the question reached the recipient and stayed answerable.
+ * Not an `ErrorCode`: the host accepted the question, but the wait ended before
+ * the asker received an answer. Admission does not imply the recipient read it.
  */
 export type AskStopCode = "E_ASK_TIMEOUT" | "E_ASK_INTERRUPTED"
 
@@ -57,12 +57,6 @@ export interface Failure {
   reason: string
   /** Whether trying the same thing again could plausibly succeed. */
   retryable: boolean
-}
-
-export type DeliveryResult = { delivered: true; delivery: Delivery } | Failure
-
-export function delivered(delivery: Delivery): DeliveryResult {
-  return { delivered: true, delivery }
 }
 
 /**
@@ -98,8 +92,6 @@ function reasonFor(code: ErrorCode, detail: string): string {
       return `Session "${detail}" accepts peer messages only as answers to its own questions, and this is a new message.`
     case "E_TARGET_POLICY_UNKNOWN":
       return `Session "${detail}" has not declared what it accepts from peers, so this message is refused. It may still be running an older build.`
-    case "E_DELIVERY_FAILED":
-      return `Message to "${detail}" was not delivered: the host no longer runs that session. Use "list" to see who is still connected.`
     case "E_TARGET_UNREACHABLE":
       return `"${detail}" is your parent session and cannot answer inside this turn: it is inside a subagent call that has not returned. Use "send" to hand it the question together with your recommendation, or raise it in your final report.`
     case "E_ASK_IN_FLIGHT":
@@ -117,8 +109,10 @@ function reasonFor(code: ErrorCode, detail: string): string {
       return `This session has an unanswered question from ${quote(detail)}. Answer it with "reply" before sending to another peer.`
     case "E_NO_ASK_TO_CANCEL":
       return detail.length > 0
-        ? `No question with id "${detail}" is outstanding for this session.`
-        : "This session has no question waiting for an answer."
+        ? `No local wait for question "${detail}" is active in this session.`
+        : "This session has no active local ask wait."
+    case "E_CANCEL_AMBIGUOUS":
+      return "More than one local wait matches. Specify its question id with replyTo."
     // The original refused these three shape violations with its own text; the
     // reader of a refused handover is the model that asked for it, so it is
     // told which combination is impossible and what to do instead.
@@ -167,7 +161,7 @@ export function askTimeout(input: {
     code: "E_ASK_TIMEOUT",
     reason:
       `No reply from ${quote(input.target)} for message ${input.askID} within ${within}. ` +
-      `Last known delivery state: ${input.delivery}. ` +
+      `Host accepted with delivery mode: ${input.delivery}. ` +
       `This waiter timeout is not cancellation; the delivered message may still be queued or actionable in the recipient session.`,
   }
 }
@@ -178,7 +172,7 @@ export function askInterrupted(input: { readonly target: string; readonly askID:
     code: "E_ASK_INTERRUPTED",
     reason:
       `Waiting for a reply from ${quote(input.target)} for message ${input.askID} was interrupted. ` +
-      `The question was delivered; an answer that arrives later will arrive as an ordinary message.`,
+      `The host accepted the question; a later answer may arrive as an ordinary message.`,
   }
 }
 

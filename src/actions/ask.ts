@@ -7,11 +7,9 @@
  * so it is published before the question is delivered and nothing is left
  * behind if the delivery is refused.
  *
- * The wait ends in exactly one of three ways, and none of them throws the
- * question away: an answer arrives, the deadline passes, or the turn is
- * interrupted. After the wait the asker is no longer listening, so a later
- * answer is delivered as an ordinary message rather than into a slot nobody
- * reads — which is why the timeout text says a timeout is not a cancellation.
+ * A wait may end with an answer, a timeout, interruption or a local cancellation.
+ * Once the waiter has stopped, later answers normally use an ordinary message;
+ * a reply racing that transition can still land in the old slot (ADR-0007).
  */
 
 import { randomUUID } from "node:crypto"
@@ -26,7 +24,7 @@ import type { SessionLookup } from "../host/session.ts"
 import type { PluginStorage } from "../host/storage.ts"
 import type { ToolCall } from "../host/tools.ts"
 import type { Roster } from "../peers/roster.ts"
-import { readAsks, replyPollMs, waitForReply, type ReplyWait } from "../ask/handshake.ts"
+import { readAsks, replyPollMs, waitForReply, type LocalAskWaits, type ReplyWait } from "../ask/handshake.ts"
 import { deliverTo, refusal } from "./delivery.ts"
 import { readMessage, readText } from "./input.ts"
 import { probeParent } from "./parked-parent.ts"
@@ -40,6 +38,7 @@ export interface AskDeps {
   readonly roster?: Roster
   /** Reports what went wrong in a way the caller can see but the ask survives. */
   readonly warn: (message: string) => void
+  readonly waits: LocalAskWaits
 }
 
 export async function askAction(deps: AskDeps, call: ToolCall, input: unknown): Promise<ActionResult> {
@@ -139,15 +138,24 @@ export async function askAction(deps: AskDeps, call: ToolCall, input: unknown): 
     const cleanupError = await clearRecords(storage, askID)
     return withDetail(attempt.refusal, "cleanupError", cleanupError)
   }
+  if (attempt.kind === "unknown") {
+    const recordError = await endWait(storage, ask)
+    return {
+      text: attempt.result.text,
+      details: { ...attempt.result.details, askID, ...(recordError === undefined ? {} : { recordError }) },
+    }
+  }
 
   let wait: ReplyWait
+  const cancellation = new AbortController()
+  deps.waits.set(askID, { sessionID: call.sessionID, controller: cancellation })
   try {
     wait = await waitForReply({
       replies: storage.replies,
       askID,
       expiresAt: ask.expiresAt,
       pollMs: replyPollMs(deps.config.askTimeoutMs),
-      signal: call.signal,
+      signal: AbortSignal.any([call.signal, cancellation.signal]),
     })
   } catch (error) {
     // The host stopped answering our reads of the reply slot. The question is
@@ -160,6 +168,7 @@ export async function askAction(deps: AskDeps, call: ToolCall, input: unknown): 
       details: {
         answered: false,
         delivered: true,
+        outcome: "accepted",
         delivery: attempt.delivery,
         code: stopped.code,
         reason: stopped.reason,
@@ -168,6 +177,8 @@ export async function askAction(deps: AskDeps, call: ToolCall, input: unknown): 
         ...peerDetails(peer, call.sessionID),
       },
     }
+  } finally {
+    deps.waits.delete(askID)
   }
 
   if (wait.kind === "replied") {
@@ -197,11 +208,29 @@ export async function askAction(deps: AskDeps, call: ToolCall, input: unknown): 
       details: {
         answered: false,
         delivered: true,
+        outcome: "accepted",
         delivery: attempt.delivery,
         code: stop.code,
         reason: stop.reason,
         retryable: false,
         askID,
+        ...peerDetails(peer, call.sessionID),
+      },
+    }
+  }
+
+  if (cancellation.signal.aborted) {
+    const recordError = await endWait(storage, ask)
+    return {
+      text: `Local wait for ${askID} was cancelled. The question was not withdrawn; the recipient may still act on it.`,
+      details: {
+        answered: false,
+        cancelled: true,
+        delivered: true,
+        outcome: "accepted",
+        code: "E_ASK_CANCELLED",
+        askID,
+        ...(recordError === undefined ? {} : { recordError }),
         ...peerDetails(peer, call.sessionID),
       },
     }
@@ -216,6 +245,7 @@ export async function askAction(deps: AskDeps, call: ToolCall, input: unknown): 
     details: {
       answered: false,
       delivered: true,
+      outcome: "accepted",
       delivery: attempt.delivery,
       code: stop.code,
       reason: stop.reason,

@@ -2,6 +2,12 @@
 
 Status: accepted
 
+Amendment (2026-11-06): a rejected `session.prompt` call does not by itself prove
+that no admission occurred or that the target no longer exists. The plugin reports
+the outcome as unknown and does not retry automatically. Successful calls mean
+host admission, not a read receipt. An ask with unknown admission keeps an ended
+record for a potential late reply; races at that boundary remain to be verified.
+
 Context: `pi-intercom` ran a broker that owned a mailbox, so a `send` to a peer that had gone away waited
 there and could be redelivered to a session that later reappeared with the same name and directory. Its
 receiving extension also decided locally whether an inbound message was allowed to start a turn
@@ -15,8 +21,8 @@ Measured on opencode 2.0.29 (`docs/research/cross-process-prompt.md`): an in-pro
 
 Decision:
 
-1. **A `send` is not queued.** A refused target is reported undelivered, immediately, with the host's own
-   error. A queue would delay a terminal failure to its TTL and could lose the message silently if the
+1. **A `send` is not queued by the plugin.** A host error is reported as an unknown outcome. A queue
+   would delay a terminal failure to its TTL and could lose the message silently if the
    sending instance unloads first, in exchange for pruning and a claim protocol so two instances cannot
    deliver the same message twice.
 2. **Inbound policy travels with the roster record.** Each session publishes its configured trigger; the
@@ -30,7 +36,6 @@ it delays the same terminal failure); a queue keyed by title and directory as th
 trigger on the receiving side (impossible — no hook); dropping the trigger from the configuration
 (rejected: it is the only lever a session has over what may start a turn in it).
 
-Consequences: a peer deleted mid-flight loses the message and the caller is told
-(`retryable: false`); every roster record carries one more field; a refusal can name the peer's policy
+Consequences: host failures are not automatically retried because admission may have succeeded; every roster record carries one more field; a refusal can name the peer's policy
 because that policy is already visible to peers in scope — the same visibility ADR-0004 draws; and the
 queue-pruning work the development plan held open is not needed.

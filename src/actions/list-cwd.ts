@@ -9,10 +9,11 @@
  */
 
 import { describeError } from "../domain/errors.ts"
+import { rosterRow } from "../domain/format.ts"
 import type { ActionResult } from "../domain/types.ts"
 import type { ToolCall } from "../host/tools.ts"
 import type { Roster } from "../peers/roster.ts"
-import { failed, peerDetails, readRoster, rowFor } from "./roster-view.ts"
+import { failed, peerDetails, readRoster } from "./roster-view.ts"
 
 export interface ListCwdDeps {
   /** Absent while the plugin is disabled: a disabled instance publishes nothing. */
@@ -30,7 +31,7 @@ export async function listCwdAction(deps: ListCwdDeps, call: ToolCall): Promise<
     const here = view.peers.filter(
       (peer) => peer.sessionID !== view.self.sessionID && peer.directory === directory,
     )
-    const rows = here.map((peer) => rowFor(peer, view, { self: false, sameDirectory: false }))
+    const rows = here.map((peer) => rosterRow(peer, { self: false, sameDirectory: false }))
 
     return {
       text:

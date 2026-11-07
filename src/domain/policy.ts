@@ -18,8 +18,8 @@ export interface InboundPolicy {
   busyDelivery: Delivery
 }
 
-export function deliveryFor(input: { recipientIdle: boolean; policy: InboundPolicy }): Delivery {
-  return input.recipientIdle ? "queue" : input.policy.busyDelivery
+export function deliveryFor(input: { status?: string; busyDelivery?: Delivery }): Delivery {
+  return input.status === "busy" && input.busyDelivery === "steer" ? "steer" : "queue"
 }
 
 export type Admission = { ok: true } | { ok: false; code: ErrorCode }
