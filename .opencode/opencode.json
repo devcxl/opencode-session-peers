@@ -1,4 +1,24 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugins": ["../"]
+  "default_agent": "developer",
+  "mcp": {
+    "servers": {
+      "codegraph": {
+        "type": "local",
+        "command": ["codegraph", "serve", "--mcp"],
+        "disabled": false,
+        "codemode": false
+      }
+    }
+  },
+  "references": {
+      "effect": {
+        "repository": "Effect-TS/effect",
+        "branch": "main",
+      },
+      "opencode-sdk": {
+        "repository": "git@github.com:anomalyco/opencode.git",
+        "branch": "v2.1.4",
+      },
+    },
 }
