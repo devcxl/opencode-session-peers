@@ -9,8 +9,10 @@ groups at once had no way to put one session next to another group without chang
 configuration for every session at that location.
 
 Decision: a session's scope is a property of the session, published on its roster row. The configured
-`scope` is the default it starts in; `/peers-scope <scope>` in the TUI moves the session into another
-partition and `/peers-scope default` moves it back. The roster's `setScope` RPC does the move at the
+`scope` is the default it starts in; `/peers-scope <scope>` moves the session into another
+partition and `/peers-scope default` moves it back. The server registers the command for clients
+that support server commands; the TUI retains a local entry with a confirmation toast. Both use the
+same roster operation, also exposed through the `setScope` RPC, at the
 location that serves the session, republishes the row, and announces the change. `list`, `send`,
 `ask`, `status` and the dialog resolve in the caller's current scope. The move survives an instance
 reload because it is read back from the row before the row is republished.
