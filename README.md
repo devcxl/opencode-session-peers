@@ -138,6 +138,11 @@ Behaviour worth knowing before you rely on it:
   though the tool is available inside it; the fix is one turn. This is why an empty `list` usually means
   "nobody has done anything yet", not "nothing is running".
 
+The plugin registers two skills, both loaded on demand. `session-peers` covers how to use the tool
+for coordination: which action fits which situation, the rules above in more detail, the failure
+codes a caller should handle, and what the plugin deliberately does not do.
+`session-peers-supervisor` covers the parent side of the subagent rule below.
+
 ## Subagents
 
 A subagent session reaches the session that spawned it through the same tool. One caveat comes from

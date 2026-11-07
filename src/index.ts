@@ -18,7 +18,7 @@ import { describeError } from "./domain/errors.ts"
 import { createHost } from "./host/index.ts"
 import { startRoster } from "./peers/roster.ts"
 import { SESSION_PEERS_RPC } from "./rpc.ts"
-import { SUPERVISOR_SKILL } from "./skill.ts"
+import { PEERS_SKILL, SUPERVISOR_SKILL } from "./skill.ts"
 import { rosterPayload } from "./surface.ts"
 import { peersTool } from "./tool.ts"
 
@@ -92,6 +92,11 @@ export default {
         .emit("changed", { at: Date.now() })
         .catch((error) => warn(`could not announce a roster change: ${describeError(error)}`))
     })
+
+    // Usage guidance beyond the one-line-per-action tool description: the
+    // patterns, constraints and refusals a coordinating session needs. Loaded
+    // on demand, so a session that never coordinates reads only the description.
+    await host.skills.register(PEERS_SKILL)
 
     // The supervisor channel's parent-side text (ADR-0002) is a skill, not part
     // of the tool description: a parent reads it while deciding how to spawn a

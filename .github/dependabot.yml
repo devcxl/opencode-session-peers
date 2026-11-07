@@ -1,0 +1,19 @@
+# Dependabot version updates, once a week (issue #39).
+#
+# `bun` reads package.json + bun.lock at the repository root; the
+# `github-actions` ecosystem keeps the action versions in .github/workflows on
+# the same cadence. Auto-merge is deliberately not configured: a maintainer
+# reviews each PR, and the existing CI workflow (typecheck, tests, harness) is
+# what decides whether it can be merged.
+version: 2
+
+updates:
+  - package-ecosystem: "bun"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
