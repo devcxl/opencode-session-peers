@@ -25,6 +25,8 @@
   puts the current session into that visibility partition, and `/peers-scope default` puts it back.
   The move is published on the session's roster row (so it survives a reload), and `list`, `send` and
   `ask` resolve in the new scope from then on.
+- The server now registers `/peers-scope` as well, so clients that support server commands can use it
+  without the TUI plugin.
 - The roster dialog's `g` key shows the default scope while the session has a scope of its own, and
   `g` again returns to it. The preview only changes what the dialog reads.
 

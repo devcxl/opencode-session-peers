@@ -286,6 +286,12 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
         return { dispose: async () => {} }
       },
     },
+    command: {
+      transform: async (edit: (editor: { add: () => void }) => void) => {
+        edit({ add: () => {} })
+        return { dispose: async () => {} }
+      },
+    },
     skill: {
       transform: async (edit: (editor: SkillEditor) => void) => {
         edit(skillEditor)

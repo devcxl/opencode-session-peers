@@ -39,6 +39,19 @@ export default {
     // not listening, and its own session is told why nothing happens.
     const roster = config.enabled ? await startRoster({ config, warn, ...host }) : undefined
 
+    const setScope = async (sessionID: string, scope: string) => {
+      if (roster === undefined) throw new Error("the plugin is disabled at this location")
+      const peer = await roster.setScope(sessionID, scope)
+      if (peer === undefined) throw new Error("this location does not serve that session")
+      return { scope: peer.scope }
+    }
+
+    await host.commands.registerScope(async (sessionID, input) => {
+      const scope = input.trim()
+      if (scope === "") throw new Error("usage: /peers-scope <scope>")
+      await setScope(sessionID, scope)
+    })
+
     // The RPC surface is registered either way, because a disabled location
     // answering `enabled: false` is what lets a reader tell "off here" from
     // "not loaded here". It is the plugin's public surface for other plugins:
@@ -59,10 +72,7 @@ export default {
         if (sessionID === undefined || scope === undefined) {
           throw new Error("setScope needs a session id and a scope")
         }
-        if (roster === undefined) throw new Error("the plugin is disabled at this location")
-        const peer = await roster.setScope(sessionID, scope)
-        if (peer === undefined) throw new Error("this location does not serve that session")
-        return { scope: peer.scope }
+        return setScope(sessionID, scope)
       },
     })
 

@@ -78,7 +78,7 @@ server log; `trigger` fails closed to `"never"`.
 | Option | Default | What it does |
 | --- | --- | --- |
 | `enabled` | `true` | `false` publishes nothing and refuses every action with "disabled by configuration". |
-| `scope` | `"default"` | Visibility partition. Only sessions with the same scope see each other. This is the scope a session starts in; `/peers-scope <scope>` in the TUI moves the current session to another one. |
+| `scope` | `"default"` | Visibility partition. Only sessions with the same scope see each other. This is the scope a session starts in; `/peers-scope <scope>` moves the current session to another one. |
 | `trigger` | `"always"` | What this session accepts from peers: `always`, `replies` (questions and answers only), `never`. Published on this session's roster record and honoured by the sender. |
 | `busyDelivery` | `"steer"` | How this session receives a message while mid-turn: `steer` injects it at the next safe boundary, `queue` waits until it is idle. The recipient publishes its setting for senders to honour. |
 | `replyHint` | `true` | Append the `To reply: peers({ action: "reply", ... })` line to a question. Only an `ask` carries it: a `send`, a reply and a handover leave nothing to answer. |
@@ -168,6 +168,9 @@ It is a view and nothing else: no action sends, asks or replies from it.
 A session's partition is not fixed by configuration. `/peers-scope <scope>` at the prompt moves the
 current session into that scope — the configured value is where it starts — and the move is
 published on its roster row, so `list`/`send`/`ask` (and every other session's view) follow it.
+The server registers this command for clients that support OpenCode's server commands, without
+requiring the TUI plugin. The TUI also offers its local command with a confirmation toast. Clients
+that do not expose server commands can use the `setScope` RPC instead.
 
 Declare it in the TUI's own config, `~/.config/opencode/cli.json` (the server half stays in
 `opencode.json` as above):
