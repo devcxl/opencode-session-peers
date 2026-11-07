@@ -200,7 +200,7 @@ describe("a child asking an answerable parent", () => {
     expect(instance.host.prompts[0]?.sessionID).toBe(PARENT.id)
 
     const answered = await instance.host.call("peers", { action: "reply", message: "Ship it." }, PARENT.id)
-    expect(answered.text).toBe("Reply sent to Fibre probe")
+    expect(answered.text).toBe("Reply stored for Fibre probe; this does not mean it was read.")
 
     expect((await asking).text).toBe("**Reply from Main task:**\nShip it.")
 
@@ -282,10 +282,11 @@ describe("a child reporting progress to its parent", () => {
     )
 
     expect(result.text).toBe(
-      "Message sent to Main task; its turn is inside a subagent call that has not returned, so it will read the message when that call returns.",
+      "Message accepted by the host for Main task; its turn is inside a subagent call, so processing is deferred until that call returns. This does not mean it was read.",
     )
     expect(result.details).toEqual({
       delivered: true,
+      outcome: "accepted",
       delivery: "queue",
       parentProbe: "parked",
       sessionID: PARENT.id,
@@ -309,7 +310,7 @@ describe("a child reporting progress to its parent", () => {
       CHILD.id,
     )
 
-    expect(result.text).toBe("Message sent to Main task")
+    expect(result.text).toBe("Message accepted by the host for Main task; this does not mean it was read or processed.")
     expect(result.details).not.toHaveProperty("parentProbe")
 
     await unload(instance)

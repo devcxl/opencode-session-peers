@@ -80,7 +80,7 @@ server log; `trigger` fails closed to `"never"`.
 | `enabled` | `true` | `false` publishes nothing and refuses every action with "disabled by configuration". |
 | `scope` | `"default"` | Visibility partition. Only sessions with the same scope see each other. This is the scope a session starts in; `/peers-scope <scope>` in the TUI moves the current session to another one. |
 | `trigger` | `"always"` | What this session accepts from peers: `always`, `replies` (questions and answers only), `never`. Published on this session's roster record and honoured by the sender. |
-| `busyDelivery` | `"steer"` | How a message reaches a recipient that is mid-turn: `steer` injects it at the next safe boundary, `queue` waits until the recipient is idle. An idle recipient always starts a new turn. |
+| `busyDelivery` | `"steer"` | How this session receives a message while mid-turn: `steer` injects it at the next safe boundary, `queue` waits until it is idle. The recipient publishes its setting for senders to honour. |
 | `replyHint` | `true` | Append the `To reply: peers({ action: "reply", ... })` line to a question. Only an `ask` carries it: a `send`, a reply and a handover leave nothing to answer. |
 | `askTimeoutMs` | `600000` | How long an `ask` waits for its answer (10 minutes) before it stops waiting. |
 | `rosterTtlMs` | `90000` | How long a peer record may go without a heartbeat before other instances stop listing it. The heartbeat runs at a third of this. |
@@ -91,11 +91,11 @@ server log; `trigger` fails closed to `"never"`.
 | --- | --- |
 | `list` | Every live peer in this session's scope, this session first. Run it before addressing a peer. |
 | `list-cwd` | Only the peers working in this session's directory. |
-| `send` | Deliver a message to one peer and report whether it was delivered. Does not wait for anything else. |
+| `send` | Submit a message to one peer and report whether the host accepted it. Does not wait for the recipient to read it. |
 | `ask` | Put a question to one peer and wait inside the call until it is answered, the ask timeout passes, or the turn is interrupted. |
 | `reply` | Answer a question another peer is waiting on. |
 | `pending` | The questions waiting for this session's answer, each with the question id to name in `replyTo`. |
-| `cancel` | Withdraw a question this session asked (`replyTo` names it; omit it to withdraw the one whose wait is still running). |
+| `cancel` | Request a stop to this session's local ask wait (`replyTo` names it; omit it if only one is waiting). It does not withdraw the question or stop the recipient. |
 | `handover` | Summarise this session with this session's own model and send the summary to one peer, which continues the work. |
 | `status` | This session's id, its scope, and whether the host is answering. |
 
@@ -106,14 +106,30 @@ reply reference, because its body is written by the model and it starts a new ex
 
 Behaviour worth knowing before you rely on it:
 
-- **A `send` is not queued.** If the target session is gone, the message is reported undelivered
-  immediately, with the host's own error (ADR-0005).
+- **The plugin has no offline mailbox.** It submits a `send` to the host once (ADR-0005). A successful
+  submission means host admission, not that the recipient read or processed it. The `delivered: true`
+  result field is retained for compatibility and means admission, not a read receipt.
+- **A host error can leave delivery unknown.** The result has `outcome: "unknown"` and no `delivered`
+  field: the message may already have been accepted, so retrying can duplicate it. An ask in this state
+  stops waiting but retains its record so a later reply can still be routed.
+- **A reply may be stored rather than read.** `outcome: "stored"` means an answer was written to the
+  waiting ask's reply slot; `outcome: "accepted"` means a message was admitted by the host.
 - **A timeout is not a cancellation.** After an `ask` times out, the question stays in the recipient's
-  hands; an answer that arrives later is delivered as an ordinary message instead of being dropped.
-- **One question at a time.** A session with an outstanding question cannot start another, two
-  sessions cannot ask each other simultaneously, and while a session holds an unanswered question a
-  `send` to anyone but the asker is refused.
+  hands; a later answer is normally submitted as an ordinary message. A reply racing the end of the
+  wait can still be written to the old reply slot; the plugin cannot guarantee delivery in that race.
+- **Cancellation is local.** The result reports a request, not a completed cancellation; the blocked
+  `ask` reports when it actually stops. It works only while the waiting call belongs to the same plugin
+  instance and another call can run for that session. A session blocked in its own tool call may not be
+  able to issue `cancel` itself; interrupting the turn is a separate host operation. Questions already
+  submitted remain actionable, and a reply racing cancellation may require manual follow-up.
+- **Ask guards are not atomic.** Ordinarily a session with an outstanding question cannot start another,
+  and two sessions cannot ask each other. Simultaneous calls can pass the read-before-write checks, so
+  these are not cross-process mutual-exclusion guarantees. While a session holds an unanswered question,
+  a `send` to anyone but the asker is refused.
 - **Peers expire.** A session whose host stopped running disappears from `list` after `rosterTtlMs`.
+- **Delivery uses the latest observed status.** An idle recipient is queued. When its status or
+  `busyDelivery` declaration is unknown, a sender queues rather than steering on a guess; status can
+  change between observation and delivery. Older plugin instances may not honour this declaration.
 - **A peer appears once its host has noticed it.** An instance can only learn that a session exists from an
   event about it — being created counts — or from one call that reads the roster by that session itself:
   `list`, `list-cwd`, `send`, `ask`, `reply` or `handover`. (`status`, `pending` and `cancel` do not publish
@@ -197,6 +213,7 @@ bun test          # unit and seam tests
 bun run typecheck
 bun run harness   # boot a throwaway opencode instance and check the plugin loads
 bun run harness --stub   # drive two sessions through the harness's own stub model, offline
+bun scripts/harness/cross-process.ts /path/to/existing/scratch  # two isolated servers, shared database
 bun run harness --help
 ```
 
@@ -209,6 +226,11 @@ timeout text after the configured `askTimeoutMs` — the harness sets one in the
 pass can tell "nobody answered" from "the chain is broken", and can tell either from a wait that ran
 on the ten-minute default. It is deterministic and offline; `--model <provider/id>` remains
 the opt-in pass that drives real hosted turns with the developer's own credentials.
+
+The cross-process experiment starts two isolated servers sharing a scratch database and verifies
+that `ask` and `reply` actually execute in different process IDs. It requires an explicit scratch
+parent and fails if the host runs both tools in the same process. It does not prove cross-process
+cancellation or atomicity of concurrent calls.
 
 The harness owns its own XDG directories, database and port, hashes the developer's
 `~/.local/state/opencode/service.json` before and after the run, and never touches the live service.

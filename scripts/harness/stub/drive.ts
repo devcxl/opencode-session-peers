@@ -133,7 +133,7 @@ export async function driveStubPass(
   throw new Error(`${sessionA.label} never saw ${sessionB.label} on the roster`)
 }
 
-/** A sends one message to B; the tool result has to report it delivered. */
+/** A submits one message to B; the tool result has to report host admission. */
 async function sendAndCheckDelivery(
   client: HarnessClient,
   options: HarnessOptions,
@@ -141,7 +141,7 @@ async function sendAndCheckDelivery(
   sessionB: SessionSummary,
   expectations: Expectation[],
 ): Promise<boolean> {
-  const expected = `sending from ${sessionA.label} to ${sessionB.label} reports the message delivered`
+  const expected = `sending from ${sessionA.label} to ${sessionB.label} reports host admission`
   try {
     // The directive names the peer by title, so the stub can write the tool call
     // the way a model would: a target the harness created and knows.
@@ -151,7 +151,7 @@ async function sendAndCheckDelivery(
     // tool result must not read as a delivered message.
     const sent =
       call.name === "peers" && asked?.action === "send" && asked.to === sessionB.title
-    const delivered = sent && call.metadata["delivered"] === true
+    const delivered = sent && call.metadata["delivered"] === true && call.metadata["outcome"] === "accepted"
     expectations.push({
       name: "message-delivered",
       met: delivered,
@@ -230,4 +230,3 @@ function hintCheck(sessionB: SessionSummary, body: string): Expectation {
       : `the message in ${sessionB.label}'s transcript carries sender and body only`,
   }
 }
-

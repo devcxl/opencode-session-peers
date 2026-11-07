@@ -16,6 +16,7 @@ before relying on it.
 | `tui-surface-data-path.md` | How a TUI surface reaches a server plugin's state — plugin RPC over HTTP plus event push — and what the TUI can render, including a real `sidebar.content` slot; measured by rendering one | host `2.0.29`, `@opencode/plugin` `2.0.16` |
 | `ask-reply-handshake.md` | A tool call can block for seconds inside a turn; an answer written by another instance's `reply` reaches the blocked call through storage | host `2.0.29` |
 | `parked-parent-signal.md` | A running `subagent` call names no child (input and progress metadata both empty) — the parking is the observable signal; the skill surface registers and reaches the model | host `2.0.29` |
+| `opencode-2.2.5-stage-one.md` | Stage-one offline baseline and instrumented two-process ask/reply; explicitly unmeasured host behaviours | host `2.2.5` |
 
 ## Host drift
 

@@ -6,8 +6,7 @@
  * and both need the same answer: is that parent inside a `subagent` call that
  * has not returned? Only the host can say. A probe that cannot read the parent
  * is reported as `unknown` — never as parked — because the refusal it feeds must
- * be provable; the failure itself is handed to the caller to report, so it does
- * not disappear.
+ * be provable; the failure is reported through the supplied warning callback.
  */
 
 import { describeError } from "../domain/errors.ts"
@@ -17,8 +16,6 @@ import type { SessionLookup } from "../host/session.ts"
 
 export interface ParentProbe {
   readonly parking: ParentParking
-  /** Why the parent could not be read, when it could not. */
-  readonly error?: string
 }
 
 export interface ParentProbeInput {
@@ -43,7 +40,7 @@ export async function probeParent(input: ParentProbeInput): Promise<ParentProbe>
   } catch (error) {
     const detail = describeError(error)
     input.warn(`could not read ${parentID} before addressing it: ${detail}`)
-    return { parking: "unknown", error: detail }
+    return { parking: "unknown" }
   }
 
   return { parking: parentParking({ parentID, calls }) }

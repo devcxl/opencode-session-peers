@@ -9,10 +9,8 @@
 
 import type { Peer, SessionID } from "./types.ts"
 
-export type MatchKind = "id" | "title" | "id-prefix"
-
 export type Resolution =
-  | { kind: "resolved"; peer: Peer; matchedBy: MatchKind }
+  | { kind: "resolved"; peer: Peer }
   | { kind: "self" }
   | { kind: "ambiguous"; candidates: readonly Peer[] }
   | { kind: "not-found" }
@@ -23,15 +21,15 @@ export function resolvePeer(target: string, peers: readonly Peer[], selfID: Sess
   if (wanted === selfID) return { kind: "self" }
 
   const byID = peers.find((peer) => peer.sessionID === wanted)
-  if (byID !== undefined) return { kind: "resolved", peer: byID, matchedBy: "id" }
+  if (byID !== undefined) return { kind: "resolved", peer: byID }
 
   const wantedLower = wanted.toLowerCase()
   const byTitle = peers.filter((peer) => peer.title.toLowerCase() === wantedLower)
-  if (byTitle.length === 1) return { kind: "resolved", peer: byTitle[0]!, matchedBy: "title" }
+  if (byTitle.length === 1) return { kind: "resolved", peer: byTitle[0]! }
   if (byTitle.length > 1) return { kind: "ambiguous", candidates: byTitle }
 
   const byPrefix = peers.filter((peer) => peer.sessionID.startsWith(wanted))
-  if (byPrefix.length === 1) return { kind: "resolved", peer: byPrefix[0]!, matchedBy: "id-prefix" }
+  if (byPrefix.length === 1) return { kind: "resolved", peer: byPrefix[0]! }
   if (byPrefix.length > 1) return { kind: "ambiguous", candidates: byPrefix }
 
   return { kind: "not-found" }

@@ -102,6 +102,8 @@ export interface FakeHostOptions {
   readonly caller?: string
   /** Sessions this fake host refuses to hand a message to, as the real one does for a session it no longer has. */
   readonly promptRefuses?: readonly string[]
+  /** A prompt failure whose admission outcome the caller cannot know. */
+  readonly promptError?: Error
   /** Sessions whose transcript this fake host cannot read, as the real one does not know a gone session. */
   readonly contextRefuses?: readonly string[]
   /** What this session's own model answers with; a throwable answer stands in for the host failing the request. */
@@ -213,6 +215,7 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
         readonly text: string
         readonly delivery?: string
       }) => {
+        if (options.promptError !== undefined) throw options.promptError
         // The host refuses a session it no longer has, and refuses it loudly:
         // the plugin must report that, not treat it as delivered.
         if (refused.has(input.sessionID)) throw new Error("Session.NotFoundError")

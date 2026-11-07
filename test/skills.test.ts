@@ -58,10 +58,13 @@ describe("the peers skill", () => {
   test("states the rules a coordinating session has to work around", async () => {
     const skill = (await skills()).find((candidate) => candidate.id === "session-peers")!
 
-    expect(skill.content).toContain("A `send` is not queued.")
+    expect(skill.content).toContain("no offline mailbox")
     expect(skill.content).toContain("A timeout is not cancellation.")
-    expect(skill.content).toContain("One ask at a time.")
-    expect(skill.content).toContain("Mutual asks are refused.")
+    expect(skill.content).toContain("not withdrawn")
+    expect(skill.content).toContain('outcome: "unknown"')
+    expect(skill.content).toContain("not atomic")
+    expect(skill.content).not.toContain("cancel` withdraws")
+    expect(skill.content).not.toContain("The host no longer runs the target session")
     expect(skill.content).toContain("background: true")
   })
 
@@ -75,6 +78,8 @@ describe("the peers skill", () => {
       "E_ASK_IN_FLIGHT",
       "E_MUTUAL_ASK",
       "E_ASK_UNANSWERED",
+      "E_ASK_CANCELLED",
+      "E_CANCEL_AMBIGUOUS",
       "E_HANDOVER_",
     ]) {
       expect(skill.content).toContain(code)

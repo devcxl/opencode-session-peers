@@ -8,7 +8,6 @@
  */
 
 import { failure, type ErrorCode } from "../domain/errors.ts"
-import { rosterRow } from "../domain/format.ts"
 import type { ActionResult, Peer, SessionID } from "../domain/types.ts"
 import type { Roster } from "../peers/roster.ts"
 
@@ -24,13 +23,8 @@ export async function readRoster(roster: Roster, caller: SessionID): Promise<Ros
   // first, so the scope is the one the session was just moved to, not the one
   // this instance was configured with.
   const published = await roster.publish(caller)
-  const peers = await roster.live(published.scope)
+  const { peers } = await roster.report(published.scope)
   return { self: peers.find((peer) => peer.sessionID === caller) ?? published, peers }
-}
-
-/** The row the model reads, and a person reads over its shoulder. */
-export function rowFor(peer: Peer, view: RosterView, tags: { self: boolean; sameDirectory: boolean }): string {
-  return rosterRow(peer, tags)
 }
 
 /**

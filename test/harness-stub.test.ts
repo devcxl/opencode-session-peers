@@ -303,7 +303,7 @@ function fakeInstance(deliver: boolean, hint: boolean, plan: AskPlan) {
         session.messages.push(
           toolMessage(
             { action: "ask", to: "harness-b", message: UNANSWERED_QUESTION },
-            `No reply from "harness-b" for message ask-1 within ${plan.timeoutMs}ms. Last known delivery state: queue. ` +
+            `No reply from "harness-b" for message ask-1 within ${plan.timeoutMs}ms. Host accepted with delivery mode: queue. ` +
               "This waiter timeout is not cancellation; the delivered message may still be queued or actionable in the recipient session.",
             { answered: false, code: "E_ASK_TIMEOUT" },
             { ran: 1_000_000, completed: 1_000_000 + plan.timeoutMs },
@@ -320,12 +320,12 @@ function fakeInstance(deliver: boolean, hint: boolean, plan: AskPlan) {
           ),
         )
         peer.messages.push(
-          toolMessage({ action: "reply", message: STUB_ANSWER_TEXT }, "Reply sent to harness-a", { delivered: true }),
+          toolMessage({ action: "reply", message: STUB_ANSWER_TEXT }, "Reply stored for harness-a; this does not mean it was read.", { delivered: true, outcome: "stored" }),
         )
       } else {
-        const sentText = deliver ? "Message sent to harness-b" : 'Session "harness-b" is not connected.'
+        const sentText = deliver ? "Message accepted by the host for harness-b; this does not mean it was read or processed." : 'Session "harness-b" is not connected.'
         session.messages.push(
-          toolMessage({ action: "send", to: "harness-b", message: CROSSING_TOKEN }, sentText, { delivered: deliver }),
+          toolMessage({ action: "send", to: "harness-b", message: CROSSING_TOKEN }, sentText, { delivered: deliver, ...(deliver ? { outcome: "accepted" } : {}) }),
         )
         if (deliver) {
           peer.messages.push({
