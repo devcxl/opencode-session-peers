@@ -16,6 +16,7 @@ import {
   TRANSFER_UNAVAILABLE_REASON,
 } from "../domain/watch.ts"
 import type { SessionLookup } from "../host/session.ts"
+import { sessionAtLocation } from "../watch/access.ts"
 import type { WatchApplication } from "../watch/service.ts"
 
 export interface WatchCommandDeps {
@@ -29,6 +30,9 @@ const USAGE =
 
 export async function watchCommand(deps: WatchCommandDeps, sessionID: string, input: string): Promise<void> {
   if (deps.watch === undefined) throw new Error("the plugin is disabled at this location")
+  if (!(await sessionAtLocation(deps.sessions, sessionID, deps.directory))) {
+    throw new Error("this location does not serve this session")
+  }
   const words = input.trim().split(/\s+/).filter((word) => word.length > 0)
   if (words.length === 0) return
 
@@ -40,15 +44,6 @@ export async function watchCommand(deps: WatchCommandDeps, sessionID: string, in
     case "enroll": {
       const goal = rest.join(" ").trim()
       if (goal.length === 0) throw new Error(USAGE)
-      let sessionDirectory: string
-      try {
-        sessionDirectory = (await deps.sessions.get(sessionID)).directory
-      } catch {
-        throw new Error("the host does not know this session")
-      }
-      if (sessionDirectory !== deps.directory) {
-        throw new Error("enrollment is limited to a session served at this plugin location")
-      }
       const outcome = deps.watch.enroll({
         callerSessionID: sessionID,
         requestID: randomUUID(),

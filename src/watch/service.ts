@@ -65,9 +65,10 @@ export interface WatchApplication {
   }): WatchOutcome
   /**
    * The line to append to a normal model context, or `undefined` when this
-   * session has no task that should hear from the watchdog. This never prompts.
+   * session has no local task that should hear from the watchdog. This never
+   * prompts, and a session served by another location gets nothing.
    */
-  notificationFor(sessionID: string): string | undefined
+  notificationFor(sessionID: string): Promise<string | undefined>
   dispose(): void
 }
 
@@ -81,6 +82,11 @@ export interface WatchApplicationOptions {
   readonly sqliteVersion?: string
   /** A successful mutation happened; the RPC surface may nudge its readers. */
   readonly onChanged?: () => void
+  /**
+   * Whether this location still serves the session. The normal-context notice
+   * must not read a machine-wide task from another directory.
+   */
+  readonly sessionAtLocation?: (sessionID: string) => Promise<boolean>
 }
 
 interface LedgerState {
@@ -273,7 +279,9 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
       }
     },
 
-    notificationFor(sessionID) {
+    async notificationFor(sessionID) {
+      if (options.sessionAtLocation === undefined) return undefined
+      if (!(await options.sessionAtLocation(sessionID))) return undefined
       const current = ensure()
       if (current.ledger === undefined) return undefined
       const shown = current.ledger.show({ sessionID })

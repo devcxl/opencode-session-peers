@@ -497,6 +497,165 @@ describeSafe("persistence and reload", () => {
   })
 })
 
+describeSafe("cross-location isolation", () => {
+  test("a location cannot read or control another location's watched task", async () => {
+    const state = stateDirectory()
+    const alpha = await loaded(
+      {
+        location: "/work/alpha",
+        caller: "ses_alpha",
+        sessions: [{ id: "ses_alpha", title: "Alpha" }],
+      },
+      state,
+    )
+    const beta = await loaded(
+      {
+        location: "/work/beta",
+        caller: "ses_beta",
+        sessions: [{ id: "ses_beta", title: "Beta" }],
+      },
+      state,
+    )
+    try {
+      const enrolled = watchDetails(
+        await alpha.host.call("peers", {
+          action: "watch",
+          watch: { operation: "enroll", requestId: "alpha-req", goal: "Alpha private goal" },
+        }),
+      )
+      const task = enrolled.task as Record<string, unknown>
+      const taskID = task["taskID"] as string
+      const before = watchDetails(
+        await alpha.host.call("peers", { action: "watch", watch: { operation: "show" } }),
+      )
+
+      const rpc = beta.host.rpcs[0]
+      if (rpc === undefined) throw new Error("no RPC surface")
+      const shown = readWatchPayload(
+        await rpc.call("watch", { operation: "show", sessionID: "ses_alpha" }),
+      )
+      expect(shown).toMatchObject({ task: null, failure: { code: "E_WATCH_NOT_FOUND" } })
+      expect(JSON.stringify(shown)).not.toContain("Alpha private goal")
+
+      const crossEnroll = readWatchPayload(
+        await rpc.call("watch", {
+          operation: "enroll",
+          sessionID: "ses_alpha",
+          requestId: "beta-cross",
+          goal: "Must not enroll",
+        }),
+      )
+      expect(crossEnroll).toMatchObject({ task: null, failure: { code: "E_WATCH_NOT_FOUND" } })
+
+      const pause = readWatchPayload(
+        await rpc.call("watch", {
+          operation: "pause",
+          sessionID: "ses_alpha",
+          taskID,
+          expectedVersion: 1,
+        }),
+      )
+      expect(pause).toMatchObject({ task: null, failure: { code: "E_WATCH_NOT_FOUND" } })
+
+      const end = readWatchPayload(
+        await rpc.call("watch", {
+          operation: "end",
+          sessionID: "ses_alpha",
+          taskID,
+          expectedVersion: 1,
+        }),
+      )
+      expect(end).toMatchObject({ task: null, failure: { code: "E_WATCH_NOT_FOUND" } })
+
+      const toolShow = watchDetails(
+        await beta.host.call("peers", { action: "watch", watch: { operation: "show" } }, "ses_alpha"),
+      )
+      expect(toolShow).toMatchObject({ ok: false, failure: { code: "E_WATCH_NOT_FOUND" } })
+
+      const toolPause = watchDetails(
+        await beta.host.call(
+          "peers",
+          { action: "watch", watch: { operation: "pause", taskID, expectedVersion: 1 } },
+          "ses_alpha",
+        ),
+      )
+      expect(toolPause).toMatchObject({ ok: false, failure: { code: "E_WATCH_NOT_FOUND" } })
+
+      const report = watchDetails(
+        await beta.host.call(
+          "peers",
+          {
+            action: "watch",
+            watch: {
+              operation: "report",
+              taskID,
+              expectedVersion: 1,
+              reportId: "beta-report",
+              kind: "begin",
+              evidence: {},
+            },
+          },
+          "ses_alpha",
+        ),
+      )
+      expect(report).toMatchObject({ ok: false, failure: { code: "E_WATCH_NOT_FOUND" } })
+
+      await expect(
+        beta.host.runCommand("peers-watch", "ses_alpha", `end ${taskID} 1`),
+      ).rejects.toThrow("this location does not serve this session")
+
+      expect(await beta.host.modelContext("ses_alpha")).toEqual([])
+
+      const after = watchDetails(
+        await alpha.host.call("peers", { action: "watch", watch: { operation: "show" } }),
+      )
+      expect(after.task).toMatchObject({
+        taskID,
+        version: (before.task as Record<string, unknown>)["version"],
+        watchState: "active",
+        taskState: "not-started",
+      })
+    } finally {
+      await alpha.unload()
+      await beta.unload()
+    }
+  })
+
+  test("an unknown or moved session is refused even when no other location is involved", async () => {
+    const state = stateDirectory()
+    const moved = await loaded(
+      {
+        location: "/work/moved",
+        caller: "ses_moved",
+        sessions: [{ id: "ses_moved", title: "Moved", directory: "/work/elsewhere" }],
+      },
+      state,
+    )
+    try {
+      const rpc = moved.host.rpcs[0]
+      if (rpc === undefined) throw new Error("no RPC surface")
+      expect(
+        readWatchPayload(await rpc.call("watch", { operation: "show", sessionID: "ses_unknown" })),
+      ).toMatchObject({ task: null, failure: { code: "E_WATCH_NOT_FOUND" } })
+      expect(
+        readWatchPayload(await rpc.call("watch", { operation: "show", sessionID: "ses_moved" })),
+      ).toMatchObject({ task: null, failure: { code: "E_WATCH_NOT_FOUND" } })
+      expect(
+        readWatchPayload(
+          await rpc.call("watch", {
+            operation: "enroll",
+            sessionID: "ses_moved",
+            requestId: "moved-req",
+            goal: "Must not enroll",
+          }),
+        ),
+      ).toMatchObject({ task: null, failure: { code: "E_WATCH_NOT_FOUND" } })
+    } finally {
+      await moved.unload()
+    }
+  })
+})
+
 describe("explicit unavailable capabilities", () => {
   test("correction, delegation, receipt, transfer and recovery are refused, not accepted", async () => {
     const { host, unload } = await loaded({ sessions: [CALLER_SESSION_ID, "ses_child"] })

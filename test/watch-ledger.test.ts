@@ -166,6 +166,56 @@ describeSafe("the security ledger", () => {
     }
   })
 
+  test("scopes request-id idempotency to the initiator session", () => {
+    const ledger = open()
+    try {
+      const alpha = ledger.enroll(
+        enrollInput({ requestId: "req-shared", initiatorSessionId: "ses_a", targetSessionId: "ses_a" }),
+      )
+      const beta = ledger.enroll(
+        enrollInput({ requestId: "req-shared", initiatorSessionId: "ses_b", targetSessionId: "ses_b" }),
+      )
+      expect(alpha.ok).toBe(true)
+      expect(beta.ok).toBe(true)
+      if (!alpha.ok || !beta.ok) return
+      expect(alpha.value.created).toBe(true)
+      expect(beta.value.created).toBe(true)
+      expect(alpha.value.task.taskID).not.toBe(beta.value.task.taskID)
+
+      const alphaRepeat = ledger.enroll(
+        enrollInput({ requestId: "req-shared", initiatorSessionId: "ses_a", targetSessionId: "ses_a" }),
+      )
+      expect(alphaRepeat.ok).toBe(true)
+      if (alphaRepeat.ok) {
+        expect(alphaRepeat.value.created).toBe(false)
+        expect(alphaRepeat.value.task.taskID).toBe(alpha.value.task.taskID)
+      }
+
+      expect(
+        ledger.enroll(
+          enrollInput({
+            requestId: "req-shared",
+            initiatorSessionId: "ses_a",
+            targetSessionId: "ses_a",
+            goal: "A different goal",
+          }),
+        ),
+      ).toMatchObject({ ok: false, code: "request_conflict" })
+      expect(
+        ledger.enroll(
+          enrollInput({
+            requestId: "req-shared",
+            initiatorSessionId: "ses_b",
+            targetSessionId: "ses_b",
+            goal: "A different goal",
+          }),
+        ),
+      ).toMatchObject({ ok: false, code: "request_conflict" })
+    } finally {
+      ledger.close()
+    }
+  })
+
   test("keeps one live task per session, including a paused one", () => {
     const ledger = open()
     try {
@@ -493,6 +543,11 @@ describeSafe("schema and integrity gates", () => {
     const db = new Database(path)
     db.run("UPDATE meta SET value = '1' WHERE key = 'schema_version'")
     db.close()
+    expect(openWatchLedger({ path })).toMatchObject({ ok: false, code: "unsupported_schema" })
+
+    const previous = new Database(path)
+    previous.run("UPDATE meta SET value = '2' WHERE key = 'schema_version'")
+    previous.close()
     expect(openWatchLedger({ path })).toMatchObject({ ok: false, code: "unsupported_schema" })
   })
 

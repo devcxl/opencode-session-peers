@@ -20,6 +20,7 @@ import {
 import type { ActionResult } from "../domain/types.ts"
 import type { SessionLookup } from "../host/session.ts"
 import type { ToolCall } from "../host/tools.ts"
+import { sessionAtLocation } from "../watch/access.ts"
 import type { WatchApplication, WatchOutcome } from "../watch/service.ts"
 import { watchCapability, watchControls } from "../watch/view.ts"
 
@@ -47,12 +48,26 @@ const OPERATIONS = [
 
 type Operation = (typeof OPERATIONS)[number]
 
+/** Operations that read or mutate the ledger, and therefore need a local session. */
+const LOCAL_OPERATIONS: readonly Operation[] = ["show", "enroll", "report", "pause", "end"]
+
 export async function watchAction(deps: WatchActionDeps, call: ToolCall, input: unknown): Promise<ActionResult> {
   if (deps.watch === undefined) return outcomeResult(failure("E_WATCH_DISABLED", "Session peers is disabled by configuration."))
 
   const parsed = readWatchInput(input)
   if (!parsed.ok) return outcomeResult(failure("E_WATCH_INVALID", parsed.reason))
   const request = parsed.value
+
+  if (LOCAL_OPERATIONS.includes(request.operation)) {
+    if (!(await sessionAtLocation(deps.sessions, call.sessionID, deps.directory))) {
+      return outcomeResult(
+        failure(
+          "E_WATCH_NOT_FOUND",
+          `This location does not serve the calling session "${call.sessionID}".`,
+        ),
+      )
+    }
+  }
 
   switch (request.operation) {
     case "grant":
@@ -77,20 +92,6 @@ export async function watchAction(deps: WatchActionDeps, call: ToolCall, input: 
       const target = request.targetSessionID
       if (target !== undefined && target !== call.sessionID) {
         return outcomeResult(failure("E_WATCH_UNSUPPORTED", DELEGATION_UNAVAILABLE_REASON))
-      }
-      let sessionDirectory: string
-      try {
-        const session = await deps.sessions.get(call.sessionID)
-        sessionDirectory = session.directory
-      } catch (error) {
-        return outcomeResult(
-          failure("E_WATCH_NOT_FOUND", `The host does not know the calling session: ${describe(error)}`),
-        )
-      }
-      if (sessionDirectory !== deps.directory) {
-        return outcomeResult(
-          failure("E_WATCH_UNSUPPORTED", "Enrollment is limited to a session served at this plugin location."),
-        )
       }
       if (request.requestID === undefined || request.goal === undefined) {
         return outcomeResult(failure("E_WATCH_INVALID", "enroll needs requestId and goal"))
@@ -330,9 +331,4 @@ function watchText(outcome: WatchOutcome): string {
     lines.push("No prompt, model generation or interrupt was sent.")
   }
   return lines.join("\n")
-}
-
-function describe(error: unknown): string {
-  if (error instanceof Error) return error.message.trim().length > 0 ? error.message : error.name
-  return String(error)
 }

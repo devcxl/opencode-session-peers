@@ -26,6 +26,7 @@ import { SESSION_PEERS_RPC } from "./rpc.ts"
 import { PEERS_SKILL, SUPERVISOR_SKILL } from "./skill.ts"
 import { rosterPayload } from "./surface.ts"
 import { peersTool } from "./tool.ts"
+import { sessionAtLocation } from "./watch/access.ts"
 import { createWatchApplication } from "./watch/service.ts"
 
 export const PLUGIN_ID = "session-peers"
@@ -50,6 +51,8 @@ export default {
           ledgerPath: watchLedgerPath(),
           activationID: randomUUID(),
           onChanged: () => announceWatch?.(),
+          sessionAtLocation: (sessionID) =>
+            sessionAtLocation(host.sessions, sessionID, host.location.directory),
         })
       : undefined
 
