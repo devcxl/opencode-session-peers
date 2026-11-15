@@ -12,13 +12,16 @@
  *
  * A control answer is applied before the follow-up read, so the panel does not
  * briefly show the state the user just changed. A failure is a toast plus a
- * read, never an automatic retry of the write.
+ * read, never an automatic retry of the write. Alert acknowledgement is the
+ * same lifecycle but changes only the read flag; the single non-intrusive
+ * reminder is driven by a durable `escalatedAt` fact, never by the event alone.
  */
 
 import { randomUUID } from "node:crypto"
 
 import type { TuiPort } from "../host/tui.ts"
 import { readWatchPayload, type WatchPayload } from "../rpc.ts"
+import { alertItems } from "./watch-alerts.ts"
 import { failureText } from "./feed.ts"
 import { WatchDialog } from "./watch-dialog.tsx"
 import { createWatchFeed } from "./watch-feed.ts"
@@ -38,6 +41,50 @@ export function installWatch(port: TuiPort): () => void {
   let panelSessionID: string | undefined
   let panelOpen = false
   let disposed = false
+  /**
+   * Local notice bookkeeping for this panel's lifetime. It is not a claim of
+   * cross-reload global dedupe; the durable fact is `escalatedAt` in the alert.
+   */
+  const seenEscalations = new Set<string>()
+  const remindedAlertIDs = new Set<string>()
+
+  feed.onSnapshot((payload, initial) => {
+    if (disposed) return
+    if (initial) {
+      // Opening/reconnect shows existing unread alerts but never re-toasts them.
+      seenEscalations.clear()
+      remindedAlertIDs.clear()
+      for (const alert of alertItems(payload.alerts)) {
+        if (alert.escalatedAt !== null) {
+          seenEscalations.add(escalationKey(alert))
+          // It already had its one escalation before this panel saw it.
+          remindedAlertIDs.add(alert.alertID)
+        }
+      }
+      return
+    }
+    if (!panelOpen) return
+    if (!payload.alerts.available) return
+    if (payload.task?.watchState !== "active") return
+    for (const alert of alertItems(payload.alerts)) {
+      if (
+        alert.state !== "unread" ||
+        alert.resolvedAt !== null ||
+        alert.escalatedAt === null
+      ) {
+        continue
+      }
+      const key = escalationKey(alert)
+      if (seenEscalations.has(key)) continue
+      if (remindedAlertIDs.has(alert.alertID)) {
+        seenEscalations.add(key)
+        continue
+      }
+      seenEscalations.add(key)
+      remindedAlertIDs.add(alert.alertID)
+      port.toast(`Watch alert: ${alert.summary}`, "warning")
+    }
+  })
   /**
    * Changes whenever the visible panel changes or the plugin unloads. A reply
    * is only allowed to touch the panel epoch it was requested from.
@@ -63,6 +110,10 @@ export function installWatch(port: TuiPort): () => void {
           onEnd={async (taskID, version) => {
             if (disposed || openedEpoch !== lifecycleEpoch || panelSessionID !== sessionID) return
             await control("end", taskID, version, true)
+          }}
+          onAck={async (alertID) => {
+            if (disposed || openedEpoch !== lifecycleEpoch || panelSessionID !== sessionID) return
+            await acknowledge(alertID)
           }}
         />
       ),
@@ -131,6 +182,64 @@ export function installWatch(port: TuiPort): () => void {
     }
     open(sessionID)
     port.toast("Watch enrolled. No prompt was sent.", "success")
+  }
+
+  const acknowledge = async (alertID: string): Promise<void> => {
+    if (disposed || !panelOpen || panelSessionID === undefined) return
+    const startedEpoch = lifecycleEpoch
+    const sessionID = panelSessionID
+    const stillCurrent = () =>
+      !disposed &&
+      lifecycleEpoch === startedEpoch &&
+      panelOpen &&
+      panelSessionID === sessionID
+
+    const state = feed.state()
+    if (state.kind !== "payload" || state.payload.task === null) return
+    if (!state.payload.alerts.available) return
+    const allowed = state.payload.controls.acknowledge
+    if (!allowed.enabled) {
+      port.toast(allowed.reason ?? "Acknowledgement is unavailable.", "warning")
+      return
+    }
+    const alert = alertItems(state.payload.alerts).find((item) => item.alertID === alertID)
+    if (alert === undefined) {
+      port.toast("That alert is no longer in the current snapshot.", "warning")
+      feed.refresh()
+      return
+    }
+    if (alert.state !== "unread") return
+
+    let answer: unknown
+    try {
+      answer = await port.watch.call({ operation: "ack", sessionID, alertID })
+    } catch (error) {
+      if (!stillCurrent()) return
+      port.toast(`Could not mark the alert read: ${failureText(error)}`, "error")
+      feed.refresh()
+      return
+    }
+    if (!stillCurrent()) return
+    const payload = readWatchPayload(answer)
+    if (payload === undefined) {
+      port.toast(
+        "Could not mark the alert read: the answer was not a watch state this view understands.",
+        "error",
+      )
+      feed.refresh()
+      return
+    }
+    if (payload.failure !== null) {
+      port.toast(
+        `Could not mark the alert read: ${payload.failure.code}: ${payload.failure.reason}`,
+        "error",
+      )
+      feed.refresh()
+      return
+    }
+    feed.apply(payload)
+    feed.refresh()
+    port.toast("Alert marked read. This does not resume, retry or reset the watch.", "success")
   }
 
   const control = async (
@@ -290,4 +399,8 @@ function successText(operation: "pause" | "end", task: WatchPayload["task"]): st
   if (operation === "pause") return "Watch paused. The session keeps running."
   if (task?.taskState === "completed") return "Watch ended. The task remains completed."
   return "Watch ended. This is not a business success."
+}
+
+function escalationKey(alert: { readonly alertID: string; readonly escalatedAt: number | null }): string {
+  return `${alert.alertID}:${alert.escalatedAt ?? "none"}`
 }

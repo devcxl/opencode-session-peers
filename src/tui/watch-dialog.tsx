@@ -1,25 +1,27 @@
 /** @jsxImportSource @opentui/solid */
 
 /**
- * The watch panel: one task, its facts, and the two controls a person may use.
+ * The watch panel: one task, its bounded alerts, and the controls a person may
+ * use. Task and alerts are two panes of the same dialog (`v` switches), so a
+ * long alert list does not push the task evidence off the screen.
  *
- * The panel keeps the same shape as the roster dialog: a title, context lines,
- * one host table, a confirmation line and the notes. Measured in the host, an
- * element whose content changes is redrawn while inserting or removing an
- * element was not reliable, so the confirmation line is always present and
- * empty when there is nothing to confirm.
- *
- * Opening the panel is read-only. Pause and end each take two keys because
- * neither stops the business session: `p` or `x` asks, `y` confirms, `n`
- * cancels. A state refresh clears a pending question rather than acting on a
- * version the user no longer sees.
+ * Opening either pane is read-only. Pause and end still take two keys; alert
+ * acknowledgement is a single read-only `a` and changes only the unread flag.
+ * A state refresh clears a pending pause/end question and re-clamps the alert
+ * selection by ID, never by row position.
  */
 
 import { createEffect, createMemo, createSignal } from "solid-js"
-import { useKeyboard } from "@opentui/solid"
+import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
 
 import type { TuiPalette } from "../host/tui.ts"
-import { watchContent, type WatchState } from "./watch-view.ts"
+import {
+  alertIndex,
+  alertItems,
+  alertPageSizeFor,
+  selectedAlert,
+} from "./watch-alerts.ts"
+import { watchContent, type WatchPane, type WatchState } from "./watch-view.ts"
 import type { Tone } from "./view.ts"
 import { colourFor, tableStyle } from "./table.ts"
 
@@ -34,6 +36,8 @@ export interface WatchDialogProps {
   readonly onPause: (taskID: string, version: number) => Promise<void>
   /** End supervision at the version the panel is showing. */
   readonly onEnd: (taskID: string, version: number) => Promise<void>
+  /** Mark one alert read; this must not touch task controls or quota. */
+  readonly onAck: (alertID: string) => Promise<void>
 }
 
 type Pending = "pause" | "end"
@@ -41,6 +45,30 @@ type Pending = "pause" | "end"
 export function WatchDialog(props: WatchDialogProps) {
   const [pending, setPending] = createSignal<Pending | undefined>()
   const [busy, setBusy] = createSignal(false)
+  const [pane, setPane] = createSignal<WatchPane>("task")
+  const [selectedAlertID, setSelectedAlertID] = createSignal<string | undefined>()
+  const [alertPage, setAlertPage] = createSignal(0)
+  const dimensions = useTerminalDimensions()
+  const alertPageSize = createMemo(() => alertPageSizeFor(dimensions().height))
+
+  const payload = createMemo(() => {
+    const state = props.state()
+    return state.kind === "payload" ? state.payload : undefined
+  })
+  const alerts = createMemo(() => payload()?.alerts)
+  const items = createMemo(() => {
+    const view = alerts()
+    return view === undefined ? [] : alertItems(view)
+  })
+  const canViewAlerts = createMemo(() => {
+    const current = payload()
+    return (
+      current !== undefined &&
+      current.task !== null &&
+      current.alerts.available &&
+      current.alerts.total > 0
+    )
+  })
 
   // A newer snapshot invalidates a question asked about an older version.
   createEffect(() => {
@@ -48,12 +76,55 @@ export function WatchDialog(props: WatchDialogProps) {
     setPending(undefined)
   })
 
+  // Keep selection and page on a real alert id as the bounded list changes.
+  createEffect(() => {
+    const list = items()
+    const current = selectedAlertID()
+    if (list.length === 0) {
+      if (current !== undefined) setSelectedAlertID(undefined)
+      if (alertPage() !== 0) setAlertPage(0)
+      return
+    }
+    const selected = selectedAlert(list, current)
+    if (selected === undefined) return
+    if (selected.alertID !== current) setSelectedAlertID(selected.alertID)
+    const index = alertIndex(list, selected.alertID)
+    if (index < 0) return
+    const page = Math.floor(index / alertPageSize())
+    if (page !== alertPage()) setAlertPage(page)
+  })
+
+  createEffect(() => {
+    if (pane() === "alerts" && !canViewAlerts()) setPane("task")
+  })
+
   const content = createMemo(() =>
-    watchContent({ state: props.state(), sessionID: props.sessionID }),
+    watchContent({
+      state: props.state(),
+      sessionID: props.sessionID,
+      pane: pane(),
+      selectedAlertID: selectedAlertID(),
+      alertPage: alertPage(),
+      alertPageSize: alertPageSize(),
+    }),
   )
 
-  const canPause = createMemo(() => controlEnabled(props.state(), "pause"))
-  const canEnd = createMemo(() => controlEnabled(props.state(), "end"))
+  const canPause = createMemo(
+    () => pane() === "task" && controlEnabled(props.state(), "pause"),
+  )
+  const canEnd = createMemo(() => pane() === "task" && controlEnabled(props.state(), "end"))
+  const canAck = createMemo(() => {
+    if (pane() !== "alerts") return false
+    const current = payload()
+    const alert = selectedAlert(items(), selectedAlertID())
+    return (
+      current !== undefined &&
+      current.alerts.available &&
+      alert !== undefined &&
+      alert.state === "unread" &&
+      current.controls.acknowledge.enabled
+    )
+  })
 
   useKeyboard((key) => {
     if (busy()) return
@@ -67,14 +138,69 @@ export function WatchDialog(props: WatchDialogProps) {
       setPending(undefined)
       return
     }
-    if (key.name === "p" && canPause()) {
-      setPending("pause")
+    if (key.name === "v" && canViewAlerts()) {
+      setPane((current) => (current === "task" ? "alerts" : "task"))
+      setPending(undefined)
       return
     }
-    if (key.name === "x" && canEnd()) {
-      setPending("end")
+    if (pane() === "task") {
+      if (key.name === "p" && canPause()) {
+        setPending("pause")
+        return
+      }
+      if (key.name === "x" && canEnd()) {
+        setPending("end")
+      }
+      return
+    }
+
+    if (key.name === "up" || key.name === "k") {
+      moveSelection(-1)
+      return
+    }
+    if (key.name === "down" || key.name === "j") {
+      moveSelection(1)
+      return
+    }
+    if (key.name === "left" || key.name === "pageup") {
+      movePage(-1)
+      return
+    }
+    if (key.name === "right" || key.name === "pagedown") {
+      movePage(1)
+      return
+    }
+    if (key.name === "a" && canAck()) {
+      const alert = selectedAlert(items(), selectedAlertID())
+      if (alert === undefined) return
+      setBusy(true)
+      void props.onAck(alert.alertID).finally(() => setBusy(false))
     }
   })
+
+  function moveSelection(delta: number): void {
+    const list = items()
+    if (list.length === 0) return
+    const current = alertIndex(list, selectedAlertID())
+    const index = Math.max(0, Math.min(list.length - 1, current + delta))
+    const alert = list[index]
+    if (alert === undefined) return
+    setSelectedAlertID(alert.alertID)
+    setAlertPage(Math.floor(index / alertPageSize()))
+  }
+
+  function movePage(delta: number): void {
+    const list = items()
+    if (list.length === 0) return
+    const size = alertPageSize()
+    const pages = Math.max(1, Math.ceil(list.length / size))
+    const page = Math.max(0, Math.min(pages - 1, alertPage() + delta))
+    const start = page * size
+    const pageItems = list.slice(start, start + size)
+    const next = pageItems.find((alert) => alert.state === "unread") ?? pageItems[0]
+    if (next !== undefined) setSelectedAlertID(next.alertID)
+    setAlertPage(page)
+  }
 
   async function act(operation: Pending): Promise<void> {
     const state = props.state()

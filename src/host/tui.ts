@@ -50,9 +50,10 @@ export interface WatchReadRequest {
 
 /** The one mutation the watch panel may ask for. */
 export interface WatchCallRequest {
-  readonly operation: "enroll" | "pause" | "end"
+  readonly operation: "enroll" | "pause" | "end" | "ack"
   readonly sessionID: string
   readonly taskID?: string
+  readonly alertID?: string
   readonly expectedVersion?: number
   readonly requestId?: string
   readonly goal?: string
@@ -161,6 +162,7 @@ export function createTuiPort(context: Plugin.Context): TuiPort {
             operation: request.operation,
             sessionID: request.sessionID,
             ...(request.taskID === undefined ? {} : { taskID: request.taskID }),
+            ...(request.alertID === undefined ? {} : { alertID: request.alertID }),
             ...(request.expectedVersion === undefined
               ? {}
               : { expectedVersion: request.expectedVersion }),

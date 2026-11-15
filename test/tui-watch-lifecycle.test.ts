@@ -11,11 +11,15 @@ import { describe, expect, test } from "bun:test"
 import { installWatch } from "../src/tui/watch-command.tsx"
 import {
   SELF,
+  alert,
+  alertsView,
   commandOf,
   deferred,
   fakePort,
   mountPanel,
   panelPayload,
+  payload,
+  task,
   tick,
 } from "./tui-watch-fake.ts"
 
@@ -176,3 +180,88 @@ describe("a closed panel no longer owns a slow answer", () => {
     panel.renderer.destroy()
   })
 })
+
+describe("a late ack belongs to the panel that asked", () => {
+  test("an ack on A does not touch the alert pane opened at B", async () => {
+    const other = "ses_other9999"
+    const slow = deferred<unknown>()
+    const fake = fakePort({
+      read: async (request) =>
+        request.sessionID === SELF
+          ? withAlertFor("task_a", "alert_a")
+          : withAlertFor("task_b", "alert_b", other),
+      call: () => slow.promise,
+    })
+    const dispose = installWatch(fake.port)
+
+    commandOf(fake).run()
+    await tick(0)
+    const panelA = await mountPanel(fake)
+    panelA.mockInput.pressKey("v")
+    await panelA.flush()
+    panelA.mockInput.pressKey("a")
+    await panelA.flush()
+    expect(fake.calls).toHaveLength(1)
+
+    fake.setSession(other)
+    commandOf(fake).run()
+    await tick(0)
+    slow.resolve(withAlertFor("task_a", "alert_a"))
+    await tick(0)
+
+    expect(fake.reads).toEqual([{ sessionID: SELF }, { sessionID: other }])
+    expect(fake.dialogShows()).toBe(2)
+    expect(fake.toasts).toEqual([])
+    const panelB = await mountPanel(fake)
+    const text = panelB.captureCharFrame().replace(/[│─┌┐└┘├┤┬┴┼]+/g, " ").replace(/\s+/g, " ")
+    expect(text).toContain("…9999")
+    expect(text).not.toContain("…0000")
+
+    dispose()
+    panelA.renderer.destroy()
+    panelB.renderer.destroy()
+  })
+
+  test("a late ack after dispose does not toast, read or reopen", async () => {
+    const slow = deferred<unknown>()
+    const fake = fakePort({
+      read: async () => withAlertFor("task_a", "alert_a"),
+      call: () => slow.promise,
+    })
+    const dispose = installWatch(fake.port)
+
+    commandOf(fake).run()
+    await tick(0)
+    const panel = await mountPanel(fake)
+    panel.mockInput.pressKey("v")
+    await panel.flush()
+    panel.mockInput.pressKey("a")
+    await panel.flush()
+    expect(fake.calls).toHaveLength(1)
+
+    dispose()
+    slow.resolve(withAlertFor("task_a", "alert_a"))
+    await tick(0)
+
+    expect(fake.dialogShows()).toBe(1)
+    expect(fake.reads).toHaveLength(1)
+    expect(fake.toasts).toEqual([])
+    expect(fake.subscribed()).toBe(false)
+    panel.renderer.destroy()
+  })
+})
+
+function withAlertFor(
+  taskID: string,
+  alertID: string,
+  sessionID = SELF,
+): ReturnType<typeof payload> {
+  return payload({
+    task: task({
+      taskID,
+      initiatorSessionID: sessionID,
+      targetSessionID: sessionID,
+    }),
+    alerts: alertsView([alert({ alertID, taskID })]),
+  })
+}

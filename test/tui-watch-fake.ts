@@ -1,5 +1,5 @@
 /**
- * A TuiPort fake and the small payload fixtures the watch UI tests share.
+ * A TuiPort fake and the bounded payload fixtures the watch UI tests share.
  *
  * It records the calls the plugin makes through the public port and hands the
  * test the dialog renderer the host would show. It knows nothing about the
@@ -29,6 +29,11 @@ export const palette: TuiPalette = {
 }
 
 type Task = NonNullable<WatchPayload["task"]>
+export type Observation = NonNullable<WatchPayload["observation"]>
+export type Activity = NonNullable<WatchPayload["activity"]>
+export type Alert = WatchPayload["alerts"]["items"][number]
+export type AlertsView = WatchPayload["alerts"]
+export type Wait = Observation["waits"][number]
 
 export function control(enabled = true, reason: string | null = null) {
   return { enabled, reason }
@@ -37,9 +42,10 @@ export function control(enabled = true, reason: string | null = null) {
 function capability(): WatchPayload["capability"] {
   return {
     mode: "alert",
-    monitoring: "participant-reports-only",
-    automaticDetection: "unavailable",
-    automaticDetectionReason: "No supported execution signal is available in this build.",
+    monitoring: "observer-alerts",
+    automaticDetection: "partial",
+    automaticDetectionReason:
+      "Observes local execution lifecycle, target activity and same-location waits; it does not prove goal progress.",
     correction: "unavailable",
     correctionReason: "Finite correction is not implemented in this build.",
     delegation: "unavailable",
@@ -58,6 +64,7 @@ export function controls(overrides: Partial<WatchPayload["controls"]> = {}): Wat
   return {
     pause: control(),
     end: control(),
+    acknowledge: control(),
     resume: control(false, "Resume is not implemented in this build."),
     correction: control(false, "Correction is not implemented in this build."),
     transfer: control(false, "Transfer is not implemented in this build."),
@@ -89,6 +96,85 @@ export function task(overrides: Partial<Task> = {}): Task {
   }
 }
 
+export function observation(overrides: Partial<Observation> = {}): Observation {
+  return {
+    state: "active",
+    reason: null,
+    observedAt: Date.UTC(2026, 10, 16, 4, 34, 0),
+    baselineAt: Date.UTC(2026, 10, 16, 4, 30, 0),
+    idleSince: null,
+    trusted: true,
+    waits: [],
+    waitsPartial: false,
+    waitsTruncated: false,
+    effective: { idleMs: 120_000, runningSilentMs: 600_000, waitOverdueMs: 1_800_000 },
+    ...overrides,
+  }
+}
+
+export function activity(overrides: Partial<Activity> = {}): Activity {
+  return {
+    lastAt: Date.UTC(2026, 10, 16, 4, 32, 0),
+    kind: "text",
+    judgement: "not-judged",
+    ...overrides,
+  }
+}
+
+export function wait(overrides: Partial<Wait> = {}): Wait {
+  return {
+    waitID: "wait_0001",
+    source: "permission",
+    object: "the reviewer",
+    reason: "approval is required",
+    reference: "GH-60",
+    startedAt: Date.UTC(2026, 10, 16, 4, 20, 0),
+    deadline: Date.UTC(2026, 10, 16, 4, 40, 0),
+    status: "active",
+    clearEvidence: null,
+    denyEvidence: null,
+    ...overrides,
+  }
+}
+
+export function alert(overrides: Partial<Alert> = {}): Alert {
+  return {
+    alertID: "alert_0001",
+    taskID: "task_0001",
+    kind: "idle",
+    state: "unread",
+    summary: "No new activity for longer than the idle threshold.",
+    reason: "The last activity was 2m ago.",
+    nextStep:
+      "Inspect the task and its evidence; acknowledge the alert after reading it. This build cannot correct or resume the task for you.",
+    plainText: "No new activity for longer than the idle threshold. The last activity was 2m ago.",
+    firstAt: Date.UTC(2026, 10, 16, 4, 33, 0),
+    updatedAt: Date.UTC(2026, 10, 16, 4, 34, 0),
+    readAt: null,
+    escalatedAt: null,
+    resolvedAt: null,
+    ...overrides,
+  }
+}
+
+export function alertsView(
+  items: readonly Alert[],
+  overrides: Partial<AlertsView> = {},
+): AlertsView {
+  const unread = items.filter((item) => item.state === "unread").length
+  const active = items.filter((item) => item.resolvedAt === null).length
+  return {
+    items,
+    unread,
+    total: items.length,
+    active,
+    truncated: false,
+    available: true,
+    reason: null,
+    ...overrides,
+  }
+}
+
 export function payload(overrides: Partial<WatchPayload> = {}): WatchPayload {
   return {
     enabled: true,
@@ -96,6 +182,9 @@ export function payload(overrides: Partial<WatchPayload> = {}): WatchPayload {
     task: task(),
     capability: capability(),
     controls: controls(),
+    observation: observation(),
+    activity: activity(),
+    alerts: alertsView([]),
     failure: null,
     ...overrides,
   }
@@ -222,7 +311,7 @@ export async function mountPanel(fake: ReturnType<typeof fakePort>) {
     const render = fake.shown()
     if (render === undefined) throw new Error("the panel was not opened")
     return render()
-  }, { width: 100, height: 40 })
+  }, { width: 100, height: 60 })
   await setup.flush()
   return setup
 }
