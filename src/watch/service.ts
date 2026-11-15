@@ -51,6 +51,8 @@ export interface WatchOutcome {
 export interface WatchObservationSource {
   observationFor(taskID: string): WatchObservationView | null
   activityFor(taskID: string): WatchActivityView | null
+  /** Re-sample the current session/permissions/waits before a final decision. */
+  refresh(taskID: string): Promise<WatchObservationView | null>
 }
 
 export interface WatchReceiptOutcome {
@@ -125,6 +127,8 @@ export interface WatchApplication {
   }): WatchReceiptOutcome
   /** The one serial executor's ledger authority; absent when the ledger is unavailable. */
   correctionAuthority(): CorrectionExecutorAuthority | undefined
+  /** Synchronously close mutations before waiting for in-flight executor work. */
+  beginClosing(): void
   /** Synchronous closing state for post-await fences. */
   isClosing(): boolean
   /** Controlled TUI grant review/confirmation; never a model tool path. */
@@ -196,6 +200,7 @@ interface LedgerState {
 
 export function createWatchApplication(options: WatchApplicationOptions): WatchApplication {
   let state: LedgerState | undefined
+  let closing = false
   let closed = false
 
   const ensure = (): LedgerState => {
@@ -337,6 +342,7 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
     },
 
     enroll(input) {
+      if (closing) return failureOutcome(closingFailure())
       const caller = readIdentifier(input.callerSessionID, "callerSessionID")
       if (!caller.ok) return failureOutcome(invalid(caller.reason))
       if (input.mode !== undefined && input.mode !== "alert") {
@@ -387,6 +393,7 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
     },
 
     report(input) {
+      if (closing) return failureOutcome(closingFailure())
       const caller = readIdentifier(input.callerSessionID, "callerSessionID")
       if (!caller.ok) return failureOutcome(invalid(caller.reason))
       const taskID = readIdentifier(input.taskID, "taskID")
@@ -429,6 +436,7 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
     },
 
     receipt(input) {
+      if (closing) return receiptFailure(closingFailure())
       const caller = readIdentifier(input.callerSessionID, "callerSessionID")
       if (!caller.ok) return receiptFailure(invalid(caller.reason))
       const taskID = readIdentifier(input.taskID, "taskID")
@@ -445,6 +453,7 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
         taskId: taskID.value,
         reservationId: attemptID.value,
         callerSessionId: caller.value,
+        currentActivationId: options.activationID,
         correlation: correlation.value,
         at: options.now?.() ?? Date.now(),
       })
@@ -497,11 +506,16 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
       }
     },
 
+    beginClosing() {
+      closing = true
+    },
+
     isClosing() {
-      return closed
+      return closing
     },
 
     control(input) {
+      if (closing) return failureOutcome(closingFailure())
       const caller = readIdentifier(input.callerSessionID, "callerSessionID")
       if (!caller.ok) return failureOutcome(invalid(caller.reason))
       const taskID = readIdentifier(input.taskID, "taskID")
@@ -535,6 +549,7 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
     },
 
     ack(input) {
+      if (closing) return failureOutcome(closingFailure())
       const caller = readIdentifier(input.callerSessionID, "callerSessionID")
       if (!caller.ok) return failureOutcome(invalid(caller.reason))
       const alertID = readIdentifier(input.alertID, "alertID")
@@ -570,6 +585,7 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
     },
 
     prepareGrant(input) {
+      if (closing) return grantFailure(closingFailure())
       const caller = readIdentifier(input.callerSessionID, "callerSessionID")
       if (!caller.ok) return grantFailure(invalid(caller.reason))
       const taskID = readIdentifier(input.taskID, "taskID")
@@ -605,6 +621,7 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
     },
 
     confirmGrant(input) {
+      if (closing) return grantFailure(closingFailure())
       const caller = readIdentifier(input.callerSessionID, "callerSessionID")
       if (!caller.ok) return grantFailure(invalid(caller.reason))
       const taskID = readIdentifier(input.taskID, "taskID")
@@ -643,6 +660,7 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
     },
 
     downgradeGrant(input) {
+      if (closing) return grantFailure(closingFailure())
       const caller = readIdentifier(input.callerSessionID, "callerSessionID")
       if (!caller.ok) return grantFailure(invalid(caller.reason))
       const taskID = readIdentifier(input.taskID, "taskID")
@@ -708,6 +726,7 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
     },
 
     dispose() {
+      closing = true
       closed = true
       state?.ledger?.close()
       state = undefined
@@ -729,6 +748,10 @@ function protocolNotice(task: { readonly taskID: string; readonly version: numbe
     "A waiting report may carry evidence.waitID and evidence.waitUntil; a later progress/blocked report clears only the matching wait with evidence.clearsWaitID plus evidence.clearEvidence.",
     "Reporting completion ends supervision because the task is done. Do not repeat completed side effects to report.",
   ].join("\n")
+}
+
+function closingFailure(): WatchFailure {
+  return { code: "E_WATCH_UNAVAILABLE", reason: "The watch application is closing; no action was taken." }
 }
 
 function invalid(reason: string): WatchFailure {

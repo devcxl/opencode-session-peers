@@ -244,6 +244,8 @@ export interface RecordCorrectionReceiptInput {
   readonly taskId: string
   readonly reservationId: string
   readonly callerSessionId: string
+  /** The activation currently serving the target; a reload cannot inherit a permit. */
+  readonly currentActivationId: string
   /** The opaque correlation bound when the reservation was made. Never a caller-chosen id. */
   readonly correlation: string
   readonly at: number
@@ -2045,17 +2047,22 @@ class SqliteWatchLedger implements WatchLedger {
       }
       const column =
         input.outcome === "accepted" ? "accepted_at" : input.outcome === "rejected" ? "rejected_at" : "unknown_at"
-      if (phase === "receipted" || phase === "recovered") {
-        this.db
-          .query(`UPDATE watch_correction_attempts SET ${column} = ? WHERE reservation_id = ?`)
-          .run(input.at, reservationID)
-        return { attempt: correctionAttemptFromRow(this.correctionAttemptRow(reservationID)), changed: true }
-      }
-      const nextPhase = input.outcome === "rejected" ? "rejected" : input.outcome
       const admission =
         input.outcome === "accepted" && input.admissionID !== undefined
           ? requiredIdentifier(input.admissionID, "admissionID")
           : null
+      if (phase === "receipted" || phase === "recovered") {
+        this.db
+          .query(
+            `UPDATE watch_correction_attempts SET
+              ${column} = COALESCE(${column}, ?),
+              admission_id = COALESCE(admission_id, ?)
+             WHERE reservation_id = ?`,
+          )
+          .run(input.at, admission, reservationID)
+        return { attempt: correctionAttemptFromRow(this.correctionAttemptRow(reservationID)), changed: true }
+      }
+      const nextPhase = input.outcome === "rejected" ? "rejected" : input.outcome
       this.db
         .query(`UPDATE watch_correction_attempts SET state = ?, ${column} = ?, admission_id = ? WHERE reservation_id = ?`)
         .run(nextPhase, input.at, admission, reservationID)
@@ -2075,6 +2082,7 @@ class SqliteWatchLedger implements WatchLedger {
       const reservationID = requiredIdentifier(input.reservationId, "reservationId")
       const caller = requiredIdentifier(input.callerSessionId, "callerSessionId")
       const correlation = requiredIdentifier(input.correlation, "correlation")
+      const currentActivation = requiredIdentifier(input.currentActivationId, "currentActivationId")
       const task = this.taskRow(taskID)
       if (task === null) throw new LedgerFailure("unknown_task", taskID)
       this.checkLedger(task)
@@ -2135,7 +2143,8 @@ class SqliteWatchLedger implements WatchLedger {
         grant.generation === row.reservation_generation &&
         grant.scope_target_session_id === row.scope_target_session_id &&
         task.mode === "limited-correction" &&
-        task.owner_activation === row.owner_activation
+        task.owner_activation === row.owner_activation &&
+        task.owner_activation === currentActivation
       const refusal =
         task.watch_state !== "active"
           ? `task-${task.watch_state}`

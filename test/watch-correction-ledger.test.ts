@@ -474,6 +474,7 @@ describeCorrection("correction ledger", () => {
         taskId: task.taskID,
         reservationId: "res-receipt",
         callerSessionId: "ses_a",
+        currentActivationId: 'activation-a',
         correlation,
         at: clock.value,
       })
@@ -485,6 +486,7 @@ describeCorrection("correction ledger", () => {
         taskId: task.taskID,
         reservationId: "res-receipt",
         callerSessionId: "ses_a",
+        currentActivationId: 'activation-a',
         correlation,
         at: clock.value,
       })
@@ -493,6 +495,7 @@ describeCorrection("correction ledger", () => {
         taskId: task.taskID,
         reservationId: "res-receipt",
         callerSessionId: "ses_a",
+        currentActivationId: "activation-a",
         correlation: "caller-chosen-token",
         at: clock.value,
       })
@@ -501,6 +504,7 @@ describeCorrection("correction ledger", () => {
         taskId: task.taskID,
         reservationId: "res-receipt",
         callerSessionId: "ses_elsewhere",
+        currentActivationId: "activation-a",
         correlation,
         at: clock.value,
       })
@@ -550,6 +554,7 @@ describeCorrection("correction ledger", () => {
         taskId: task.taskID,
         reservationId: "res-downgraded",
         callerSessionId: "ses_a",
+        currentActivationId: 'activation-a',
         correlation,
         at: clock.value,
       })
@@ -587,6 +592,7 @@ describeCorrection("correction ledger", () => {
         taskId: task.taskID,
         reservationId: "res-token",
         callerSessionId: "ses_a",
+        currentActivationId: "activation-a",
         correlation: "forged-token",
         at: clock.value,
       })
@@ -596,6 +602,7 @@ describeCorrection("correction ledger", () => {
         taskId: task.taskID,
         reservationId: "res-token",
         callerSessionId: "ses_a",
+        currentActivationId: 'activation-a',
         correlation,
         at: clock.value,
       })
@@ -691,6 +698,7 @@ describeCorrection("correction ledger", () => {
         taskId: task.taskID,
         reservationId: "res-recover",
         callerSessionId: "ses_a",
+        currentActivationId: 'activation-a',
         correlation,
         at: clock.value,
       })
@@ -757,6 +765,7 @@ describeCorrection("correction ledger", () => {
         taskId: task.taskID,
         reservationId: "res-old-result",
         callerSessionId: "ses_a",
+        currentActivationId: 'activation-a',
         correlation,
         at: clock.value,
       })
@@ -847,6 +856,7 @@ describeCorrection("correction ledger", () => {
         taskId: first.taskID,
         reservationId: "res-old",
         callerSessionId: "ses_a",
+        currentActivationId: 'activation-a',
         correlation,
         at: clock.value,
       })

@@ -66,6 +66,12 @@ interface TaskObservation {
   activity: WatchActivityView
 }
 
+interface StoredObservation extends TaskObservation {
+  readonly revision: number
+  readonly epoch: number
+  readonly taskVersion: number
+}
+
 export interface WatchObserver extends WatchObservationSource {
   start(): void
   dispose(): void
@@ -90,7 +96,8 @@ export interface WatchObserverDeps {
 
 export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
   const facts = new Map<SessionID, SessionFacts>()
-  const observations = new Map<string, TaskObservation>()
+  const observations = new Map<string, StoredObservation>()
+  const sampleQueues = new Map<string, Promise<void>>()
   const taskVersions = new Map<string, number>()
   const sessionRevisions = new Map<string, number>()
   const everSeenSessions = new Set<string>()
@@ -423,7 +430,24 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
     waitOverdueMs: deps.config.waitOverdueMs,
   })
 
-  const sample = async (taskInput: WatchTaskRecord, now: number) => {
+  const sample = (
+    task: WatchTaskRecord,
+    now: number,
+    notify = true,
+    sideEffects = notify,
+  ): Promise<void> => {
+    const previous = sampleQueues.get(task.taskID) ?? Promise.resolve()
+    const run = previous.then(() => sampleOnce(task, now, notify, sideEffects))
+    sampleQueues.set(task.taskID, run.catch(() => undefined))
+    return run
+  }
+
+  const sampleOnce = async (
+    taskInput: WatchTaskRecord,
+    now: number,
+    notify = true,
+    sideEffects = notify,
+  ) => {
     let task = taskInput
     const sampleEpoch = epoch
     const sampleRevision = sessionRevisions.get(task.targetSessionID) ?? 0
@@ -447,7 +471,13 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
       session = await deps.sessions.get(task.targetSessionID)
     } catch (error) {
       const observation = unknownObservation(now, `the session is not readable: ${describeError(error)}`, waits.items, waits.partial, thresholdsOf())
-      observations.set(task.taskID, { observation, activity: activityOf(current) })
+      observations.set(task.taskID, {
+        observation,
+        activity: activityOf(current),
+        revision: sessionRevisions.get(task.targetSessionID) ?? 0,
+        epoch: sampleEpoch,
+        taskVersion: task.version,
+      })
       resolveConditionAlerts(task.taskID, ["idle", "running-silent"], now)
       return
     }
@@ -487,7 +517,13 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
       waitsTruncated,
       now,
     )
-    observations.set(task.taskID, observed)
+    observations.set(task.taskID, {
+      ...observed,
+      revision: sessionRevisions.get(task.targetSessionID) ?? 0,
+      epoch: sampleEpoch,
+      taskVersion: task.version,
+    })
+    if (!sideEffects) return
     if (task.watchState !== "active") {
       // Pausing stops new alerts but leaves the old ones queryable/ackable.
       return
@@ -581,10 +617,12 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
         (wait.status === "denied" && wait.denyEvidence !== null)
       if (matched) resolveConditionAlerts(task.taskID, [waitAlertDedupe(wait)], now)
     }
-    try {
-      deps.onSample?.(task.taskID)
-    } catch {
-      // A scheduler hand-off is not part of the alert commit.
+    if (notify) {
+      try {
+        deps.onSample?.(task.taskID)
+      } catch {
+        // A scheduler hand-off is not part of the alert commit.
+      }
     }
   }
 
@@ -899,8 +937,17 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
       if (!seen.has(id)) {
         const started = current.permissionFirstSeen.get(id) ?? now
         current.permissionFirstSeen.delete(id)
+        const waitID = `permission:${id}`
+        const matched = current.clearedWaits.some(
+          (wait) =>
+            wait.waitID === waitID &&
+            wait.source === "permission" &&
+            (wait.status === "cleared" || wait.status === "denied") &&
+            (wait.clearEvidence !== null || wait.denyEvidence !== null),
+        )
+        if (matched) continue
         const missingWait: WatchWaitView = {
-          waitID: `permission:${id}`,
+          waitID,
           source: "permission",
           object: "permission",
           reason: "permission request was awaiting a reply",
@@ -1151,6 +1198,15 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
     return run
   }
 
+  const freshObservation = (taskID: string): StoredObservation | null => {
+    const record = observations.get(taskID)
+    if (record === undefined || record.epoch !== epoch) return null
+    const task = deps.store.liveTasks().find((candidate) => candidate.taskID === taskID)
+    if (task === undefined || task.version !== record.taskVersion) return null
+    if ((sessionRevisions.get(task.targetSessionID) ?? 0) !== record.revision) return null
+    return record
+  }
+
   return {
     start() {
       if (disposed) return
@@ -1181,11 +1237,19 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
     },
 
     observationFor(taskID) {
-      return observations.get(taskID)?.observation ?? null
+      return freshObservation(taskID)?.observation ?? null
     },
 
     activityFor(taskID) {
-      return observations.get(taskID)?.activity ?? null
+      return freshObservation(taskID)?.activity ?? null
+    },
+
+    async refresh(taskID) {
+      if (disposed) return null
+      const task = deps.store.liveTasks().find((candidate) => candidate.taskID === taskID)
+      if (task === undefined) return null
+      await sample(task, deps.scheduler.now(), false, false)
+      return freshObservation(taskID)?.observation ?? null
     },
 
     dispose() {
@@ -1195,6 +1259,7 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
       registration?.dispose()
       registration = undefined
       observations.clear()
+      sampleQueues.clear()
       taskVersions.clear()
       sessionRevisions.clear()
       facts.clear()

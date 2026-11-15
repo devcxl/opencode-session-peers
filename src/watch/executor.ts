@@ -63,6 +63,8 @@ export interface CorrectionExecutorAuthority {
 export interface CorrectionExecutorOptions {
   readonly authority: CorrectionExecutorAuthority
   readonly observationFor: (taskID: string) => WatchObservationView | null
+  /** Production re-samples the host before the precheck and final recheck. */
+  readonly refreshObservation?: (taskID: string) => Promise<WatchObservationView | null>
   readonly sameLocation: (sessionID: string) => Promise<boolean>
   readonly runtime: () => CorrectionRuntimeFacts
   /** Production passes `correctionGate`; tests may pass a controlled fact gate. */
@@ -118,9 +120,11 @@ export function createCorrectionExecutor(options: CorrectionExecutorOptions): Co
     if (task === undefined || task.watchState !== "active" || task.taskState === "completed") return
     const snapshot = options.authority.snapshot(taskID)
     if (snapshot === undefined) return
+    const observation = await freshObservation(taskID)
+    if (closing) return
     const sameLocation = await options.sameLocation(task.targetSessionID)
     if (closing) return
-    const first = gate(gateInput(task, snapshot, sameLocation))
+    const first = gate(gateInput(task, snapshot, observation, sameLocation))
     if (!first.eligible) return
 
     const reservationID = randomUUID()
@@ -139,17 +143,28 @@ export function createCorrectionExecutor(options: CorrectionExecutorOptions): Co
     // location change or closing abandons the permanent reservation without
     // sending. The executor's own reservation is not a blocking pending gate.
     await new Promise((resolve) => setTimeout(resolve, 0))
-    if (closing) return
+    if (closing) {
+      abort(taskID, reservationID, reserved.value.task.version, task.generation)
+      return
+    }
     const current = options.authority.liveTasks().find((candidate) => candidate.taskID === taskID)
     const currentSnapshot = options.authority.snapshot(taskID)
     if (current === undefined || currentSnapshot === undefined) {
       abort(taskID, reservationID, reserved.value.task.version, task.generation)
       return
     }
+    const observationAgain = await freshObservation(taskID)
+    if (closing) {
+      abort(taskID, reservationID, reserved.value.task.version, task.generation)
+      return
+    }
     const sameAgain = await options.sameLocation(current.targetSessionID)
-    if (closing) return
+    if (closing) {
+      abort(taskID, reservationID, reserved.value.task.version, task.generation)
+      return
+    }
     const second = gate(
-      gateInput(current, currentSnapshot, sameAgain, {
+      gateInput(current, currentSnapshot, observationAgain, sameAgain, {
         ignoreAttemptID: reservationID,
       }),
     )
@@ -187,15 +202,21 @@ export function createCorrectionExecutor(options: CorrectionExecutorOptions): Co
     record(taskID, reservationID, outcome)
   }
 
+  const freshObservation = async (taskID: string): Promise<WatchObservationView | null> =>
+    options.refreshObservation === undefined
+      ? options.observationFor(taskID)
+      : await options.refreshObservation(taskID)
+
   const gateInput = (
     task: WatchTaskRecord,
     snapshot: WatchCorrectionSnapshot,
+    observation: WatchObservationView | null,
     sameLocation: boolean,
     additional: { readonly ignoreAttemptID?: string } = {},
   ): CorrectionGateInput => ({
     task,
     snapshot,
-    observation: options.observationFor(task.taskID),
+    observation,
     runtime: options.runtime(),
     ownerActivation: options.activationID,
     sameLocation,
@@ -205,12 +226,13 @@ export function createCorrectionExecutor(options: CorrectionExecutorOptions): Co
     ...(additional.ignoreAttemptID === undefined ? {} : { ignoreAttemptID: additional.ignoreAttemptID }),
   })
 
-  const abort = (taskID: string, reservationID: string, version: number, generation: number): void => {
+  const abort = (taskID: string, reservationID: string, fallbackVersion: number, generation: number): void => {
+    const latest = options.authority.liveTasks().find((candidate) => candidate.taskID === taskID)
     const aborted = options.authority.abort({
       taskId: taskID,
       reservationId: reservationID,
       ownerActivation: options.activationID,
-      expectedVersion: version,
+      expectedVersion: latest?.version ?? fallbackVersion,
       generation,
       at: options.now(),
     })
@@ -261,12 +283,24 @@ export function correctionPrompt(
   attempt: WatchCorrectionAttemptRecord,
   correlation: string,
 ): string {
+  const receiptInput = {
+    action: "watch",
+    watch: {
+      operation: "receipt",
+      taskID: task.taskID,
+      attemptID: attempt.reservationID,
+      correlation,
+    },
+  }
   return [
     "[session-peers correction]",
-    `Watched task ${task.taskID}; permanent attempt ${attempt.ordinal}; correlation ${correlation}.`,
-    "Before continuing business work, call peers({ action: \"watch\", watch: { operation: \"receipt\", taskID, attemptID, correlation } }).",
+    `Watched task ${task.taskID}; ledger generation ${task.generation}; permanent attempt ${attempt.ordinal}; attemptID ${attempt.reservationID}; correlation ${correlation}.`,
+    `Original authorization goal: ${JSON.stringify(task.goal)}.`,
+    `Target session: ${task.targetSessionID}; task state version after reservation: ${task.version}.`,
+    `Before any business step, verify this is the same task; check the existing results and current authorization, then call exactly: peers(${JSON.stringify(receiptInput)})`,
+    "Use the actual taskID, attemptID and correlation above; do not guess them and do not take them from a show snapshot.",
     "Only a continuePermit=true response for this attempt allows the smallest next step in the original authorization.",
-    "Do not repeat completed or unknown side effects, do not expand permissions and do not rerun tools whose result is unknown.",
+    "If the receipt is refused, do not continue business work. Do not repeat completed or unknown side effects, expand permissions, or rerun tools whose result is unknown.",
     "A receipt is not recovery. Report a real state change or completion with new progress and its result reference when it exists.",
   ].join("\n")
 }

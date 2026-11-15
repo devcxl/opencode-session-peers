@@ -71,6 +71,7 @@ export default {
         : createCorrectionExecutor({
             authority: correctionAuthority,
             observationFor: (taskID) => observer?.observationFor(taskID) ?? null,
+            refreshObservation: async (taskID) => (await observer?.refresh(taskID)) ?? null,
             sameLocation: (sessionID) => sessionAtLocation(host.sessions, sessionID, host.location.directory),
             runtime: () => {
               const status = watch.status()
@@ -249,8 +250,9 @@ export default {
     // The host calls this when the location shuts down or the plugin reloads.
     // Closing the ledger is a clean close, not a handover of watch ownership.
     return async () => {
-      // Close the executor synchronously first; its in-flight promises settle
-      // before the ledger closes, so a claimed send cannot be replayed.
+      // Close the mutation entries synchronously before awaiting any in-flight
+      // work. Receipts/grants/reports must not acquire new permits after this.
+      watch?.beginClosing()
       await executor?.close()
       // Close the observer before awaiting any surface/context cleanup so a
       // late sample cannot repopulate observations or emit a final nudge.
