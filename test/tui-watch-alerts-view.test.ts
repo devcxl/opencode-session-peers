@@ -6,7 +6,7 @@
 
 import { describe, expect, test } from "bun:test"
 
-import type { WatchPayload } from "../src/rpc.ts"
+import { readWatchPayload, type WatchPayload } from "../src/rpc.ts"
 import { ALERT_COLUMNS } from "../src/tui/watch-alerts.ts"
 import { watchContent, type WatchContent } from "../src/tui/watch-view.ts"
 import { SELF, alert, alertsView, payload, task } from "./tui-watch-fake.ts"
@@ -108,6 +108,19 @@ describe("the alert pane", () => {
     expect(blocks.notes.join("\n")).toContain(
       "The bounded alert list shows 1 of 2 recorded alerts",
     )
+  })
+
+  test("distinguishes a known blocked task from unknown observation", () => {
+    const current = state({
+      alerts: alertsView([
+        alert({ alertID: "alert_blocked", kind: "blocked", summary: "The task is blocked." }),
+        alert({ alertID: "alert_unknown", kind: "observation-unknown" }),
+      ]),
+    })
+    expect(readWatchPayload(current.payload)).toBeDefined()
+    const blocks = watchContent({ state: current, sessionID: SELF, pane: "alerts" })
+    expect(blocks.rows[0]?.[1]?.text).toBe("task blocked")
+    expect(blocks.rows[1]?.[1]?.text).toBe("observation unknown")
   })
 
   test("pages with the server's bounded counts and marks the selected row", () => {

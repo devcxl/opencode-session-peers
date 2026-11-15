@@ -159,6 +159,8 @@ export function alertKindText(kind: Alert["kind"]): string {
   switch (kind) {
     case "idle":
       return "sustained idle"
+    case "blocked":
+      return "task blocked"
     case "running-silent":
       return "running silence"
     case "wait-overdue":
