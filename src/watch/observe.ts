@@ -53,6 +53,8 @@ interface SessionFacts {
   permissionFirstSeen: Map<string, number>
   formFirstSeen: Map<string, number>
   clearedWaits: WatchWaitView[]
+  clearedOverflow: boolean
+  lifecycleCovered: boolean
   lastObservedAt: number | null
   idleSeenAt: number | null
   idleTicks: number
@@ -89,7 +91,10 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
   const observations = new Map<string, TaskObservation>()
   const observedWaitKeys = new Map<string, Set<string>>()
   const taskVersions = new Map<string, number>()
+  const sessionRevisions = new Map<string, number>()
+  const everSeenSessions = new Set<string>()
   const startedAt = deps.scheduler.now()
+  let factBaseline = startedAt
   let lastTickAt: number | null = null
   let gap: string | null = null
   let disposed = false
@@ -116,12 +121,14 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
       lastActivityAt: null,
       lastActivityKind: null,
       invalidatedAt: null,
-      observedFrom: startedAt,
+      observedFrom: factBaseline,
       retry: null,
       forms: new Map(),
       permissionFirstSeen: new Map(),
       formFirstSeen: new Map(),
       clearedWaits: [],
+      clearedOverflow: false,
+      lifecycleCovered: false,
       lastObservedAt: null,
       idleSeenAt: null,
       idleTicks: 0,
@@ -147,6 +154,7 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
       value.permissionFirstSeen.clear()
       value.formFirstSeen.clear()
       value.clearedWaits = []
+      value.clearedOverflow = false
       value.lastObservedAt = null
       value.idleSeenAt = null
       value.idleTicks = 0
@@ -157,19 +165,45 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
 
   const onEvent = (event: HostEvent) => {
     const eventLocation = (event as { readonly location?: { readonly directory?: unknown } }).location?.directory
-    if (typeof eventLocation === "string" && eventLocation !== deps.directory) return
+    // Events are live-only and process-wide; without a same-location source
+    // stamp we cannot attribute them to this instance's target.
+    if (typeof eventLocation !== "string" || eventLocation !== deps.directory) return
     const sessionID = sessionOf(event)
     if (sessionID === undefined) return
+    const now = deps.scheduler.now()
     const at = eventAt(event)
-    if (at === undefined) {
-      gap = "event has no trusted timestamp"
+    if (at === undefined || at > now) {
+      gap = at === undefined ? "event has no trusted timestamp" : "event timestamp is in the future"
       epoch += 1
-      resetFacts(deps.scheduler.now())
+      factBaseline = now
+      resetFacts(now)
+      return
+    }
+    if (event.type === "session.created") {
+      if (
+        !everSeenSessions.has(sessionID) &&
+        at >= factBaseline &&
+        typeof eventLocation === "string" &&
+        eventLocation === deps.directory
+      ) {
+        const current = fact(sessionID)
+        current.lifecycleCovered = true
+      }
+      everSeenSessions.add(sessionID)
+      sessionRevisions.set(sessionID, (sessionRevisions.get(sessionID) ?? 0) + 1)
       return
     }
     const current = fact(sessionID)
+    everSeenSessions.add(sessionID)
     if (at < current.observedFrom) return
+    if (revisionEvent(event.type)) {
+      sessionRevisions.set(sessionID, (sessionRevisions.get(sessionID) ?? 0) + 1)
+    }
     switch (event.type) {
+      case "permission.asked":
+      case "session.status":
+      case "session.idle":
+        break
       case "session.execution.started":
         if (current.executionAt !== null && at < current.executionAt) return
         current.execution = "running"
@@ -312,6 +346,7 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
       }
       case "session.deleted":
         facts.delete(sessionID)
+        everSeenSessions.delete(sessionID)
         break
       default:
         break
@@ -326,6 +361,7 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
       if (delta < 0 || delta > Math.max(deps.config.tickMs * 4, 60_000)) {
         gap = "clock or scheduling gap"
         epoch += 1
+        factBaseline = now
         resetFacts(now)
       }
     }
@@ -359,6 +395,7 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
   const sample = async (taskInput: WatchTaskRecord, now: number) => {
     let task = taskInput
     const sampleEpoch = epoch
+    const sampleRevision = sessionRevisions.get(task.targetSessionID) ?? 0
     const current = fact(task.targetSessionID)
     if (taskVersions.get(task.taskID) !== task.version) {
       current.idleSeenAt = null
@@ -400,6 +437,7 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
     mergeFormWaits(current, waits, now)
     mergeRetryWait(current, waits, now)
     if (disposed || sampleEpoch !== epoch) return
+    if ((sessionRevisions.get(task.targetSessionID) ?? 0) !== sampleRevision) return
     const fresh = deps.store.liveTasks().find((candidate) => candidate.taskID === task.taskID)
     if (fresh === undefined || fresh.watchState !== "active" || fresh.version !== task.version) return
     task = fresh
@@ -506,7 +544,7 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
           wait.source === "permission" ? "wait-overdue" : "wait-overdue",
           `wait:${wait.waitID}`,
           "A normal wait is overdue; the initiator is notified, not the executing session.",
-          `Wait ${wait.source} (${wait.object}) has passed its expected window. Do not answer it on the target's behalf.`,
+          `A ${wait.source} wait has passed its expected window. Do not answer it on the target's behalf.`,
           now,
         )
       }
@@ -551,12 +589,40 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
         activity,
       }
     }
-    // Event-only sources are complete only from this observer's baseline. A
-    // task enrolled after that baseline is covered; a reloaded task is not
-    // retroactively covered by a fresh terminal, because a form/retry event may
-    // have been missed before the terminal.
-    const eventHistoryComplete = task.createdAt >= current.observedFrom
-    const effectivePartial = waitsPartial || !eventHistoryComplete
+    const lifecycleCovered = current.lifecycleCovered
+    const historyPartial = !lifecycleCovered
+    const effectivePartial = waitsPartial || historyPartial
+    const historyReason = "session predates continuous observation; event-only wait sources incomplete"
+    if (waits.some((wait) => wait.status === "denied")) {
+      return {
+        observation: {
+          state: "blocked",
+          reason: "an approval was rejected; the task is blocked",
+          observedAt: now,
+          baselineAt: null,
+          idleSince: null,
+          trusted: false,
+          waits,
+          waitsPartial,
+          waitsTruncated,
+          effective: thresholds,
+        },
+        activity,
+      }
+    }
+    if (waits.some((wait) => wait.status === "unknown")) {
+      return {
+        observation: unknownObservation(
+          now,
+          "a wait expired or could not be matched; it is not proof that the wait ended",
+          waits,
+          waitsPartial,
+          thresholds,
+          waitsTruncated,
+        ),
+        activity,
+      }
+    }
     if (task.taskState === "blocked") {
       return {
         observation: {
@@ -591,36 +657,6 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
         activity,
       }
     }
-    if (waits.some((wait) => wait.status === "denied")) {
-      return {
-        observation: {
-          state: "blocked",
-          reason: "an approval was rejected; the task is blocked",
-          observedAt: now,
-          baselineAt: null,
-          idleSince: null,
-          trusted: false,
-          waits,
-          waitsPartial,
-          waitsTruncated,
-          effective: thresholds,
-        },
-        activity,
-      }
-    }
-    if (waits.some((wait) => wait.status === "unknown")) {
-      return {
-        observation: unknownObservation(
-          now,
-          "a wait expired or could not be matched; it is not proof that the wait ended",
-          waits,
-          waitsPartial,
-          thresholds,
-          waitsTruncated,
-        ),
-        activity,
-      }
-    }
     if (waits.some((wait) => wait.status === "active" || wait.status === "overdue")) {
       return {
         observation: {
@@ -638,13 +674,11 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
         activity,
       }
     }
-    if (effectivePartial) {
+    if (waitsPartial) {
       return {
         observation: unknownObservation(
           now,
-          eventHistoryComplete
-            ? "a wait source is unavailable or incomplete"
-            : "event-only wait sources predate this observation",
+          "a wait source is unavailable or incomplete",
           waits,
           true,
           thresholds,
@@ -654,22 +688,54 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
       }
     }
     if (current.execution === "running") {
-      const baseline = Math.max(task.createdAt, current.startedAt ?? task.createdAt)
-      const last = current.lastActivityAt ?? baseline
-      const state = now - Math.max(baseline, last) >= deps.config.runningSilentMs ? "running-silence" : "active"
+      const runningBaseline = Math.max(task.createdAt, current.startedAt ?? task.createdAt)
+      const runningContradiction =
+        busyAt === undefined ||
+        !Number.isFinite(busyAt) ||
+        busyAt > now ||
+        (idleAt !== undefined && (!Number.isFinite(idleAt) || idleAt > now || busyAt <= idleAt)) ||
+        (current.startedAt !== null && busyAt + 1_000 < current.startedAt)
+      if (runningContradiction) {
+        return {
+          observation: unknownObservation(
+            now,
+            "the running execution event contradicts the host busy/idle snapshot",
+            waits,
+            true,
+            thresholds,
+            waitsTruncated,
+          ),
+          activity,
+        }
+      }
+      const last = current.lastActivityAt ?? runningBaseline
+      const state = now - Math.max(runningBaseline, last) >= deps.config.runningSilentMs ? "running-silence" : "active"
       return {
         observation: {
           state,
-          reason: state === "running-silence" ? "no target activity for the running window" : null,
+          reason:
+            state === "running-silence"
+              ? historyPartial
+                ? `${historyReason}; running is observed but no idle/complete wait history is available`
+                : "no target activity for the running window"
+              : historyPartial
+                ? historyReason
+                : null,
           observedAt: now,
-          baselineAt: baseline,
+          baselineAt: runningBaseline,
           idleSince: null,
-          trusted: true,
+          trusted: !historyPartial,
           waits,
-          waitsPartial,
+          waitsPartial: historyPartial,
           waitsTruncated,
           effective: thresholds,
         },
+        activity,
+      }
+    }
+    if (!lifecycleCovered) {
+      return {
+        observation: unknownObservation(now, historyReason, waits, true, thresholds, waitsTruncated),
         activity,
       }
     }
@@ -814,7 +880,7 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
           denyEvidence: null,
         }
         addCleared(current, missingWait)
-        waits.items.push(missingWait)
+        if (!waits.items.some((candidate) => candidate.waitID === missingWait.waitID)) waits.items.push(missingWait)
       }
     }
   }
@@ -878,7 +944,7 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
           denyEvidence: null,
         }
         addCleared(current, cleared)
-        waits.items.push(cleared)
+        if (!waits.items.some((candidate) => candidate.waitID === cleared.waitID)) waits.items.push(cleared)
         continue
       }
       const started = ask.createdAt
@@ -944,9 +1010,22 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
     return waits
   }
 
-  const addCleared = (current: SessionFacts, wait: WatchWaitView) => {
+  const addCleared = (current: SessionFacts, wait: WatchWaitView): void => {
+    const existing = current.clearedWaits.findIndex((candidate) => candidate.waitID === wait.waitID)
+    if (existing >= 0) {
+      current.clearedWaits[existing] = wait
+      return
+    }
     current.clearedWaits.unshift(wait)
-    if (current.clearedWaits.length > MAX_CLEARED_WAITS) current.clearedWaits.length = MAX_CLEARED_WAITS
+    while (current.clearedWaits.length > MAX_CLEARED_WAITS) {
+      const cleared = current.clearedWaits.map((candidate) => candidate.status).lastIndexOf("cleared")
+      if (cleared >= 0) {
+        current.clearedWaits.splice(cleared, 1)
+      } else {
+        current.clearedOverflow = true
+        current.clearedWaits.pop()
+      }
+    }
   }
 
   const readPermissions = async (sessionID: SessionID) => {
@@ -1041,7 +1120,8 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
           if (!disposed) {
             gap = `event stream ended: ${describeError(error)}`
             epoch += 1
-            resetFacts(deps.scheduler.now())
+            factBaseline = deps.scheduler.now()
+            resetFacts(factBaseline)
             deps.warn(gap)
           }
         }
@@ -1050,7 +1130,8 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
           // sample must not treat the missing interval as continuous silence.
           gap = "event stream ended"
           epoch += 1
-          resetFacts(deps.scheduler.now())
+          factBaseline = deps.scheduler.now()
+          resetFacts(factBaseline)
         }
       })()
       registration = deps.scheduler.every(deps.config.tickMs, requestTick)
@@ -1073,6 +1154,7 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
       observations.clear()
       observedWaitKeys.clear()
       taskVersions.clear()
+      sessionRevisions.clear()
       facts.clear()
     },
   }
@@ -1098,6 +1180,28 @@ function unknownObservation(
     waitsTruncated: truncated,
     effective: thresholds,
   }
+}
+
+function revisionEvent(type: string): boolean {
+  return (
+    type === "session.execution.started" ||
+    type === "session.execution.succeeded" ||
+    type === "session.execution.failed" ||
+    type === "session.execution.interrupted" ||
+    type.startsWith("session.text.") ||
+    type.startsWith("session.reasoning.") ||
+    type.startsWith("session.step.") ||
+    type.startsWith("session.tool.") ||
+    type.startsWith("session.shell.") ||
+    type === "session.inbox.enqueued" ||
+    type === "session.retry.scheduled" ||
+    type === "permission.asked" ||
+    type === "permission.replied" ||
+    type === "form.created" ||
+    type === "form.replied" ||
+    type === "form.cancelled" ||
+    type === "session.deleted"
+  )
 }
 
 function waitPriority(wait: WatchWaitView): number {

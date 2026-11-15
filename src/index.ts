@@ -205,9 +205,11 @@ export default {
     // The host calls this when the location shuts down or the plugin reloads.
     // Closing the ledger is a clean close, not a handover of watch ownership.
     return async () => {
+      // Close the observer before awaiting any surface/context cleanup so a
+      // late sample cannot repopulate observations or emit a final nudge.
+      observer?.dispose()
       await surface.dispose()
       await contextInjection?.dispose()
-      observer?.dispose()
       watch?.dispose()
       await roster.dispose()
     }

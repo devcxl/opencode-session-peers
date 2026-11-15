@@ -199,7 +199,10 @@ The authority for task identity, state and history is a plugin-owned SQLite ledg
 shared plugin storage. The ledger validates its identity anchor, canonical path and SQLite build,
 uses `0700`/`0600` permissions, and fails closed rather than recreating a missing or mismatched
 database. Observation is intentionally partial: it does not prove goal progress or single-host
-uniqueness, and restoration is never automatic. **Finite correction, child-task delegation,
+uniqueness, and restoration is never automatic. Event-only wait coverage requires observing
+the session's own same-location `session.created` from creation; an existing session without that
+event remains `unknown`/`partial` even after a fresh terminal, because a form or retry wait may
+predate observation. **Finite correction, child-task delegation,
 receipts, watch ownership transfer and recovery are not implemented in this build**; the tool and
 panel show them as unavailable rather than accepting them silently. A general `/peers-watch`
 command and the panel share the same application path.
