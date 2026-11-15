@@ -17,13 +17,15 @@ import type {
   WatchControls,
   WatchCorrectionAttemptPhase,
   WatchCorrectionAttemptView,
+  WatchCorrectionGate,
   WatchCorrectionGateView,
-  WatchCorrectionGrantMode,
   WatchCorrectionGrantState,
   WatchCorrectionGrantView,
+  WatchCorrectionReceiptView,
   WatchCorrectionRecoveryView,
   WatchCorrectionStopReason,
   WatchCorrectionView,
+  WatchMode,
   WatchEvidence,
   WatchFailureCode,
   WatchObservationView,
@@ -87,8 +89,8 @@ const attemptsSchema = {
   type: "object",
   additionalProperties: false,
   properties: {
-    used: { type: "number" },
-    limit: { type: "number" },
+    used: { type: "integer", minimum: 0, maximum: 3 },
+    limit: { type: "integer", enum: [3] },
   },
   required: ["used", "limit"],
 } as const
@@ -130,9 +132,9 @@ const correctionGrantSchema = {
   type: "object",
   additionalProperties: false,
   properties: {
-    mode: { type: "string", enum: ["alert-only", "single-attempt"] },
+    mode: { type: "string", enum: ["alert", "limited-correction"] },
     state: { type: "string", enum: ["not-granted", "pending-confirmation", "granted", "revoked"] },
-    version: { type: "number" },
+    version: { type: "integer", minimum: 1 },
     reviewSummary: { type: ["string", "null"] },
     grantedAt: { type: ["number", "null"] },
   },
@@ -143,10 +145,11 @@ const correctionReceiptSchema = {
   type: "object",
   additionalProperties: false,
   properties: {
-    receiptID: { type: "string" },
-    at: { type: "number" },
+    at: { type: "integer", minimum: 0 },
+    continuePermitIssuedAt: { type: ["integer", "null"], minimum: 0 },
+    refusalReason: { type: ["string", "null"] },
   },
-  required: ["receiptID", "at"],
+  required: ["at", "continuePermitIssuedAt", "refusalReason"],
 } as const
 
 const correctionRecoverySchema = {
@@ -155,7 +158,7 @@ const correctionRecoverySchema = {
   properties: {
     progressReportID: { type: "string" },
     resultReference: { type: "string" },
-    at: { type: "number" },
+    at: { type: "integer", minimum: 0 },
   },
   required: ["progressReportID", "resultReference", "at"],
 } as const
@@ -165,13 +168,14 @@ const correctionAttemptSchema = {
   additionalProperties: false,
   properties: {
     attemptID: { type: "string" },
-    ordinal: { type: "number" },
-    phase: { type: "string", enum: ["reserved", "sending", "accepted", "rejected", "unknown", "receipted", "recovered"] },
-    reservedAt: { type: "number" },
-    claimedAt: { type: ["number", "null"] },
-    acceptedAt: { type: ["number", "null"] },
-    rejectedAt: { type: ["number", "null"] },
-    unknownAt: { type: ["number", "null"] },
+    ordinal: { type: "integer", minimum: 1, maximum: 3 },
+    phase: { type: "string", enum: ["reserved", "sending", "accepted", "rejected", "unknown", "receipted", "recovered", "aborted"] },
+    reservedAt: { type: "integer", minimum: 0 },
+    claimedAt: { type: ["integer", "null"], minimum: 0 },
+    acceptedAt: { type: ["integer", "null"], minimum: 0 },
+    rejectedAt: { type: ["integer", "null"], minimum: 0 },
+    unknownAt: { type: ["integer", "null"], minimum: 0 },
+    abortedAt: { type: ["integer", "null"], minimum: 0 },
     receipt: { ...correctionReceiptSchema, type: ["object", "null"] },
     recovery: { ...correctionRecoverySchema, type: ["object", "null"] },
     stopReason: {
@@ -186,8 +190,11 @@ const correctionAttemptSchema = {
         "sending-unaccounted",
         "accepted-without-receipt",
         "unknown-result",
+        "first-attempt-policy",
         "receipted-awaiting-recovery",
         "rejected",
+        "attempt-aborted",
+        "closing",
         "recovered",
         "runtime-unsupported",
         "single-host-unconfirmed",
@@ -213,6 +220,7 @@ const correctionAttemptSchema = {
     "acceptedAt",
     "rejectedAt",
     "unknownAt",
+    "abortedAt",
     "receipt",
     "recovery",
     "stopReason",
@@ -223,7 +231,24 @@ const correctionGateSchema = {
   type: "object",
   additionalProperties: false,
   properties: {
-    gate: { type: "string", enum: ["grant", "attempts", "pending-attempt", "business-unfinished", "executor"] },
+    gate: {
+      type: "string",
+      enum: [
+        "grant",
+        "attempts",
+        "pending-attempt",
+        "business-unfinished",
+        "runtime",
+        "single-host",
+        "location",
+        "owner-generation",
+        "protocol",
+        "observation",
+        "waits",
+        "closing",
+        "executor",
+      ],
+    },
     ok: { type: "boolean" },
     reason: { type: ["string", "null"] },
   },
@@ -248,15 +273,16 @@ const correctionSchema = {
     actual: { type: "string", enum: ["unavailable", "ready"] },
     actualReason: { type: "string" },
     attempts: attemptsSchema,
+    executionPolicy: { type: "string", enum: ["first-attempt-only"] },
     phase: {
       type: "string",
-      enum: ["idle", "reserved", "sending", "accepted", "rejected", "unknown", "receipted", "recovered"],
+      enum: ["idle", "reserved", "sending", "accepted", "rejected", "unknown", "receipted", "recovered", "aborted"],
     },
     pending: { ...correctionAttemptSchema, type: ["object", "null"] },
     last: { ...correctionAttemptSchema, type: ["object", "null"] },
-    history: { type: "array", items: correctionAttemptSchema },
+    history: { type: "array", maxItems: 3, items: correctionAttemptSchema },
     stop: { ...correctionStopSchema, type: ["object", "null"] },
-    gates: { type: "array", items: correctionGateSchema },
+    gates: { type: "array", maxItems: 13, items: correctionGateSchema },
     businessCompleted: { type: "boolean" },
     controls: {
       type: "object",
@@ -273,6 +299,7 @@ const correctionSchema = {
     "actual",
     "actualReason",
     "attempts",
+    "executionPolicy",
     "phase",
     "pending",
     "last",
@@ -292,7 +319,7 @@ export const watchTaskSchema = {
     initiatorSessionID: { type: "string" },
     targetSessionID: { type: "string" },
     goal: { type: "string" },
-    mode: { type: "string", enum: ["alert"] },
+    mode: { type: "string", enum: ["alert", "limited-correction"] },
     watchState: { type: "string", enum: ["active", "paused", "ended"] },
     taskState: { type: "string", enum: ["not-started", "in-progress", "waiting", "blocked", "completed"] },
     version: { type: "number" },
@@ -345,7 +372,7 @@ const capabilitySchema = {
   type: "object",
   additionalProperties: false,
   properties: {
-    mode: { type: "string", enum: ["alert"] },
+    mode: { type: "string", enum: ["alert", "limited-correction"] },
     monitoring: { type: "string", enum: ["observer-alerts"] },
     automaticDetection: { type: "string", enum: ["partial"] },
     automaticDetectionReason: { type: "string" },
@@ -562,7 +589,7 @@ export const watchRpcMethod = {
       requestId: { type: "string", minLength: 1 },
       goal: { type: "string", minLength: 1 },
       targetSessionID: { type: "string", minLength: 1 },
-      mode: { type: "string", enum: ["alert", "correct"] },
+      mode: { type: "string", enum: ["alert", "limited-correction"] },
     },
     required: ["operation", "sessionID"],
   },
@@ -870,7 +897,7 @@ function readTask(value: unknown): WatchTaskView | undefined {
     typeof initiatorSessionID !== "string" ||
     typeof targetSessionID !== "string" ||
     typeof goal !== "string" ||
-    mode !== "alert" ||
+    !isWatchMode(mode) ||
     !isWatchState(watchState) ||
     !isTaskState(taskState) ||
     typeof version !== "number" ||
@@ -889,12 +916,23 @@ function readTask(value: unknown): WatchTaskView | undefined {
   }
   const lastReport = record["lastReport"] === null ? null : readReport(record["lastReport"])
   if (lastReport === undefined) return undefined
+  if (correction.attempts.used !== attempts.used || correction.attempts.limit !== attempts.limit) return undefined
+  if (correction.businessCompleted !== (taskState === "completed")) return undefined
+  if (correction.authorization.mode !== mode) return undefined
+  if (correction.history.length !== correction.attempts.used) return undefined
+  const attemptIDs = new Set<string>()
+  const ordinals = new Set<number>()
+  for (const attempt of correction.history) {
+    if (attemptIDs.has(attempt.attemptID) || ordinals.has(attempt.ordinal)) return undefined
+    attemptIDs.add(attempt.attemptID)
+    ordinals.add(attempt.ordinal)
+  }
   return {
     taskID,
     initiatorSessionID,
     targetSessionID,
     goal,
-    mode: "alert",
+    mode,
     watchState,
     taskState,
     version,
@@ -919,6 +957,7 @@ function readCorrection(value: unknown): WatchCorrectionView | undefined {
   const actual = record["actual"]
   const actualReason = record["actualReason"]
   const attempts = readAttempts(record["attempts"])
+  const executionPolicy = record["executionPolicy"]
   const phase = record["phase"]
   const pending = record["pending"] === null ? null : readCorrectionAttempt(record["pending"])
   const last = record["last"] === null ? null : readCorrectionAttempt(record["last"])
@@ -930,10 +969,12 @@ function readCorrection(value: unknown): WatchCorrectionView | undefined {
   if (authorization === undefined || attempts === undefined) return undefined
   if (actual !== "unavailable" && actual !== "ready") return undefined
   if (typeof actualReason !== "string") return undefined
+  if (executionPolicy !== "first-attempt-only") return undefined
   if (!isCorrectionPhase(phase) || phase === undefined) return undefined
   if (pending === undefined || last === undefined || stop === undefined) return undefined
   if (typeof businessCompleted !== "boolean" || controls === undefined) return undefined
-  if (!Array.isArray(historyValue) || !Array.isArray(gatesValue)) return undefined
+  if (!Array.isArray(historyValue) || historyValue.length > 3) return undefined
+  if (!Array.isArray(gatesValue) || gatesValue.length > 13) return undefined
   const history: WatchCorrectionAttemptView[] = []
   for (const item of historyValue) {
     const attempt = readCorrectionAttempt(item)
@@ -951,6 +992,7 @@ function readCorrection(value: unknown): WatchCorrectionView | undefined {
     actual,
     actualReason,
     attempts,
+    executionPolicy,
     phase,
     pending,
     last,
@@ -970,8 +1012,8 @@ function readCorrectionGrant(value: unknown): WatchCorrectionGrantView | undefin
   const version = record["version"]
   const reviewSummary = record["reviewSummary"]
   const grantedAt = record["grantedAt"]
-  if (!isCorrectionGrantMode(mode) || !isCorrectionGrantState(state)) return undefined
-  if (typeof version !== "number") return undefined
+  if (!isWatchMode(mode) || !isCorrectionGrantState(state)) return undefined
+  if (!isPositiveInteger(version)) return undefined
   if (!isStringOrNull(reviewSummary) || !isNumberOrNull(grantedAt)) return undefined
   return { mode, state, version, reviewSummary, grantedAt }
 }
@@ -987,14 +1029,17 @@ function readCorrectionAttempt(value: unknown): WatchCorrectionAttemptView | und
   const acceptedAt = record["acceptedAt"]
   const rejectedAt = record["rejectedAt"]
   const unknownAt = record["unknownAt"]
+  const abortedAt = record["abortedAt"]
   const receipt = record["receipt"] === null ? null : readCorrectionReceipt(record["receipt"])
   const recovery = record["recovery"] === null ? null : readCorrectionRecovery(record["recovery"])
   const stopReason = record["stopReason"] === null ? null : record["stopReason"]
-  if (typeof attemptID !== "string" || typeof ordinal !== "number") return undefined
+  if (typeof attemptID !== "string" || attemptID.length === 0) return undefined
+  if (typeof ordinal !== "number" || !Number.isSafeInteger(ordinal) || ordinal < 1 || ordinal > 3) return undefined
   if (!isCorrectionAttemptPhase(phase) || phase === undefined) return undefined
-  if (typeof reservedAt !== "number") return undefined
-  if (!isNumberOrNull(claimedAt) || !isNumberOrNull(acceptedAt) || !isNumberOrNull(rejectedAt)) return undefined
-  if (!isNumberOrNull(unknownAt) || receipt === undefined || recovery === undefined) return undefined
+  if (!isTimestamp(reservedAt)) return undefined
+  if (!isTimestampOrNull(claimedAt) || !isTimestampOrNull(acceptedAt) || !isTimestampOrNull(rejectedAt)) return undefined
+  if (!isTimestampOrNull(unknownAt) || !isTimestampOrNull(abortedAt)) return undefined
+  if (receipt === undefined || recovery === undefined) return undefined
   if (stopReason !== null && !isCorrectionStopReason(stopReason)) return undefined
   return {
     attemptID,
@@ -1005,19 +1050,22 @@ function readCorrectionAttempt(value: unknown): WatchCorrectionAttemptView | und
     acceptedAt,
     rejectedAt,
     unknownAt,
+    abortedAt,
     receipt,
     recovery,
     stopReason,
   }
 }
 
-function readCorrectionReceipt(value: unknown): { readonly receiptID: string; readonly at: number } | undefined {
+function readCorrectionReceipt(value: unknown): WatchCorrectionReceiptView | undefined {
   const record = asRecord(value)
   if (record === undefined) return undefined
-  const receiptID = record["receiptID"]
   const at = record["at"]
-  if (typeof receiptID !== "string" || typeof at !== "number") return undefined
-  return { receiptID, at }
+  const continuePermitIssuedAt = record["continuePermitIssuedAt"]
+  const refusalReason = record["refusalReason"]
+  if (!isTimestamp(at) || !isTimestampOrNull(continuePermitIssuedAt)) return undefined
+  if (!isStringOrNull(refusalReason)) return undefined
+  return { at, continuePermitIssuedAt, refusalReason }
 }
 
 function readCorrectionRecovery(value: unknown): WatchCorrectionRecoveryView | undefined {
@@ -1049,17 +1097,7 @@ function readCorrectionGate(value: unknown): WatchCorrectionGateView | undefined
   const gate = record["gate"]
   const ok = record["ok"]
   const reason = record["reason"]
-  if (
-    (gate !== "grant" &&
-      gate !== "attempts" &&
-      gate !== "pending-attempt" &&
-      gate !== "business-unfinished" &&
-      gate !== "executor") ||
-    typeof ok !== "boolean" ||
-    !isStringOrNull(reason)
-  ) {
-    return undefined
-  }
+  if (!isCorrectionGate(gate) || typeof ok !== "boolean" || !isStringOrNull(reason)) return undefined
   return { gate, ok, reason }
 }
 
@@ -1090,7 +1128,8 @@ function isCorrectionPhase(value: unknown): value is WatchCorrectionAttemptPhase
     value === "rejected" ||
     value === "unknown" ||
     value === "receipted" ||
-    value === "recovered"
+    value === "recovered" ||
+    value === "aborted"
   )
 }
 
@@ -1102,12 +1141,43 @@ function isCorrectionAttemptPhase(value: unknown): value is WatchCorrectionAttem
     value === "rejected" ||
     value === "unknown" ||
     value === "receipted" ||
-    value === "recovered"
+    value === "recovered" ||
+    value === "aborted"
   )
 }
 
-function isCorrectionGrantMode(value: unknown): value is WatchCorrectionGrantMode {
-  return value === "alert-only" || value === "single-attempt"
+function isWatchMode(value: unknown): value is WatchMode {
+  return value === "alert" || value === "limited-correction"
+}
+
+function isCorrectionGate(value: unknown): value is WatchCorrectionGate {
+  return (
+    value === "grant" ||
+    value === "attempts" ||
+    value === "pending-attempt" ||
+    value === "business-unfinished" ||
+    value === "runtime" ||
+    value === "single-host" ||
+    value === "location" ||
+    value === "owner-generation" ||
+    value === "protocol" ||
+    value === "observation" ||
+    value === "waits" ||
+    value === "closing" ||
+    value === "executor"
+  )
+}
+
+function isTimestamp(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+}
+
+function isTimestampOrNull(value: unknown): value is number | null {
+  return value === null || isTimestamp(value)
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 1
 }
 
 function isCorrectionGrantState(value: unknown): value is WatchCorrectionGrantState {
@@ -1125,7 +1195,10 @@ function isCorrectionStopReason(value: unknown): value is WatchCorrectionStopRea
     value === "sending-unaccounted" ||
     value === "accepted-without-receipt" ||
     value === "unknown-result" ||
+    value === "first-attempt-policy" ||
     value === "receipted-awaiting-recovery" ||
+    value === "attempt-aborted" ||
+    value === "closing" ||
     value === "rejected" ||
     value === "recovered" ||
     value === "runtime-unsupported" ||
@@ -1147,7 +1220,8 @@ function readAttempts(value: unknown): { readonly used: number; readonly limit: 
   if (record === undefined) return undefined
   const used = record["used"]
   const limit = record["limit"]
-  if (typeof used !== "number" || typeof limit !== "number") return undefined
+  if (typeof used !== "number" || !Number.isSafeInteger(used) || used < 0 || used > 3) return undefined
+  if (limit !== 3) return undefined
   return { used, limit }
 }
 
@@ -1231,7 +1305,7 @@ function readCapability(value: unknown): WatchCapability | undefined {
     safetyPauseReason,
   } = record
   if (
-    mode !== "alert" ||
+    !isWatchMode(mode) ||
     monitoring !== "observer-alerts" ||
     automaticDetection !== "partial" ||
     typeof automaticDetectionReason !== "string" ||

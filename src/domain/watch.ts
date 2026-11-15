@@ -11,8 +11,8 @@
 export type WatchTaskID = string
 export type WatchSessionID = string
 
-/** Alert-only is the only authorization mode this build can honour. */
-export type WatchMode = "alert"
+/** The user's selected supervision mode; capability says what this build can honour. */
+export type WatchMode = "alert" | "limited-correction"
 
 /** The supervision lifecycle, separate from what the business task is doing. */
 export type WatchState = "active" | "paused" | "ended"
@@ -105,7 +105,6 @@ export interface WatchAttempts {
  * separate facts. A grant does not make a send eligible, and a busy/waiting
  * target does not mean the user never granted anything.
  */
-export type WatchCorrectionGrantMode = "alert-only" | "single-attempt"
 export type WatchCorrectionGrantState = "not-granted" | "pending-confirmation" | "granted" | "revoked"
 export type WatchCorrectionActual = "unavailable" | "ready"
 
@@ -118,6 +117,7 @@ export type WatchCorrectionAttemptPhase =
   | "unknown"
   | "receipted"
   | "recovered"
+  | "aborted"
 
 /** Why an automatic send is not eligible now; never a judgement of the goal. */
 export type WatchCorrectionStopReason =
@@ -130,7 +130,10 @@ export type WatchCorrectionStopReason =
   | "sending-unaccounted"
   | "accepted-without-receipt"
   | "unknown-result"
+  | "first-attempt-policy"
   | "receipted-awaiting-recovery"
+  | "attempt-aborted"
+  | "closing"
   | "rejected"
   | "recovered"
   | "runtime-unsupported"
@@ -155,14 +158,19 @@ export interface WatchCorrectionAttemptView {
   readonly acceptedAt: number | null
   readonly rejectedAt: number | null
   readonly unknownAt: number | null
+  readonly abortedAt: number | null
   readonly receipt: WatchCorrectionReceiptView | null
   readonly recovery: WatchCorrectionRecoveryView | null
   readonly stopReason: WatchCorrectionStopReason | null
 }
 
 export interface WatchCorrectionReceiptView {
-  readonly receiptID: string
+  /** When the target recorded that it saw the correction; no token is exposed. */
   readonly at: number
+  /** When this receipt issued the one continue permit; null means no permit. */
+  readonly continuePermitIssuedAt: number | null
+  /** Why a recorded receipt refused further business continuation. */
+  readonly refusalReason: string | null
 }
 
 /** Recovery needs a new progress report and its matching new result reference. */
@@ -173,13 +181,63 @@ export interface WatchCorrectionRecoveryView {
 }
 
 export interface WatchCorrectionGrantView {
-  readonly mode: WatchCorrectionGrantMode
+  readonly mode: WatchMode
   readonly state: WatchCorrectionGrantState
   /** Increments on grant, downgrade or revocation; never resets attempts. */
   readonly version: number
   readonly reviewSummary: string | null
   readonly grantedAt: number | null
 }
+
+export interface WatchCorrectionGrantRecord {
+  readonly grantID: string
+  readonly taskID: string
+  readonly mode: WatchMode
+  readonly state: "granted" | "revoked"
+  readonly version: number
+  readonly generation: number
+  readonly scopeTargetSessionID: string
+  readonly reviewSummary: string
+  readonly termsDigest: string
+  readonly confirmationID: string
+  readonly grantedAt: number
+  readonly revokedAt?: number
+}
+
+export interface WatchCorrectionAttemptRecord {
+  readonly reservationID: string
+  readonly taskID: string
+  readonly ordinal: number
+  readonly phase: WatchCorrectionAttemptPhase
+  readonly reservedAt: number
+  readonly claimedAt?: number
+  readonly claimedByActivation?: string
+  readonly claimedGeneration?: number
+  readonly acceptedAt?: number
+  readonly rejectedAt?: number
+  readonly unknownAt?: number
+  readonly abortedAt?: number
+  readonly receiptID?: string
+  readonly receiptAt?: number
+  readonly receiptPermitAt?: number
+  readonly receiptRefusalReason?: string
+  readonly receiptCallerSessionID?: string
+  readonly receiptGeneration?: number
+  readonly recoveryReportID?: string
+  readonly recoveryReference?: string
+  readonly recoveredAt?: number
+  readonly stopReason?: WatchCorrectionStopReason
+}
+
+export interface WatchCorrectionSnapshot {
+  readonly grant: WatchCorrectionGrantRecord | null
+  readonly attempts: readonly WatchCorrectionAttemptRecord[]
+  /** An older task for the same target still has an unresolved attempt. */
+  readonly sessionUnresolved: boolean
+}
+
+export const WATCH_CORRECTION_TERMS =
+  "Correction grant terms: the grant covers limited correction with at most three permanent attempts in total; this build's automatic executor may use only the first attempt; automatic sends require one OpenCode service, the same OS user and the same location; any unsupported or uncertain condition means alert-only; a safety pause never stops business work; reading, receipt, recovery, reload, transfer or re-granting never resets spent attempts."
 
 /**
  * A short-lived challenge returned only to the controlled TUI surface by the
@@ -196,13 +254,23 @@ export interface WatchCorrectionChallenge {
   readonly expiresAt: number
 }
 
+export type WatchCorrectionGate =
+  | "grant"
+  | "attempts"
+  | "pending-attempt"
+  | "business-unfinished"
+  | "runtime"
+  | "single-host"
+  | "location"
+  | "owner-generation"
+  | "protocol"
+  | "observation"
+  | "waits"
+  | "closing"
+  | "executor"
+
 export interface WatchCorrectionGateView {
-  readonly gate:
-    | "grant"
-    | "attempts"
-    | "pending-attempt"
-    | "business-unfinished"
-    | "executor"
+  readonly gate: WatchCorrectionGate
   readonly ok: boolean
   readonly reason: string | null
 }
@@ -219,6 +287,8 @@ export interface WatchCorrectionView {
   readonly actual: WatchCorrectionActual
   readonly actualReason: string
   readonly attempts: WatchAttempts
+  /** This build may use only the first automatic attempt; the ledger keeps three. */
+  readonly executionPolicy: "first-attempt-only"
   /** The current attempt phase, or `idle` when no attempt is in flight. */
   readonly phase: WatchCorrectionAttemptPhase | "idle"
   readonly pending: WatchCorrectionAttemptView | null

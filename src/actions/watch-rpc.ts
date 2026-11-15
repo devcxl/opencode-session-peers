@@ -106,7 +106,7 @@ interface WatchRpcRequest {
   readonly requestId?: string
   readonly goal?: string
   readonly targetSessionID?: string
-  readonly mode?: "alert" | "correct"
+  readonly mode?: "alert" | "limited-correction"
 }
 
 function readRequest(input: unknown):
@@ -134,8 +134,8 @@ function readRequest(input: unknown):
   const goal = readString(record["goal"])
   const targetSessionID = readString(record["targetSessionID"])
   const mode = record["mode"]
-  if (mode !== undefined && mode !== "alert" && mode !== "correct") {
-    return { ok: false, reason: "mode must be alert or correct" }
+  if (mode !== undefined && mode !== "alert" && mode !== "limited-correction") {
+    return { ok: false, reason: "mode must be alert or limited-correction" }
   }
   const expectedVersion = record["expectedVersion"]
   if (

@@ -159,6 +159,15 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
     }
   }
 
+  const taskView = (
+    record: WatchTaskRecord,
+    ledger: WatchLedger,
+  ): { readonly view: WatchTaskView } | { readonly failure: WatchFailure } => {
+    const snapshot = ledger.correction(record.taskID)
+    if (!snapshot.ok) return { failure: mapLedgerFailure(snapshot.code, snapshot.detail) }
+    return { view: watchTaskView(record, options.activationID, snapshot.value) }
+  }
+
   const view = (sessionID: string, taskID?: string): { outcome: WatchOutcome; ledger?: WatchLedger } => {
     const current = ensure()
     if (current.ledger === undefined) {
@@ -172,12 +181,17 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
     if (!shown.ok) {
       return { outcome: failureOutcome(mapLedgerFailure(shown.code, shown.detail)), ledger: current.ledger }
     }
-    const task = shown.value === null ? null : watchTaskView(shown.value, options.activationID)
+    let task: WatchTaskView | null = null
+    if (shown.value !== null) {
+      const built = taskView(shown.value, current.ledger)
+      if ("failure" in built) return { outcome: failureOutcome(built.failure), ledger: current.ledger }
+      task = built.view
+    }
     return {
       outcome: {
         ok: true,
         task,
-        capability: watchCapability(),
+        capability: watchCapability(task?.mode),
         controls: watchControls(task),
         alerts: task === null ? emptyWatchAlerts(true, null) : alertsFor(task.taskID),
         failure: null,
@@ -247,11 +261,13 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
       })
       if (!enrolled.ok) return failureOutcome(mapLedgerFailure(enrolled.code, enrolled.detail))
       if (enrolled.value.created) notify()
-      const task = watchTaskView(enrolled.value.task, options.activationID)
+      const built = taskView(enrolled.value.task, current.ledger)
+      if ("failure" in built) return failureOutcome(built.failure)
+      const task = built.view
       return {
         ok: true,
         task,
-        capability: watchCapability(),
+        capability: watchCapability(task.mode),
         controls: watchControls(task),
         alerts: alertsFor(task.taskID),
         failure: null,
@@ -282,11 +298,13 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
       })
       if (!reported.ok) return failureOutcome(mapLedgerFailure(reported.code, reported.detail))
       if (!reported.value.duplicate) notify()
-      const task = watchTaskView(reported.value.task, options.activationID)
+      const built = taskView(reported.value.task, current.ledger)
+      if ("failure" in built) return failureOutcome(built.failure)
+      const task = built.view
       return {
         ok: true,
         task,
-        capability: watchCapability(),
+        capability: watchCapability(task.mode),
         controls: watchControls(task),
         alerts: alertsFor(task.taskID),
         failure: null,
@@ -313,11 +331,13 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
       })
       if (!controlled.ok) return failureOutcome(mapLedgerFailure(controlled.code, controlled.detail))
       if (controlled.value.changed) notify()
-      const task = watchTaskView(controlled.value.task, options.activationID)
+      const built = taskView(controlled.value.task, current.ledger)
+      if ("failure" in built) return failureOutcome(built.failure)
+      const task = built.view
       return {
         ok: true,
         task,
-        capability: watchCapability(),
+        capability: watchCapability(task.mode),
         controls: watchControls(task),
         alerts: alertsFor(task.taskID),
         failure: null,
@@ -346,11 +366,13 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
       const shown = current.ledger.show({ taskID: acked.value.alert.taskID, sessionID: caller.value })
       if (!shown.ok) return failureOutcome(mapLedgerFailure(shown.code, shown.detail))
       if (shown.value === null) return failureOutcome(invalid("the alert has no visible task"))
-      const task = watchTaskView(shown.value, options.activationID)
+      const built = taskView(shown.value, current.ledger)
+      if ("failure" in built) return failureOutcome(built.failure)
+      const task = built.view
       return {
         ok: true,
         task,
-        capability: watchCapability(),
+        capability: watchCapability(task.mode),
         controls: watchControls(task),
         alerts: alertsFor(task.taskID),
         failure: null,
