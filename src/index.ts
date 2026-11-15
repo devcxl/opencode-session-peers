@@ -16,6 +16,7 @@ import { randomUUID } from "node:crypto"
 import type { Plugin } from "@opencode/plugin"
 
 import { watchCommand } from "./actions/watch-command.ts"
+import { watchGrantRpc } from "./actions/watch-grant-rpc.ts"
 import { watchRpc } from "./actions/watch-rpc.ts"
 import { parseConfig } from "./config.ts"
 import { describeError } from "./domain/errors.ts"
@@ -51,6 +52,7 @@ export default {
       ? createWatchApplication({
           ledgerPath: watchLedgerPath(),
           activationID: randomUUID(),
+          runtime: host.runtime,
           now: () => host.scheduler.now(),
           onChanged: () => announceWatch?.(),
           sessionAtLocation: (sessionID) =>
@@ -116,6 +118,16 @@ export default {
             sessions: host.sessions,
             directory: host.location.directory,
             watchConfig: config.watch,
+          },
+          input,
+        ),
+      watchGrant: (input) =>
+        watchGrantRpc(
+          {
+            enabled: config.enabled,
+            watch,
+            sessions: host.sessions,
+            directory: host.location.directory,
           },
           input,
         ),

@@ -105,31 +105,97 @@ export function watchCorrectionView(
     history,
     stop,
     gates: [
-      { gate: "grant", ok: grant?.state === "granted", reason: grant?.state === "granted" ? null : "no active correction grant" },
+      {
+        gate: "grant",
+        ok: grant?.state === "granted",
+        reason: grant?.state === "granted" ? null : "no active correction grant",
+        observed: grant === null ? "not-granted" : `${grant.state} version ${grant.version}`,
+        required: "an active limited-correction grant",
+      },
       {
         gate: "attempts",
         ok: used < WATCH_CORRECTION_LIMIT,
         reason: used < WATCH_CORRECTION_LIMIT ? null : "the three permanent attempts are spent",
+        observed: `${used}/3 permanent attempts`,
+        required: "fewer than three permanent attempts",
       },
-      { gate: "pending-attempt", ok: open === undefined, reason: open === undefined ? null : `attempt ${open.ordinal} is still ${open.phase}` },
-      { gate: "business-unfinished", ok: !businessCompleted, reason: businessCompleted ? "the business task is completed" : null },
-      { gate: "runtime", ok: false, reason: "the real embedded runtime capability is not collected in this checkpoint" },
-      { gate: "single-host", ok: false, reason: "no explicit single-host deployment statement is recorded" },
-      { gate: "location", ok: false, reason: "same-host, same-location observation is not established" },
+      {
+        gate: "pending-attempt",
+        ok: open === undefined,
+        reason: open === undefined ? null : `attempt ${open.ordinal} is still ${open.phase}`,
+        observed: open === undefined ? "none" : `attempt ${open.ordinal} ${open.phase}`,
+        required: "no unresolved attempt",
+      },
+      {
+        gate: "business-unfinished",
+        ok: !businessCompleted,
+        reason: businessCompleted ? "the business task is completed" : null,
+        observed: task.taskState,
+        required: "not completed",
+      },
+      {
+        gate: "runtime",
+        ok: false,
+        reason: "the real embedded runtime capability is not collected in this checkpoint",
+        observed: "not collected",
+        required: "Linux x64, a verified app tuple, embedded SQLite >= 3.51.3 with WAL, FULL, bounded busy_timeout and local filesystem",
+      },
+      {
+        gate: "single-host",
+        ok: false,
+        reason: "no explicit single-host deployment statement is recorded",
+        observed: "not declared",
+        required: "an explicit single-host, same-location deployment statement (a declaration, not proof of uniqueness)",
+      },
+      {
+        gate: "location",
+        ok: false,
+        reason: "same-host, same-location observation is not established",
+        observed: "not established",
+        required: "the same host and location continuously serve the target",
+      },
       {
         gate: "owner-generation",
         ok: task.ownerActivation === activationID,
         reason: task.ownerActivation === activationID ? null : "this activation is not the recorded executor",
+        observed: task.ownerActivation === activationID ? "this activation" : "another activation",
+        required: "the current recorded owner activation and generation",
       },
       {
         gate: "protocol",
         ok: task.lastReport !== undefined,
         reason: task.lastReport === undefined ? "the target has not reported protocol participation" : null,
+        observed: task.lastReport === undefined ? "no report" : "a report was recorded",
+        required: "the target has participated in the protocol",
       },
-      { gate: "observation", ok: false, reason: "trusted continuous idle is required and is not established here" },
-      { gate: "waits", ok: false, reason: "no trusted wait snapshot is established here" },
-      { gate: "closing", ok: true, reason: null },
-      { gate: "executor", ok: false, reason: "the controlled executor path is not open in this build" },
+      {
+        gate: "observation",
+        ok: false,
+        reason: "trusted continuous idle is required and is not established here",
+        observed: "no trusted idle sample",
+        required: "continuous trusted idle-candidate evidence",
+      },
+      {
+        gate: "waits",
+        ok: false,
+        reason: "no trusted wait snapshot is established here",
+        observed: "not snapshotted",
+        required: "no active, overdue or unknown wait and a complete wait snapshot",
+      },
+      {
+        gate: "closing",
+        ok: true,
+        reason: null,
+        observed: "open",
+        required: "the activation is not closing",
+      },
+      {
+        gate: "executor",
+        ok: false,
+        reason: "the controlled executor path is not open in this build",
+        observed: "closed",
+        required: "a controlled first-attempt executor that rechecks immediately before queue",
+      },
     ],
     businessCompleted,
     controls: {
@@ -154,6 +220,10 @@ function correctionAttemptView(attempt: WatchCorrectionAttemptRecord): WatchCorr
     rejectedAt: attempt.rejectedAt ?? null,
     unknownAt: attempt.unknownAt ?? null,
     abortedAt: attempt.abortedAt ?? null,
+    seen:
+      attempt.lastSeenAt === undefined
+        ? null
+        : { at: attempt.lastSeenAt, reason: attempt.lastSeenReason ?? null },
     receipt:
       attempt.receiptAt === undefined
         ? null

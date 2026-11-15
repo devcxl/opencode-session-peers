@@ -26,6 +26,7 @@ import {
 } from "../domain/watch.ts"
 import {
   openWatchLedger,
+  type CorrectionGrantChallenge,
   type UpsertWatchAlertInput,
   type WatchLedger,
   type WatchLedgerErrorCode,
@@ -51,10 +52,28 @@ export interface WatchObservationSource {
   activityFor(taskID: string): WatchActivityView | null
 }
 
+export interface WatchGrantOutcome {
+  readonly ok: boolean
+  /** Only the prepare response carries the opaque challenge. */
+  readonly challenge: CorrectionGrantChallenge | null
+  readonly task: WatchTaskView | null
+  readonly capability: ReturnType<typeof watchCapability>
+  readonly controls: ReturnType<typeof watchControls>
+  readonly failure: WatchFailure | null
+}
+
 export interface WatchLedgerStatus {
   readonly available: boolean
   /** The exact cause when the ledger is not usable; `null` when it is. */
   readonly reason: string | null
+  /** Facts read from the actual embedded runtime, never from an external Bun. */
+  readonly sqliteVersion: string | null
+  readonly journalMode: string | null
+  readonly synchronous: number | null
+  readonly busyTimeoutMs: number | null
+  readonly appVersion: string | null
+  readonly platform: string | null
+  readonly arch: string | null
 }
 
 export interface WatchApplication {
@@ -82,6 +101,25 @@ export interface WatchApplication {
     readonly operation: "pause" | "end"
   }): WatchOutcome
   ack(input: { readonly callerSessionID: string; readonly alertID: string }): WatchOutcome
+  /** Controlled TUI grant review/confirmation; never a model tool path. */
+  prepareGrant(input: {
+    readonly callerSessionID: string
+    readonly taskID: string
+    readonly expectedVersion: number
+  }): WatchGrantOutcome
+  confirmGrant(input: {
+    readonly callerSessionID: string
+    readonly taskID: string
+    readonly expectedVersion: number
+    readonly generation: number
+    readonly termsDigest: string
+    readonly challenge: string
+  }): WatchGrantOutcome
+  downgradeGrant(input: {
+    readonly callerSessionID: string
+    readonly taskID: string
+    readonly expectedVersion: number
+  }): WatchGrantOutcome
   /** Tasks the observer may sample; empty when the ledger is unavailable. */
   liveTasks(): readonly WatchTaskRecord[]
   upsertAlert(input: UpsertWatchAlertInput): { readonly alert: WatchAlertRecord; readonly created: boolean; readonly escalated: boolean } | undefined
@@ -102,6 +140,13 @@ export interface WatchApplicationOptions {
   readonly ledgerPath: string
   /** This plugin instance's activation; enrollment records it, a reload does not adopt it. */
   readonly activationID: string
+  /** Public host identity; used for the capability/runtime gates, not ownership. */
+  readonly runtime?: {
+    readonly appName: string
+    readonly appVersion: string
+    readonly platform: string
+    readonly arch: string
+  }
   readonly now?: () => number
   /** Test seam for the ledger's runtime gate; production leaves it undefined. */
   readonly sqliteVersion?: string
@@ -214,9 +259,30 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
   return {
     status() {
       const current = ensure()
-      return current.ledger === undefined
-        ? { available: false, reason: `${current.failure?.code ?? "ledger_error"}: ${current.failure?.detail ?? "unknown"}` }
-        : { available: true, reason: null }
+      if (current.ledger === undefined) {
+        return {
+          available: false,
+          reason: `${current.failure?.code ?? "ledger_error"}: ${current.failure?.detail ?? "unknown"}`,
+          sqliteVersion: null,
+          journalMode: null,
+          synchronous: null,
+          busyTimeoutMs: null,
+          appVersion: options.runtime?.appVersion ?? null,
+          platform: options.runtime?.platform ?? null,
+          arch: options.runtime?.arch ?? null,
+        }
+      }
+      return {
+        available: true,
+        reason: null,
+        sqliteVersion: current.ledger.sqliteVersion,
+        journalMode: current.ledger.journalMode,
+        synchronous: current.ledger.synchronous,
+        busyTimeoutMs: current.ledger.busyTimeoutMs,
+        appVersion: options.runtime?.appVersion ?? null,
+        platform: options.runtime?.platform ?? null,
+        arch: options.runtime?.arch ?? null,
+      }
     },
 
     show(input) {
@@ -382,6 +448,104 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
       }
     },
 
+    prepareGrant(input) {
+      const caller = readIdentifier(input.callerSessionID, "callerSessionID")
+      if (!caller.ok) return grantFailure(invalid(caller.reason))
+      const taskID = readIdentifier(input.taskID, "taskID")
+      if (!taskID.ok) return grantFailure(invalid(taskID.reason))
+      const current = ensure()
+      if (current.ledger === undefined) {
+        return grantFailure(mapLedgerFailure(current.failure?.code ?? "ledger_error", current.failure?.detail ?? "unknown"))
+      }
+      const prepared = current.ledger.prepareCorrectionGrant({
+        taskId: taskID.value,
+        callerSessionId: caller.value,
+        ownerActivation: options.activationID,
+        expectedVersion: input.expectedVersion,
+        reviewSummary:
+          "Limited correction: three permanent attempts, but this build may use only the first automatic attempt; one host and location; a safety pause does not stop business; spent attempts never reset.",
+        at: options.now?.() ?? Date.now(),
+      })
+      if (!prepared.ok) return grantFailure(mapLedgerFailure(prepared.code, prepared.detail))
+      const shown = current.ledger.show({ taskID: taskID.value, sessionID: caller.value })
+      if (!shown.ok) return grantFailure(mapLedgerFailure(shown.code, shown.detail))
+      const built = shown.value === null ? undefined : taskView(shown.value, current.ledger)
+      if (built !== undefined && "failure" in built) return grantFailure(built.failure)
+      const task = built?.view ?? null
+      return {
+        ok: true,
+        challenge: prepared.value,
+        task,
+        capability: watchCapability(task?.mode),
+        controls: watchControls(task),
+        failure: null,
+      }
+    },
+
+    confirmGrant(input) {
+      const caller = readIdentifier(input.callerSessionID, "callerSessionID")
+      if (!caller.ok) return grantFailure(invalid(caller.reason))
+      const taskID = readIdentifier(input.taskID, "taskID")
+      if (!taskID.ok) return grantFailure(invalid(taskID.reason))
+      const challenge = readIdentifier(input.challenge, "challenge")
+      if (!challenge.ok) return grantFailure(invalid(challenge.reason))
+      const termsDigest = readIdentifier(input.termsDigest, "termsDigest")
+      if (!termsDigest.ok) return grantFailure(invalid(termsDigest.reason))
+      const current = ensure()
+      if (current.ledger === undefined) {
+        return grantFailure(mapLedgerFailure(current.failure?.code ?? "ledger_error", current.failure?.detail ?? "unknown"))
+      }
+      const confirmed = current.ledger.confirmCorrectionGrant({
+        challenge: challenge.value,
+        taskId: taskID.value,
+        ownerActivation: options.activationID,
+        expectedVersion: input.expectedVersion,
+        generation: input.generation,
+        termsDigest: termsDigest.value,
+        at: options.now?.() ?? Date.now(),
+      })
+      if (!confirmed.ok) return grantFailure(mapLedgerFailure(confirmed.code, confirmed.detail))
+      const built = taskView(confirmed.value.task, current.ledger)
+      if ("failure" in built) return grantFailure(built.failure)
+      return {
+        ok: true,
+        challenge: null,
+        task: built.view,
+        capability: watchCapability(built.view.mode),
+        controls: watchControls(built.view),
+        failure: null,
+      }
+    },
+
+    downgradeGrant(input) {
+      const caller = readIdentifier(input.callerSessionID, "callerSessionID")
+      if (!caller.ok) return grantFailure(invalid(caller.reason))
+      const taskID = readIdentifier(input.taskID, "taskID")
+      if (!taskID.ok) return grantFailure(invalid(taskID.reason))
+      const current = ensure()
+      if (current.ledger === undefined) {
+        return grantFailure(mapLedgerFailure(current.failure?.code ?? "ledger_error", current.failure?.detail ?? "unknown"))
+      }
+      const downgraded = current.ledger.downgradeCorrection({
+        taskId: taskID.value,
+        callerSessionId: caller.value,
+        ownerActivation: options.activationID,
+        expectedVersion: input.expectedVersion,
+        at: options.now?.() ?? Date.now(),
+      })
+      if (!downgraded.ok) return grantFailure(mapLedgerFailure(downgraded.code, downgraded.detail))
+      const built = taskView(downgraded.value.task, current.ledger)
+      if ("failure" in built) return grantFailure(built.failure)
+      return {
+        ok: true,
+        challenge: null,
+        task: built.view,
+        capability: watchCapability(built.view.mode),
+        controls: watchControls(built.view),
+        failure: null,
+      }
+    },
+
     liveTasks() {
       const current = ensure()
       if (current.ledger === undefined) return []
@@ -449,6 +613,17 @@ function unsupported(reason: string): WatchFailure {
   return { code: "E_WATCH_UNSUPPORTED", reason }
 }
 
+function grantFailure(failure: WatchFailure): WatchGrantOutcome {
+  return {
+    ok: false,
+    challenge: null,
+    task: null,
+    capability: watchCapability(),
+    controls: watchControls(null),
+    failure,
+  }
+}
+
 function failureOutcome(failure: WatchFailure): WatchOutcome {
   return {
     ok: false,
@@ -485,6 +660,30 @@ export function mapLedgerFailure(code: WatchLedgerErrorCode, detail: string): Wa
       return make("E_WATCH_NOT_FOUND", `No watched task matches "${detail}".`)
     case "unknown_wait":
       return make("E_WATCH_NOT_FOUND", `No active reported wait matches "${detail}".`)
+    case "not_granted":
+      return make("E_WATCH_UNSUPPORTED", `No active correction grant matches this task. (${detail})`)
+    case "grant_pending":
+      return make("E_WATCH_STALE", `A correction grant challenge is already pending; re-read the task. (${detail})`)
+    case "grant_expired":
+      return make("E_WATCH_STALE", `The correction challenge is expired or already consumed. Prepare a new one. (${detail})`)
+    case "attempt_limit":
+      return make("E_WATCH_INVALID_TRANSITION", `The task has spent all three permanent correction attempts. (${detail})`)
+    case "pending_attempt":
+      return make("E_WATCH_INVALID_TRANSITION", `The task still has an unresolved correction attempt. (${detail})`)
+    case "session_unresolved":
+      return make("E_WATCH_INVALID_TRANSITION", `An older task for this session still has an unresolved correction attempt. (${detail})`)
+    case "claim_taken":
+      return make("E_WATCH_STALE", `The one send slot for that reservation is already claimed. (${detail})`)
+    case "stale_owner":
+      return make("E_WATCH_STALE", `The current activation does not own that task or reservation. (${detail})`)
+    case "stale_generation":
+      return make("E_WATCH_STALE", `The task or reservation generation changed. (${detail})`)
+    case "not_claimable":
+      return make("E_WATCH_INVALID_TRANSITION", `The correction attempt cannot take that action now. (${detail})`)
+    case "receipt_conflict":
+      return make("E_WATCH_REPORT_CONFLICT", `That correction receipt does not match the reservation. (${detail})`)
+    case "recovery_evidence_missing":
+      return make("E_WATCH_INVALID_TRANSITION", `Recovery evidence is missing or reused. (${detail})`)
     case "unknown_alert":
       return make("E_WATCH_NOT_FOUND", `No persistent alert matches "${detail}".`)
     case "wait_limit":

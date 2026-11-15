@@ -14,7 +14,7 @@ import type { SessionLookup } from "../host/session.ts"
 import { sessionAtLocation } from "../watch/access.ts"
 import { emptyWatchAlerts, type WatchApplication, type WatchObservationSource, type WatchOutcome } from "../watch/service.ts"
 import { watchCapability, watchControls } from "../watch/view.ts"
-import type { WatchFailureView, WatchPayload } from "../watch/contract.ts"
+import type { WatchFailureView, WatchLedgerView, WatchPayload } from "../watch/contract.ts"
 
 export interface WatchRpcDeps {
   readonly enabled: boolean
@@ -230,9 +230,19 @@ function observationFor(outcome: WatchOutcome, deps: WatchRpcDeps) {
   return snapshot
 }
 
-function ledgerStatus(deps: WatchRpcDeps): { available: boolean; reason: string | null } {
+function ledgerStatus(deps: WatchRpcDeps): WatchLedgerView {
   return deps.watch === undefined
-    ? { available: false, reason: "the plugin is disabled at this location" }
+    ? {
+        available: false,
+        reason: "the plugin is disabled at this location",
+        sqliteVersion: null,
+        journalMode: null,
+        synchronous: null,
+        busyTimeoutMs: null,
+        appVersion: null,
+        platform: null,
+        arch: null,
+      }
     : deps.watch.status()
 }
 

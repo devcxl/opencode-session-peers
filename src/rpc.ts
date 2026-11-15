@@ -74,12 +74,15 @@
 
 import type { Rpc } from "@opencode/plugin"
 
-import { watchChangedEvent, watchRpcMethod } from "./watch/contract.ts"
+import { watchChangedEvent, watchGrantRpcMethod, watchRpcMethod } from "./watch/contract.ts"
 
 export {
+  readWatchGrantPayload,
   readWatchPayload,
   watchTaskSchema,
   type WatchFailureView,
+  type WatchGrantChallengeView,
+  type WatchGrantPayload,
   type WatchLedgerView,
   type WatchPayload,
 } from "./watch/contract.ts"
@@ -177,6 +180,7 @@ export const SESSION_PEERS_RPC = {
       },
     },
     watch: watchRpcMethod,
+    watchGrant: watchGrantRpcMethod,
   },
   events: {
     changed: {

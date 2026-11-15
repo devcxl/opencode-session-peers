@@ -1,0 +1,197 @@
+/**
+ * Pure correction eligibility gates.
+ *
+ * It reports observed and required facts, never a boolean bypass. The real
+ * runtime tuple whitelist stays empty until the isolated production protocol
+ * has been executed and accepted; pass 1 therefore keeps automatic sending
+ * closed even when every other fact looks perfect.
+ */
+
+import type {
+  WatchCorrectionGateView,
+  WatchCorrectionSnapshot,
+  WatchCorrectionStopReason,
+  WatchObservationView,
+  WatchTaskRecord,
+} from "../domain/watch.ts"
+
+/** Mirrors the ledger's runtime requirement; the ledger remains authoritative. */
+const MIN_SQLITE = "3.51.3"
+
+/** No app/platform tuple is verified until the isolated protocol passes. */
+const VERIFIED_APP_TUPLES: readonly string[] = []
+
+export interface CorrectionRuntimeFacts {
+  readonly platform: string | null
+  readonly arch: string | null
+  readonly appVersion: string | null
+  readonly sqliteVersion: string | null
+  readonly journalMode: string | null
+  /** `2` is SQLite's FULL synchronous level. */
+  readonly synchronous: number | null
+  readonly busyTimeoutMs: number | null
+  readonly filesystem: "local" | "unknown"
+}
+
+export interface CorrectionGateInput {
+  readonly task: WatchTaskRecord
+  readonly snapshot: WatchCorrectionSnapshot
+  readonly observation: WatchObservationView | null
+  readonly runtime: CorrectionRuntimeFacts
+  readonly ownerActivation: string
+  readonly sameLocation: boolean
+  readonly singleHostDeclared: boolean
+  readonly closing: boolean
+  readonly executorReady: boolean
+}
+
+export interface CorrectionGateResult {
+  readonly eligible: boolean
+  readonly stopReason: WatchCorrectionStopReason | null
+  readonly missingEvidence: string | null
+  readonly gates: readonly WatchCorrectionGateView[]
+}
+
+export function correctionGate(input: CorrectionGateInput): CorrectionGateResult {
+  const { task, snapshot, observation, runtime } = input
+  const open = snapshot.attempts.find(
+    (attempt) =>
+      attempt.phase === "reserved" ||
+      attempt.phase === "sending" ||
+      attempt.phase === "accepted" ||
+      attempt.phase === "unknown",
+  )
+  const used = snapshot.attempts.length
+  const completed = task.taskState === "completed"
+  const runtimeTuple = `${runtime.appVersion ?? "?"}/${runtime.platform ?? "?"}/${runtime.arch ?? "?"}`
+  const runtimeOk =
+    runtime.platform === "linux" &&
+    runtime.arch === "x64" &&
+    VERIFIED_APP_TUPLES.includes(runtimeTuple) &&
+    runtime.sqliteVersion !== null &&
+    versionAtLeast(runtime.sqliteVersion, MIN_SQLITE) &&
+    runtime.journalMode === "wal" &&
+    runtime.synchronous === 2 &&
+    (runtime.busyTimeoutMs ?? 0) > 0 &&
+    runtime.filesystem === "local"
+  const grantOk = snapshot.grant?.state === "granted"
+  const observationOk =
+    observation !== null &&
+    observation.trusted &&
+    observation.state === "idle-candidate" &&
+    observation.waitsPartial === false &&
+    observation.waitsTruncated === false &&
+    observation.waits.every(
+      (wait) => wait.status !== "active" && wait.status !== "overdue" && wait.status !== "unknown",
+    )
+  const protocolSeen = task.lastReport !== undefined
+  const ownerOk = task.ownerActivation === input.ownerActivation
+  const gates: WatchCorrectionGateView[] = [
+    gate("grant", grantOk, snapshot.grant === null ? "not-granted" : `${snapshot.grant.state} version ${snapshot.grant.version}`, "an active limited-correction grant"),
+    gate("attempts", used < 3, `${used}/3 permanent attempts`, "fewer than three permanent attempts"),
+    gate("pending-attempt", open === undefined, open === undefined ? "none" : `attempt ${open.ordinal} ${open.phase}`, "no unresolved attempt"),
+    gate("business-unfinished", !completed, task.taskState, "not completed"),
+    gate(
+      "runtime",
+      runtimeOk,
+      `${runtimeTuple}; sqlite=${runtime.sqliteVersion ?? "unknown"}; journal=${runtime.journalMode ?? "unknown"}; synchronous=${runtime.synchronous ?? "unknown"}; busy=${runtime.busyTimeoutMs ?? "unknown"}; fs=${runtime.filesystem}`,
+      "Linux x64, a verified app tuple, embedded SQLite >= 3.51.3, WAL, FULL, bounded busy_timeout and local filesystem",
+    ),
+    gate("single-host", input.singleHostDeclared, input.singleHostDeclared ? "declared" : "not declared", "an explicit single-host, same-location deployment statement"),
+    gate("location", input.sameLocation, input.sameLocation ? "same location" : "unknown", "same host and location"),
+    gate("owner-generation", ownerOk, ownerOk ? "this activation" : "another activation", "the recorded owner activation and generation"),
+    gate("protocol", protocolSeen, protocolSeen ? "reported" : "no report", "the target has participated in the protocol"),
+    gate(
+      "observation",
+      observationOk,
+      observation === null ? "no sample" : `${observation.state}; trusted=${String(observation.trusted)}; partial=${String(observation.waitsPartial)}`,
+      "a trusted idle-candidate with complete wait evidence",
+    ),
+    gate("waits", observationOk && observation !== null && observation.waits.length === 0, observation === null ? "no snapshot" : `${observation.waits.length} wait(s)`, "no active, overdue or unknown wait"),
+    gate("closing", !input.closing, input.closing ? "closing" : "open", "not closing"),
+    gate("executor", input.executorReady, input.executorReady ? "ready" : "closed", "a controlled first-attempt executor"),
+  ]
+  for (const item of gates) {
+    if (item.ok || item.gate === "executor") continue
+    return result(gates, stopForGate(item.gate, task, open, used, observation))
+  }
+  if (!input.executorReady) {
+    return result(gates, { reason: "executor-unavailable", missingEvidence: "the controlled executor path is not open in this build" })
+  }
+  if (used >= 1) {
+    return result(gates, { reason: "first-attempt-policy", missingEvidence: "this build's automatic executor may use only the first attempt" })
+  }
+  return { eligible: true, stopReason: null, missingEvidence: null, gates }
+}
+
+function gate(
+  name: WatchCorrectionGateView["gate"],
+  ok: boolean,
+  observed: string,
+  required: string,
+): WatchCorrectionGateView {
+  return { gate: name, ok, reason: ok ? null : `requires ${required}`, observed, required }
+}
+
+function result(
+  gates: readonly WatchCorrectionGateView[],
+  stop: { readonly reason: WatchCorrectionStopReason; readonly missingEvidence: string | null },
+): CorrectionGateResult {
+  return { eligible: false, stopReason: stop.reason, missingEvidence: stop.missingEvidence, gates }
+}
+
+function stopForGate(
+  name: WatchCorrectionGateView["gate"],
+  task: WatchTaskRecord,
+  open: WatchCorrectionSnapshot["attempts"][number] | undefined,
+  used: number,
+  observation: WatchObservationView | null,
+): { readonly reason: WatchCorrectionStopReason; readonly missingEvidence: string | null } {
+  switch (name) {
+    case "runtime":
+      return { reason: "runtime-unsupported", missingEvidence: "the actual embedded runtime tuple is not verified" }
+    case "single-host":
+      return { reason: "single-host-unconfirmed", missingEvidence: "no explicit single-host deployment statement" }
+    case "location":
+      return { reason: "cross-location", missingEvidence: "same-host, same-location observation is not established" }
+    case "owner-generation":
+      return { reason: "owner-mismatch", missingEvidence: "this activation is not the recorded owner" }
+    case "protocol":
+      return { reason: "protocol-unseen", missingEvidence: "the target has not reported protocol participation" }
+    case "grant":
+      return { reason: "grant-missing", missingEvidence: "no active limited-correction grant" }
+    case "attempts":
+      return { reason: "attempt-limit", missingEvidence: "the three permanent attempts are spent" }
+    case "pending-attempt":
+      if (open === undefined) return { reason: "session-unresolved", missingEvidence: "an older task is unresolved" }
+      if (open.phase === "reserved") return { reason: "reservation-pending", missingEvidence: "the reservation has not claimed its send slot" }
+      if (open.phase === "sending") return { reason: "sending-unaccounted", missingEvidence: "the claimed send has no outcome" }
+      if (open.phase === "accepted") return { reason: "accepted-without-receipt", missingEvidence: "the target has not submitted a receipt" }
+      return { reason: "unknown-result", missingEvidence: "the delivery outcome is unknown" }
+    case "business-unfinished":
+      return task.taskState === "completed"
+        ? { reason: "task-completed", missingEvidence: "the business task is completed" }
+        : { reason: "executor-unavailable", missingEvidence: "the business task is not finished" }
+    case "observation":
+      return observation?.state === "normal-waiting"
+        ? { reason: "normal-wait", missingEvidence: "a normal wait is present" }
+        : { reason: "observation-untrusted", missingEvidence: "trusted continuous idle is not established" }
+    case "waits":
+      return { reason: "normal-wait", missingEvidence: "a wait is present or the wait snapshot is incomplete" }
+    case "closing":
+      return { reason: "closing", missingEvidence: "the activation is closing" }
+    case "executor":
+      return { reason: "executor-unavailable", missingEvidence: "the controlled executor is closed" }
+  }
+}
+
+function versionAtLeast(actual: string, minimum: string): boolean {
+  const left = actual.split(".").map((part) => Number.parseInt(part, 10))
+  const right = minimum.split(".").map((part) => Number.parseInt(part, 10))
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    const a = left[index] ?? 0
+    const b = right[index] ?? 0
+    if (a !== b) return a > b
+  }
+  return true
+}

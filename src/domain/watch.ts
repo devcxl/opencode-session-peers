@@ -138,6 +138,7 @@ export type WatchCorrectionStopReason =
   | "recovered"
   | "runtime-unsupported"
   | "single-host-unconfirmed"
+  | "owner-mismatch"
   | "cross-location"
   | "protocol-unseen"
   | "task-paused"
@@ -159,6 +160,8 @@ export interface WatchCorrectionAttemptView {
   readonly rejectedAt: number | null
   readonly unknownAt: number | null
   readonly abortedAt: number | null
+  /** The target saw a known instruction; no permit necessarily followed. */
+  readonly seen: { readonly at: number; readonly reason: string | null } | null
   readonly receipt: WatchCorrectionReceiptView | null
   readonly recovery: WatchCorrectionRecoveryView | null
   readonly stopReason: WatchCorrectionStopReason | null
@@ -221,6 +224,8 @@ export interface WatchCorrectionAttemptRecord {
   readonly receiptAt?: number
   readonly receiptPermitAt?: number
   readonly receiptRefusalReason?: string
+  readonly lastSeenAt?: number
+  readonly lastSeenReason?: string
   readonly receiptCallerSessionID?: string
   readonly receiptGeneration?: number
   readonly recoveryReportID?: string
@@ -273,6 +278,10 @@ export interface WatchCorrectionGateView {
   readonly gate: WatchCorrectionGate
   readonly ok: boolean
   readonly reason: string | null
+  /** The fact this build actually has, bounded and redacted. */
+  readonly observed: string | null
+  /** What the gate requires; never a claim that the build meets it. */
+  readonly required: string | null
 }
 
 export interface WatchCorrectionControls {
