@@ -14,10 +14,30 @@ import { join } from "node:path"
 
 import type { AskRecord } from "../src/domain/types.ts"
 import { askKey } from "../src/host/storage.ts"
+import { Database } from "bun:sqlite"
+
 import plugin from "../src/index.ts"
 import { WATCH_STATE_DIR_ENV } from "../src/host/watch.ts"
 import { readWatchPayload, type WatchPayload } from "../src/rpc.ts"
 import { CALLER_SESSION_ID, fakeHost, type FakeHost, type FakeHostOptions } from "./fake-host.ts"
+
+const runtimeVersion = (() => {
+  const db = new Database(":memory:")
+  const row = db.query("SELECT sqlite_version() AS version").get() as { version: string }
+  db.close()
+  return row.version
+})()
+const safeRuntime = (() => {
+  const left = runtimeVersion.split(".").map((part) => Number.parseInt(part, 10))
+  const right = [3, 51, 3]
+  for (let index = 0; index < 3; index += 1) {
+    const a = left[index] ?? 0
+    const b = right[index] ?? 0
+    if (a !== b) return a > b
+  }
+  return true
+})()
+const describeWatch = safeRuntime ? describe : describe.skip
 
 const scratch: string[] = []
 afterEach(() => {
@@ -87,7 +107,7 @@ function expectNoAgentCalls(host: FakeHost): void {
   expect(host.interrupts).toEqual([])
 }
 
-describe("trusted idle and running observation", () => {
+describeWatch("trusted idle and running observation", () => {
   test("a terminal execution plus a sustained idle window forms one persistent alert", async () => {
     const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
     try {
@@ -202,7 +222,7 @@ describe("trusted idle and running observation", () => {
   })
 })
 
-describe("normal waits", () => {
+describeWatch("normal waits", () => {
   test("a same-location permission wait suppresses idle and only alerts after its window", async () => {
     const { host, unload } = await loaded({
       options: { watch: WATCH_OPTIONS },
@@ -332,7 +352,7 @@ describe("normal waits", () => {
   })
 })
 
-describe("reported waits and control capability", () => {
+describeWatch("reported waits and control capability", () => {
   test("different reported waits coexist and a clear needs its matching evidence", async () => {
     const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
     try {
@@ -572,7 +592,7 @@ describe("reported waits and control capability", () => {
   })
 })
 
-describe("unknown observation and reloads", () => {
+describeWatch("unknown observation and reloads", () => {
   test("missing execution evidence is unknown, not idle, and does not create an idle alert", async () => {
     const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
     try {
@@ -668,7 +688,7 @@ describe("unknown observation and reloads", () => {
   })
 })
 
-describe("alert persistence and availability", () => {
+describeWatch("alert persistence and availability", () => {
   test("alerts are durable, reconnect without toast state, and ack only changes read state", async () => {
     const state = stateDirectory()
     const first = await loaded({ options: { watch: WATCH_OPTIONS } }, state)

@@ -84,6 +84,10 @@ server log; `trigger` fails closed to `"never"`.
 | `replyHint` | `true` | Append the `To reply: peers({ action: "reply", ... })` line to a question. Only an `ask` carries it: a `send`, a reply and a handover leave nothing to answer. |
 | `askTimeoutMs` | `600000` | How long an `ask` waits for its answer (10 minutes) before it stops waiting. |
 | `rosterTtlMs` | `90000` | How long a peer record may go without a heartbeat before other instances stop listing it. The heartbeat runs at a third of this. |
+| `watch.idleMs` | `120000` | Continuous trusted idle before an idle alert. Bounded to 1 second–30 minutes. |
+| `watch.runningSilentMs` | `600000` | Running without target activity before an initiator warning. Bounded to 5 seconds–1 hour. |
+| `watch.waitOverdueMs` | `1800000` | Fallback overdue window for a wait with no explicit deadline. Bounded to 1 minute–2 hours. |
+| `watch.tickMs` | `15000` | Observation sample interval. Bounded to 250 ms–60 seconds. |
 
 ## The `peers` tool
 
@@ -175,17 +179,30 @@ peers({ action: "watch", watch: {
 ```
 
 `begin` needs no evidence; `progress` and `completed` need `summary` and `reference`; `waiting`
-needs `waitKind`, `waitFor`, `reason` and `reference`; `blocked` needs `reason`. Repeated report ids
-with the same evidence are idempotent; a stale version or a different payload is refused.
+needs `waitKind`, `waitFor`, `reason` and `reference`; `blocked` needs `reason`. A reported wait may
+carry `waitID` and `waitUntil`; a later report clears only the named wait with `clearsWaitID` plus
+`clearEvidence`. Repeated report ids with the same evidence are idempotent; a stale version or a
+different payload is refused.
+
+The panel now separates the business task, supervision, authorization, actual capability,
+observation, activity, waits and persistent alerts. Observation uses execution lifecycle events,
+the target's own text/step/tool/shell activity and same-location permission/ask snapshots; missing
+terminals, a busy time newer than idle, a failed/interrupted last run, event gaps, reloads and
+unavailable form/retry snapshots are shown as `unknown`/degraded rather than inferred as idle. An
+idle candidate needs two separated samples and the configured idle window. A normal wait suppresses
+idle alerts; a wait with no earlier deadline is only notified after `watch.waitOverdueMs` to the
+initiator. Alerts are persisted one per continuing problem, are not prompts, can be acknowledged
+(read-only) and include resolved history; an acknowledgement never resets a task or quota.
 
 The authority for task identity, state and history is a plugin-owned SQLite ledger under
 `$XDG_STATE_HOME/opencode-session-peers/watchdog/` (or `~/.local/state/...`). It is not the
 shared plugin storage. The ledger validates its identity anchor, canonical path and SQLite build,
 uses `0700`/`0600` permissions, and fails closed rather than recreating a missing or mismatched
-database. **Automatic stall detection, finite correction, child-task delegation, receipts and
-watch ownership transfer are not implemented in this build**; the tool and panel show them as
-unavailable rather than accepting them silently. A general `/peers-watch` command and the panel
-share the same application path.
+database. Observation is intentionally partial: it does not prove goal progress or single-host
+uniqueness, and restoration is never automatic. **Finite correction, child-task delegation,
+receipts, watch ownership transfer and recovery are not implemented in this build**; the tool and
+panel show them as unavailable rather than accepting them silently. A general `/peers-watch`
+command and the panel share the same application path.
 
 The plugin registers two skills, both loaded on demand. `session-peers` covers how to use the tool
 for coordination: which action fits which situation, the rules above in more detail, the failure
