@@ -291,12 +291,15 @@ describe("alert acknowledgement", () => {
 
 describe("a truncated first trusted snapshot", () => {
   test("does not toast an old escalation that enters the window later", async () => {
+    const firstWindow = Array.from({ length: 20 }, (_, index) =>
+      alert({ alertID: `alert_seen_${index}`, escalatedAt: OLD_ESCALATION }),
+    )
     let current = payload({
-      alerts: alertsView([], {
+      alerts: alertsView(firstWindow, {
         truncated: true,
-        total: 20,
-        unread: 20,
-        active: 20,
+        total: 21,
+        unread: 21,
+        active: 21,
       }),
     })
     const fake = fakePort({ read: async () => current })
@@ -306,12 +309,10 @@ describe("a truncated first trusted snapshot", () => {
     expect(fake.toasts).toEqual([])
 
     current = payload({
-      alerts: alertsView([alert({ alertID: "alert_old", escalatedAt: OLD_ESCALATION })], {
-        truncated: true,
-        total: 20,
-        unread: 20,
-        active: 20,
-      }),
+      alerts: alertsView(
+        [alert({ alertID: "alert_old", escalatedAt: OLD_ESCALATION }), ...firstWindow.slice(0, 19)],
+        { truncated: true, total: 21, unread: 21, active: 21 },
+      ),
     })
     fake.announce()
     await tick(0)
@@ -326,8 +327,9 @@ describe("a truncated first trusted snapshot", () => {
             summary: "A genuinely new escalation.",
             escalatedAt: NEW_ESCALATION,
           }),
+          ...firstWindow.slice(0, 18),
         ],
-        { truncated: true, total: 20, unread: 20, active: 20 },
+        { truncated: true, total: 22, unread: 22, active: 22 },
       ),
     })
     fake.announce()
