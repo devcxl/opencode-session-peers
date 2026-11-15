@@ -130,6 +130,8 @@ export interface WatchCapability {
   readonly transferReason: string
   readonly recovery: "unavailable"
   readonly recoveryReason: string
+  readonly safetyPause: "unavailable"
+  readonly safetyPauseReason: string
 }
 
 export interface WatchControl {
@@ -189,6 +191,8 @@ export const TRANSFER_UNAVAILABLE_REASON =
   "Watch ownership transfer is not implemented in this build."
 export const RECOVERY_UNAVAILABLE_REASON =
   "Resume and recovery confirmation are not implemented in this build."
+export const SAFETY_PAUSE_UNAVAILABLE_REASON =
+  "Watch safety pause is not implemented in this build; only a manual pause can occur."
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/
 const WAIT_KINDS: readonly WatchWaitKind[] = ["human", "peer", "permission", "form", "child", "other"]

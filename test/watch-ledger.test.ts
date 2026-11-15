@@ -421,10 +421,28 @@ describeSafe("the security ledger", () => {
     rmSync(lost)
     expect(openWatchLedger({ path: lost })).toMatchObject({ ok: false, code: "ledger_missing" })
 
+    const mismatched = ledgerPath("mismatched")
+    const mismatchedLedger = open(mismatched)
+    expect(mismatchedLedger.enroll(enrollInput({ requestId: "req-mismatch" })).ok).toBe(true)
+    mismatchedLedger.close()
+    const mismatchedDb = new Database(mismatched)
+    mismatchedDb.run("UPDATE meta SET value = 'another-ledger' WHERE key = 'ledger_id'")
+    mismatchedDb.close()
+    expect(openWatchLedger({ path: mismatched })).toMatchObject({ ok: false, code: "ledger_mismatch" })
+
     expect(openWatchLedger({ path: ledgerPath("old-runtime"), sqliteVersion: "3.51.2" })).toMatchObject({
       ok: false,
       code: "unsafe_sqlite",
     })
+
+    // A real filesystem permission failure (this test is not portable to a
+    // platform without /proc); the ledger must report it, not claim a usable
+    // unsecured file.
+    if (process.platform === "linux") {
+      const denied = openWatchLedger({ path: "/proc/session-peers-watch-test/watch-ledger.sqlite3" })
+      expect(denied.ok).toBe(false)
+      if (!denied.ok) expect(["readonly", "io_error"]).toContain(denied.code)
+    }
   })
 
   test("a held write lock times out instead of waiting forever", async () => {
