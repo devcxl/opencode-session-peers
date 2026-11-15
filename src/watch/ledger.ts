@@ -45,7 +45,7 @@ import {
   type WatchedTaskState,
 } from "../domain/watch.ts"
 
-export const WATCH_LEDGER_SCHEMA_VERSION = 2
+export const WATCH_LEDGER_SCHEMA_VERSION = 3
 export const WATCH_LEDGER_PROTOCOL_VERSION = 1
 export const WATCH_MIN_SQLITE = "3.51.3"
 
@@ -210,11 +210,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS one_live_watch_task_per_session
   ON watch_tasks(target_session_id) WHERE watch_state IN ('active','paused');
 
 CREATE TABLE IF NOT EXISTS enrollment_requests (
-  request_id TEXT PRIMARY KEY,
+  initiator_session_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
   task_id TEXT NOT NULL REFERENCES watch_tasks(task_id),
   session_id TEXT NOT NULL,
   params_fingerprint TEXT NOT NULL,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (initiator_session_id, request_id)
 );
 
 CREATE TABLE IF NOT EXISTS watch_reports (
@@ -255,6 +257,14 @@ const REQUIRED_TASK_COLUMNS = [
   "ended_at",
 ]
 const REQUIRED_REPORT_COLUMNS = ["task_id", "report_id", "kind", "evidence", "version", "created_at"]
+const REQUIRED_ENROLLMENT_COLUMNS = [
+  "initiator_session_id",
+  "request_id",
+  "task_id",
+  "session_id",
+  "params_fingerprint",
+  "created_at",
+]
 const ANCHOR_NAME = "watch-ledger.identity.json"
 
 interface LedgerAnchor {
@@ -453,6 +463,7 @@ function openOnce(options: OpenWatchLedgerOptions): OpenWatchLedgerResult {
       }
       assertColumns(db, "watch_tasks", REQUIRED_TASK_COLUMNS)
       assertColumns(db, "watch_reports", REQUIRED_REPORT_COLUMNS)
+      assertColumns(db, "enrollment_requests", REQUIRED_ENROLLMENT_COLUMNS)
     }
 
     const metadata = readMetadata(db)
@@ -635,8 +646,8 @@ class SqliteWatchLedger implements WatchLedger {
         mode: "alert",
       })
       const existingRequest = this.db
-        .query("SELECT * FROM enrollment_requests WHERE request_id = ?")
-        .get(requestId) as
+        .query("SELECT * FROM enrollment_requests WHERE initiator_session_id = ? AND request_id = ?")
+        .get(initiator, requestId) as
         | { task_id: string; session_id: string; params_fingerprint: string }
         | null
       if (existingRequest !== null) {
@@ -680,9 +691,11 @@ class SqliteWatchLedger implements WatchLedger {
         )
       this.db
         .query(
-          "INSERT INTO enrollment_requests (request_id, task_id, session_id, params_fingerprint, created_at) VALUES (?, ?, ?, ?, ?)",
+          `INSERT INTO enrollment_requests (
+            initiator_session_id, request_id, task_id, session_id, params_fingerprint, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?)`,
         )
-        .run(requestId, taskID, target, fingerprint, at)
+        .run(initiator, requestId, taskID, target, fingerprint, at)
       return { task: this.task(taskID), created: true }
     })
   }

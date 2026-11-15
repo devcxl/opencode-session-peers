@@ -10,6 +10,7 @@
 
 import { DELEGATION_UNAVAILABLE_REASON, type WatchFailure } from "../domain/watch.ts"
 import type { SessionLookup } from "../host/session.ts"
+import { sessionAtLocation } from "../watch/access.ts"
 import type { WatchApplication, WatchOutcome } from "../watch/service.ts"
 import { watchCapability, watchControls } from "../watch/view.ts"
 import type { WatchFailureView, WatchPayload } from "../watch/contract.ts"
@@ -32,6 +33,12 @@ export async function watchRpc(deps: WatchRpcDeps, input: unknown): Promise<Watc
   }
 
   const watch = deps.watch
+  if (!(await sessionAtLocation(deps.sessions, request.value.sessionID, deps.directory))) {
+    return failurePayload(deps, {
+      code: "E_WATCH_NOT_FOUND",
+      reason: `This location does not serve session "${request.value.sessionID}".`,
+    })
+  }
   switch (request.value.operation) {
     case "show":
       return payload(deps, watch.show({ sessionID: request.value.sessionID, ...(request.value.taskID === undefined ? {} : { taskID: request.value.taskID }) }))
@@ -39,22 +46,6 @@ export async function watchRpc(deps: WatchRpcDeps, input: unknown): Promise<Watc
     case "enroll": {
       if (request.value.requestId === undefined || request.value.goal === undefined) {
         return failurePayload(deps, { code: "E_WATCH_INVALID", reason: "enroll needs requestId and goal" })
-      }
-      let sessionDirectory: string
-      try {
-        const session = await deps.sessions.get(request.value.sessionID)
-        sessionDirectory = session.directory
-      } catch (error) {
-        return failurePayload(deps, {
-          code: "E_WATCH_NOT_FOUND",
-          reason: `The host does not know that session: ${describe(error)}`,
-        })
-      }
-      if (sessionDirectory !== deps.directory) {
-        return failurePayload(deps, {
-          code: "E_WATCH_UNSUPPORTED",
-          reason: "Enrollment is limited to a session served at this plugin location.",
-        })
       }
       if (request.value.targetSessionID !== undefined && request.value.targetSessionID !== request.value.sessionID) {
         return failurePayload(deps, { code: "E_WATCH_UNSUPPORTED", reason: DELEGATION_UNAVAILABLE_REASON })
@@ -182,9 +173,4 @@ function failureView(failure: WatchFailure): WatchFailureView {
     reason: failure.reason,
     detail: failure.detail ?? null,
   }
-}
-
-function describe(error: unknown): string {
-  if (error instanceof Error) return error.message.trim().length > 0 ? error.message : error.name
-  return String(error)
 }
