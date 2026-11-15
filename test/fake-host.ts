@@ -164,9 +164,11 @@ export interface FakeHost {
   /** The storage the plugin wrote to; the same object the host was given. */
   readonly storage: FakeStorage
   /** Delivers an event to the plugin's subscription, as the host would. */
-  emit(type: string, data: Readonly<Record<string, unknown>>, at?: number): void
+  emit(type: string, data: Readonly<Record<string, unknown>>, at?: number, sourceLocation?: string): void
   /** The controlled clock. */
   now(): number
+  /** Jump the controlled clock without running interval callbacks (sleep/suspend). */
+  jumpClock(ms: number): void
   /** Advance the controlled scheduler, awaiting callbacks at each due tick. */
   advance(ms: number): Promise<void>
   /** End all live event subscriptions, as a host shutdown would. */
@@ -414,11 +416,18 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
     interrupts,
     storage,
     now: () => scheduler.now(),
-    emit(type, data, at = scheduler.now()) {
+    emit(type, data, at = scheduler.now(), sourceLocation = location) {
       eventCounter += 1
-      const event = { id: `evt_fake_${eventCounter}`, created: at, type, data }
+      const event = {
+        id: `evt_fake_${eventCounter}`,
+        created: at,
+        type,
+        data,
+        location: { directory: sourceLocation },
+      }
       for (const subscription of [...subscriptions]) subscription.push(event as unknown as HostEvent)
     },
+    jumpClock: (ms) => scheduler.jump(ms),
     advance: (ms) => scheduler.advance(ms),
     endEvents() {
       for (const subscription of [...subscriptions]) subscription.close()
@@ -496,6 +505,11 @@ class FakeScheduler {
       callback,
     })
     return { dispose: () => this.intervals.delete(id) }
+  }
+
+  jump(ms: number): void {
+    this.current += ms
+    for (const interval of this.intervals.values()) interval.due += ms
   }
 
   async advance(ms: number): Promise<void> {

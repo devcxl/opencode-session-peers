@@ -319,6 +319,29 @@ describeSafe("the security ledger", () => {
         expect(history.value.alerts[0]?.state).toBe("read")
       }
 
+      const reopened = ledger.upsertAlert({
+        taskId,
+        dedupeKey: "idle",
+        kind: "idle",
+        summary: "No activity",
+        reason: "idle window again",
+        at: 5_000,
+        escalate: true,
+      })
+      expect(reopened).toMatchObject({ ok: true, value: { created: false, escalated: false } })
+      if (reopened.ok) expect(reopened.value.alert.escalatedAt).toBeUndefined()
+      const reEscalated = ledger.upsertAlert({
+        taskId,
+        dedupeKey: "idle",
+        kind: "idle",
+        summary: "No activity",
+        reason: "idle window again",
+        at: 6_000,
+        escalate: true,
+      })
+      expect(reEscalated).toMatchObject({ ok: true, value: { escalated: true } })
+      if (reEscalated.ok) expect(reEscalated.value.alert.escalatedAt).toBe(6_000)
+
       const paused = ledger.control({
         taskId,
         callerSessionId: "ses_alpha",

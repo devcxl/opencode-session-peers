@@ -1092,7 +1092,7 @@ class SqliteWatchLedger implements WatchLedger {
       }
 
       const reopened = existing.resolved_at !== null
-      const escalated = input.escalate === true && existing.escalated_at === null
+      const escalated = input.escalate === true && !reopened && existing.escalated_at === null
       this.db
         .query(
           `UPDATE watch_alerts SET

@@ -77,11 +77,15 @@ async function loaded(options: FakeHostOptions = {}, state = stateDirectory()) {
   }
 }
 
-async function enroll(host: FakeHost, requestId = "observe-req") {
-  const result = await host.call("peers", {
-    action: "watch",
-    watch: { operation: "enroll", requestId, goal: "Observe this task" },
-  })
+async function enroll(host: FakeHost, requestId = "observe-req", sessionID = CALLER_SESSION_ID) {
+  const result = await host.call(
+    "peers",
+    {
+      action: "watch",
+      watch: { operation: "enroll", requestId, goal: "Observe this task" },
+    },
+    sessionID,
+  )
   const task = (result.details as { watch: { task: { taskID: string } } }).watch.task
   return task.taskID
 }
@@ -94,7 +98,8 @@ async function show(host: FakeHost): Promise<WatchPayload> {
   return payload
 }
 
-function settle(host: FakeHost, at: number) {
+function settle(host: FakeHost, at: number, created = true) {
+  if (created) host.emit("session.created", { sessionID: CALLER_SESSION_ID }, at)
   host.emit("session.execution.started", { sessionID: CALLER_SESSION_ID }, at)
   host.emit("session.execution.succeeded", { sessionID: CALLER_SESSION_ID }, at)
   host.setBusy(CALLER_SESSION_ID, at)
@@ -108,6 +113,26 @@ function expectNoAgentCalls(host: FakeHost): void {
 }
 
 describeWatch("trusted idle and running observation", () => {
+  test("an existing session without a created event is unknown even after a fresh terminal", async () => {
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      const at = host.now()
+      settle(host, at, false)
+      await enroll(host)
+      await host.advance(1_000)
+      await host.advance(1_000)
+      const payload = await show(host)
+      expect(payload.observation?.state).toBe("unknown")
+      expect(payload.observation?.trusted).toBe(false)
+      expect(payload.observation?.waitsPartial).toBe(true)
+      expect(payload.observation?.reason).toContain("predates continuous observation")
+      expect(payload.alerts?.items.map((alert) => alert.kind)).not.toContain("idle")
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
   test("a terminal execution plus a sustained idle window forms one persistent alert", async () => {
     const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
     try {
@@ -167,7 +192,9 @@ describeWatch("trusted idle and running observation", () => {
     const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
     try {
       const at = host.now()
+      host.emit("session.created", { sessionID: CALLER_SESSION_ID }, at)
       host.emit("session.execution.started", { sessionID: CALLER_SESSION_ID }, at)
+      host.setBusy(CALLER_SESSION_ID, at)
       await enroll(host)
       await host.advance(9_000)
       let payload = await show(host)
@@ -192,6 +219,7 @@ describeWatch("trusted idle and running observation", () => {
       await enroll(host)
       await host.advance(1_000)
       host.emit("session.text.started", { sessionID: CALLER_SESSION_ID }, host.now())
+      await new Promise((resolve) => setTimeout(resolve, 0))
       await host.advance(1_000)
       expect((await show(host)).observation?.state).toBe("active")
       await host.advance(1_000)
@@ -288,7 +316,9 @@ describeWatch("normal waits", () => {
     const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
     try {
       const at = host.now()
+      host.emit("session.created", { sessionID: CALLER_SESSION_ID }, at)
       host.emit("session.execution.started", { sessionID: CALLER_SESSION_ID }, at)
+      host.setBusy(CALLER_SESSION_ID, at)
       host.emit(
         "session.retry.scheduled",
         { sessionID: CALLER_SESSION_ID, attempt: 1, assistantMessageID: "msg-1", at },
@@ -302,6 +332,7 @@ describeWatch("normal waits", () => {
       expect(payload.alerts?.items.map((alert) => alert.kind)).not.toContain("idle")
 
       host.emit("session.text.started", { sessionID: CALLER_SESSION_ID }, host.now())
+      await new Promise((resolve) => setTimeout(resolve, 0))
       await host.advance(1_000)
       payload = await show(host)
       expect(payload.observation?.waits.some((wait) => wait.source === "retry" && wait.status === "active")).toBe(
@@ -492,6 +523,68 @@ describeWatch("reported waits and control capability", () => {
     }
   })
 
+  test("a reported wait object is shown in DTOs but never copied into a persistent alert", async () => {
+    const state = stateDirectory()
+    const sentinel = "SENSITIVE-WAIT-OBJECT-9f2c"
+    const first = await loaded({ options: { watch: WATCH_OPTIONS } }, state)
+    try {
+      const at = first.host.now()
+      settle(first.host, at)
+      const taskID = await enroll(first.host, "sensitive-wait")
+      let payload = await show(first.host)
+      const begin = await first.host.call("peers", {
+        action: "watch",
+        watch: {
+          operation: "report",
+          taskID,
+          expectedVersion: payload.task?.version,
+          reportId: "sensitive-begin",
+          kind: "begin",
+          evidence: {},
+        },
+      })
+      const beginVersion = (begin.details as { watch: { task: { version: number } } }).watch.task.version
+      await first.host.call("peers", {
+        action: "watch",
+        watch: {
+          operation: "report",
+          taskID,
+          expectedVersion: beginVersion,
+          reportId: "sensitive-wait",
+          kind: "waiting",
+          evidence: {
+            waitKind: "human",
+            waitFor: sentinel,
+            reason: "private reason",
+            reference: "private-ref",
+            waitID: "sensitive-wait",
+            waitUntil: at + 1_000,
+          },
+        },
+      })
+      await first.host.advance(1_000)
+      payload = await show(first.host)
+      expect(payload.observation?.waits[0]?.object).toBe(sentinel)
+      expect(payload.alerts?.items.map((alert) => alert.kind)).toContain("wait-overdue")
+      const rendered = JSON.stringify(payload.alerts)
+      expect(rendered).not.toContain(sentinel)
+      expect(rendered).not.toContain("private reason")
+    } finally {
+      await first.unload()
+    }
+
+    const second = await loaded({ options: { watch: WATCH_OPTIONS } }, state)
+    try {
+      const reconnected = await show(second.host)
+      const rendered = JSON.stringify(reconnected.alerts)
+      expect(rendered).toContain("wait-overdue")
+      expect(rendered).not.toContain(sentinel)
+      expect(rendered).not.toContain("private reason")
+    } finally {
+      await second.unload()
+    }
+  })
+
   test("a reported wait has a deadline and only a matching clear entry removes it", async () => {
     const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
     try {
@@ -596,6 +689,7 @@ describeWatch("unknown observation and reloads", () => {
   test("missing execution evidence is unknown, not idle, and does not create an idle alert", async () => {
     const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
     try {
+      host.emit("session.created", { sessionID: CALLER_SESSION_ID }, host.now())
       await enroll(host)
       await host.advance(3_000)
       const payload = await show(host)
@@ -608,10 +702,66 @@ describeWatch("unknown observation and reloads", () => {
     }
   })
 
+  test("a future event timestamp is not trusted", async () => {
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      const at = host.now()
+      settle(host, at)
+      await enroll(host)
+      await host.advance(1_000)
+      host.emit("session.text.started", { sessionID: CALLER_SESSION_ID }, host.now() + 5_000)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await host.advance(1_000)
+      const payload = await show(host)
+      expect(payload.observation?.state).toBe("unknown")
+      expect(payload.alerts?.items.map((alert) => alert.kind)).not.toContain("idle")
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
+  test("a forward clock/scheduling gap resets the baseline instead of trusting old silence", async () => {
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      const at = host.now()
+      settle(host, at)
+      await enroll(host)
+      await host.advance(1_000)
+      host.jumpClock(61_000)
+      await host.advance(1_000)
+      const payload = await show(host)
+      expect(payload.observation?.state).toBe("unknown")
+      expect(payload.alerts?.items.map((alert) => alert.kind)).not.toContain("idle")
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
+  test("a backwards clock jump resets the baseline too", async () => {
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      const at = host.now()
+      settle(host, at)
+      await enroll(host)
+      await host.advance(1_000)
+      host.jumpClock(-2_000)
+      await host.advance(1_000)
+      const payload = await show(host)
+      expect(payload.observation?.state).toBe("unknown")
+      expect(payload.alerts?.items.map((alert) => alert.kind)).not.toContain("idle")
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
   test("a host busy time newer than idle is unknown, not a quiet idle", async () => {
     const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
     try {
       const at = host.now()
+      host.emit("session.created", { sessionID: CALLER_SESSION_ID }, at)
       host.emit("session.execution.started", { sessionID: CALLER_SESSION_ID }, at)
       host.emit("session.execution.succeeded", { sessionID: CALLER_SESSION_ID }, at)
       host.setBusy(CALLER_SESSION_ID, at + 1_000)
@@ -632,6 +782,7 @@ describeWatch("unknown observation and reloads", () => {
     const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
     try {
       const at = host.now()
+      host.emit("session.created", { sessionID: CALLER_SESSION_ID }, at)
       host.emit("session.execution.started", { sessionID: CALLER_SESSION_ID }, at)
       host.emit("session.execution.failed", { sessionID: CALLER_SESSION_ID }, at)
       host.setBusy(CALLER_SESSION_ID, at)
@@ -642,6 +793,83 @@ describeWatch("unknown observation and reloads", () => {
       expect(payload.observation?.state).toBe("blocked")
       expect(payload.observation?.reason).toContain("failed")
       expect(payload.alerts?.items.map((alert) => alert.kind)).not.toContain("idle")
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
+  test("an old session cannot regain lifecycle coverage; a later new session ID can", async () => {
+    const { host, unload } = await loaded({
+      options: { watch: WATCH_OPTIONS },
+      sessions: [CALLER_SESSION_ID, "ses_new"],
+    })
+    try {
+      const at = host.now()
+      settle(host, at)
+      await enroll(host, "old-session")
+      await host.advance(1_000)
+      host.jumpClock(61_000)
+      await host.advance(1_000)
+      host.emit("session.created", { sessionID: CALLER_SESSION_ID }, host.now())
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await host.advance(1_000)
+      expect((await show(host)).observation?.trusted).toBe(false)
+
+      const newAt = host.now()
+      const rpc = host.rpcs[0]
+      if (rpc === undefined) throw new Error("no RPC surface")
+      await rpc.call("watch", {
+        operation: "enroll",
+        sessionID: "ses_new",
+        requestId: "new-session-task",
+        goal: "New session task",
+      })
+      host.emit("session.created", { sessionID: "ses_new" }, newAt)
+      host.emit("session.execution.started", { sessionID: "ses_new" }, newAt)
+      host.emit("session.execution.succeeded", { sessionID: "ses_new" }, newAt)
+      host.setBusy("ses_new", newAt)
+      host.setIdle("ses_new", newAt)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await host.advance(1_000)
+      await host.advance(1_000)
+      const newer = readWatchPayload(
+        await rpc.call("watch", { operation: "show", sessionID: "ses_new" }),
+      )
+      expect(newer?.observation).toMatchObject({ state: "idle-candidate", trusted: true })
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
+  test("an uncovered running session can still warn, with partial/trusted false", async () => {
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      const at = host.now()
+      host.emit("session.execution.started", { sessionID: CALLER_SESSION_ID }, at)
+      host.setBusy(CALLER_SESSION_ID, at)
+      await enroll(host)
+      await host.advance(10_000)
+      let payload = await show(host)
+      expect(payload.observation).toMatchObject({
+        state: "running-silence",
+        trusted: false,
+        waitsPartial: true,
+      })
+      expect(payload.alerts?.items.map((alert) => alert.kind)).toContain("running-silent")
+      expectNoAgentCalls(host)
+
+      host.emit(
+        "form.created",
+        { form: { id: "form-uncovered", sessionID: CALLER_SESSION_ID, title: "T", fields: [] } },
+        host.now(),
+      )
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await host.advance(1_000)
+      payload = await show(host)
+      expect(payload.observation?.state).toBe("normal-waiting")
+      expect(payload.observation?.waits.some((wait) => wait.source === "form")).toBe(true)
       expectNoAgentCalls(host)
     } finally {
       await unload()
@@ -884,6 +1112,48 @@ describeWatch("alert persistence and availability", () => {
     }
   })
 
+  test("a denied wait survives more than the cleared-history bound", async () => {
+    const { host, unload } = await loaded({
+      options: { watch: WATCH_OPTIONS },
+      permissions: {
+        [CALLER_SESSION_ID]: [{ id: "perm-sticky", action: "bash", resources: ["echo"] }],
+      },
+    })
+    try {
+      const at = host.now()
+      settle(host, at)
+      await enroll(host)
+      await host.advance(1_000)
+      host.setPermissions(CALLER_SESSION_ID, [])
+      host.emit(
+        "permission.replied",
+        { sessionID: CALLER_SESSION_ID, requestID: "perm-sticky", reply: "reject" },
+        host.now(),
+      )
+      for (let index = 0; index < 8; index += 1) {
+        host.emit(
+          "form.created",
+          { form: { id: `unrelated-${index}`, sessionID: CALLER_SESSION_ID, title: "x", fields: [] } },
+          host.now(),
+        )
+        host.emit(
+          "form.replied",
+          { id: `unrelated-${index}`, sessionID: CALLER_SESSION_ID, answer: {} },
+          host.now(),
+        )
+      }
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await host.advance(10_000)
+      const payload = await show(host)
+      expect(payload.observation?.state).toBe("blocked")
+      expect(payload.observation?.waits.some((wait) => wait.waitID === "permission:perm-sticky" && wait.status === "denied")).toBe(true)
+      expect(payload.alerts?.items.map((alert) => alert.kind)).not.toContain("idle")
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
   test("a permission disappearing without a matching reply is unknown, not approved", async () => {
     const { host, unload } = await loaded({
       options: { watch: WATCH_OPTIONS },
@@ -902,6 +1172,39 @@ describeWatch("alert persistence and availability", () => {
       expect(payload.observation?.state).toBe("unknown")
       expect(payload.observation?.waits.some((wait) => wait.status === "unknown")).toBe(true)
       expect(payload.alerts?.items.map((alert) => alert.kind)).not.toContain("idle")
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
+  test("a repeated reply for the same ask produces one cleared wait DTO", async () => {
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      const at = host.now()
+      const ask: AskRecord = {
+        askID: "ask-repeat",
+        askerSessionID: CALLER_SESSION_ID,
+        askerInstanceID: "instance-caller",
+        askerTitle: "caller",
+        targetSessionID: "ses_target",
+        question: "q",
+        createdAt: at,
+        expiresAt: at + 60_000,
+      }
+      await host.storage.set(askKey(ask.askID), ask)
+      await host.storage.set("v1/replies/ask-repeat", {
+        askID: "ask-repeat",
+        fromSessionID: "ses_target",
+        fromTitle: "target",
+        text: "answer",
+      })
+      settle(host, at)
+      await enroll(host)
+      await host.advance(10_000)
+      const payload = await show(host)
+      expect(payload.observation?.waits.filter((wait) => wait.waitID === "ask:ask-repeat")).toHaveLength(1)
+      expect(payload.observation?.waits[0]?.status).toBe("cleared")
       expectNoAgentCalls(host)
     } finally {
       await unload()
