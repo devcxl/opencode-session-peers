@@ -284,3 +284,89 @@ describe("alert acknowledgement", () => {
     panel.renderer.destroy()
   })
 })
+
+describe("notification seeding survives an untrustworthy first snapshot", () => {
+  test("a failed first payload does not consume the seed", async () => {
+    let current: WatchPayload = payload({
+      task: null,
+      observation: null,
+      activity: null,
+      alerts: alertsView([]),
+      failure: {
+        code: "E_WATCH_UNAVAILABLE",
+        reason: "the watch store is locked",
+        detail: null,
+      },
+    })
+    const fake = fakePort({ read: async () => current })
+    const dispose = installWatch(fake.port)
+    commandOf(fake).run()
+    await tick(0)
+
+    const panel = await mountPanel(fake)
+    expect(
+      panel.captureCharFrame().replace(/[│─┌┐└┘├┤┬┴┼]+/g, " ").replace(/\s+/g, " "),
+    ).toContain("Session watch is unavailable")
+
+    current = withAlert(
+      alert({ alertID: "alert_old", escalatedAt: Date.UTC(2026, 10, 16, 4, 36, 0) }),
+    )
+    fake.announce()
+    await tick(0)
+    expect(fake.toasts).toEqual([])
+
+    current = payload({
+      alerts: alertsView([
+        alert({ alertID: "alert_old", escalatedAt: Date.UTC(2026, 10, 16, 4, 36, 0) }),
+        alert({
+          alertID: "alert_new",
+          summary: "A new escalation appeared.",
+          escalatedAt: Date.UTC(2026, 10, 16, 4, 40, 0),
+        }),
+      ]),
+    })
+    fake.announce()
+    await tick(0)
+    expect(fake.toasts).toHaveLength(1)
+    expect(fake.toasts[0]?.message).toContain("A new escalation appeared.")
+    dispose()
+    panel.renderer.destroy()
+  })
+
+  test("an unavailable alert list does not consume the seed", async () => {
+    let current = payload({
+      alerts: alertsView([], {
+        available: false,
+        reason: "the alert store is locked",
+        unread: 0,
+        total: 0,
+        active: 0,
+      }),
+    })
+    const fake = fakePort({ read: async () => current })
+    const dispose = installWatch(fake.port)
+    commandOf(fake).run()
+    await tick(0)
+
+    const panel = await mountPanel(fake)
+    expect(
+      panel.captureCharFrame().replace(/[│─┌┐└┘├┤┬┴┼]+/g, " ").replace(/\s+/g, " "),
+    ).toContain("unavailable")
+
+    current = withAlert(
+      alert({ alertID: "alert_old", escalatedAt: Date.UTC(2026, 10, 16, 4, 36, 0) }),
+    )
+    fake.announce()
+    await tick(0)
+    expect(fake.toasts).toEqual([])
+
+    current = withAlert(
+      alert({ alertID: "alert_new", escalatedAt: Date.UTC(2026, 10, 16, 4, 40, 0) }),
+    )
+    fake.announce()
+    await tick(0)
+    expect(fake.toasts).toHaveLength(1)
+    dispose()
+    panel.renderer.destroy()
+  })
+})

@@ -9,18 +9,31 @@
 
 import type { WatchPayload } from "../rpc.ts"
 import { fact, formatDuration, formatWatchTime, join } from "./watch-format.ts"
-import type { TableCell } from "./view.ts"
+import { pageOf, type PageWindow, type TableCell } from "./view.ts"
 
 type Observation = NonNullable<WatchPayload["observation"]>
 type Activity = NonNullable<WatchPayload["activity"]>
 type Wait = Observation["waits"][number]
 
+export interface ObservationOptions {
+  readonly compact?: boolean
+  readonly waitPage?: number
+  readonly waitPageSize?: number
+}
+
 export interface ObservationContent {
   readonly rows: readonly (readonly TableCell[])[]
   readonly notes: readonly string[]
+  readonly waitPage: PageWindow
 }
 
-export function observationRows(payload: WatchPayload, compact = false): ObservationContent {
+export function observationRows(
+  payload: WatchPayload,
+  options: ObservationOptions = {},
+): ObservationContent {
+  const compact = options.compact ?? false
+  const waitPageSize = options.waitPageSize ?? 4
+  const waitPage = waitPageOf(payload, options.waitPage ?? 0, waitPageSize)
   const observation = payload.observation
   const activity = payload.activity
 
@@ -34,6 +47,7 @@ export function observationRows(payload: WatchPayload, compact = false): Observa
         fact("Wait state", "unknown — no observation sample"),
       ],
       notes: ["No observation sample is available; this is not evidence of idle or of no wait."],
+      waitPage,
     }
   }
 
@@ -50,10 +64,14 @@ export function observationRows(payload: WatchPayload, compact = false): Observa
     observation.state !== "blocked" &&
     observation.state !== "unknown" &&
     observation.state !== "unavailable"
-  if (!compact || !emptyWaits) rows.push(fact("Wait state", waitsSummary(observation)))
-  observation.waits.forEach((wait, index) => {
-    rows.push(fact(`Wait ${index + 1}`, waitText(wait)))
-  })
+  if (!compact || observation.waits.length === 0) {
+    if (!compact || !emptyWaits) rows.push(fact("Wait state", waitsSummary(observation)))
+  }
+  observation.waits
+    .slice(waitPage.start, waitPage.start + waitPage.size)
+    .forEach((wait, index) => {
+      rows.push(fact(`Wait ${waitPage.start + index + 1}`, waitText(wait)))
+    })
 
   const notes: string[] = []
   switch (observation.state) {
@@ -87,7 +105,36 @@ export function observationRows(payload: WatchPayload, compact = false): Observa
   if (observation.waitsTruncated) {
     notes.push("The wait list is truncated; more recorded waits are not shown.")
   }
-  return { rows, notes }
+  const pageNote = waitPageNote(
+    waitPage,
+    compact && observation.waits.length > 0 ? waitsSummary(observation) : undefined,
+  )
+  if (pageNote !== undefined) notes.push(pageNote)
+  return { rows, notes, waitPage }
+}
+
+export function waitPageOf(
+  payload: WatchPayload,
+  requestedPage: number,
+  pageSize: number,
+): PageWindow {
+  return pageOf(payload.observation?.waits.length ?? 0, pageSize, requestedPage)
+}
+
+
+function waitPageNote(page: PageWindow, summary: string | undefined): string | undefined {
+  if (page.count <= 1) return undefined
+  const from = page.start + 1
+  const to = Math.min(page.total, page.start + page.size)
+  const span = from === to ? `wait ${from} of ${page.total}` : `waits ${from}–${to} of ${page.total}`
+  const prefix = summary === undefined ? "" : `${summary} · `
+  return `${prefix}showing ${span} · ←/→ to page waits`
+}
+
+/** Rows a short task pane can spend on waits while keeping trust/controls visible. */
+export function waitPageSizeFor(terminalHeight: number): number {
+  const rows = Math.floor((terminalHeight - 36) / 2)
+  return Math.max(2, Math.min(6, rows))
 }
 
 function observationText(observation: Observation, compact: boolean): string {
