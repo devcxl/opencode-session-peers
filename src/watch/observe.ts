@@ -155,6 +155,7 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
       value.formFirstSeen.clear()
       value.clearedWaits = []
       value.clearedOverflow = false
+      value.lifecycleCovered = false
       value.lastObservedAt = null
       value.idleSeenAt = null
       value.idleTicks = 0
@@ -436,6 +437,7 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
     }
     mergeFormWaits(current, waits, now)
     mergeRetryWait(current, waits, now)
+    if (current.clearedOverflow) waits.partial = true
     if (disposed || sampleEpoch !== epoch) return
     if ((sessionRevisions.get(task.targetSessionID) ?? 0) !== sampleRevision) return
     const fresh = deps.store.liveTasks().find((candidate) => candidate.taskID === task.taskID)
@@ -969,7 +971,10 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
     current: SessionFacts,
     now: number,
   ): Promise<{ items: WatchWaitView[]; partial: boolean }> => {
-    const waits: { items: WatchWaitView[]; partial: boolean } = { items: [], partial: false }
+    const waits: { items: WatchWaitView[]; partial: boolean } = {
+      items: [],
+      partial: current.clearedOverflow,
+    }
     for (const wait of task.reportedWaits) {
       if (wait.clearedAt !== undefined) {
         waits.items.push({
