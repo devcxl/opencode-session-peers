@@ -79,20 +79,23 @@ No runner direct tool invocation or forged tool context is used for receipt.
    timestamps or busy/idle.
 5. The real executor (same application object) reserves, rechecks, claims and
    queues **once**. The target transcript must gain exactly one user message
-   beginning `[session-peers correction]`; the number of such messages must not
-   exceed the ledger's permanent attempts used.
+   beginning `[session-peers correction]`, and the ledger must show exactly one
+   permanent attempt used. Neither count may be zero or greater than one.
 6. The stub parses the prompt and calls the real target tool receipt. Evidence:
    tool input has the prompt's task/attempt/correlation; metadata
    `continuePermit=true`; no correlation appears in a later `show`.
 7. The stub posts new progress with a new reference. The ledger must mark
    `recovered`; the receipt alone must not.
 8. Duplicate directive: a second real receipt call must return
-   `continuePermit=false` and `duplicate=true`; no second permit.
+   `continuePermit=false` and `duplicate=true`; after duplicate and wrong-caller
+   phases, the correction-prompt count stays one and exactly one receipt result
+   carried `continuePermit=true`.
 9. Wrong caller: a second local session submits the same task/attempt/
    correlation. The real tool must return `E_WATCH_CALLER_MISMATCH`, with no
    permit and no ledger change.
-10. Close the scratch session/service; verify stop and live-registry digest as
-    above. Keep failure scratch without secrets if any step fails.
+10. Close the scratch session/service; verify child stop, closed port, closed
+    stub port, and unchanged live-registry digest. Keep failure scratch without
+    secrets if any step fails.
 
 ## Evidence split
 

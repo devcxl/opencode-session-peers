@@ -219,6 +219,8 @@ describeReceipt("correction receipt surface", () => {
       })
       expect(first.text).toContain("no continue permit")
       expect(first.text).not.toContain(seeded.correlation)
+      const shownAfterReload = await show(host)
+      expect(shownAfterReload.task?.pause).toMatchObject({ kind: "safety" })
 
       const duplicate = await receipt(host, seeded)
       expect((duplicate.details as { watch: Record<string, unknown> }).watch).toMatchObject({

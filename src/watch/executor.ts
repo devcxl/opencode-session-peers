@@ -65,6 +65,8 @@ export interface CorrectionExecutorOptions {
   readonly observationFor: (taskID: string) => WatchObservationView | null
   /** Production re-samples the host before the precheck and final recheck. */
   readonly refreshObservation?: (taskID: string) => Promise<WatchObservationView | null>
+  /** Tell the observer that the reservation's own version bump must keep the idle baseline. */
+  readonly markOwnReservation?: (taskID: string, fromVersion: number, toVersion: number) => void
   readonly sameLocation: (sessionID: string) => Promise<boolean>
   readonly runtime: () => CorrectionRuntimeFacts
   /** Production passes `correctionGate`; tests may pass a controlled fact gate. */
@@ -116,15 +118,23 @@ export function createCorrectionExecutor(options: CorrectionExecutorOptions): Co
 
   const once = async (taskID: string): Promise<void> => {
     if (closing) return
-    const task = options.authority.liveTasks().find((candidate) => candidate.taskID === taskID)
-    if (task === undefined || task.watchState !== "active" || task.taskState === "completed") return
-    const snapshot = options.authority.snapshot(taskID)
-    if (snapshot === undefined) return
+    const initialTask = options.authority.liveTasks().find((candidate) => candidate.taskID === taskID)
+    if (
+      initialTask === undefined ||
+      initialTask.watchState !== "active" ||
+      initialTask.taskState === "completed"
+    ) {
+      return
+    }
+    const sameLocation = await options.sameLocation(initialTask.targetSessionID)
+    if (closing) return
     const observation = await freshObservation(taskID)
     if (closing) return
-    const sameLocation = await options.sameLocation(task.targetSessionID)
-    if (closing) return
-    const first = gate(gateInput(task, snapshot, observation, sameLocation))
+    const checked = checkedObservation(taskID, observation)
+    const task = options.authority.liveTasks().find((candidate) => candidate.taskID === taskID)
+    const snapshot = task === undefined ? undefined : options.authority.snapshot(taskID)
+    if (task === undefined || snapshot === undefined) return
+    const first = gate(gateInput(task, snapshot, checked, sameLocation))
     if (!first.eligible) return
 
     const reservationID = randomUUID()
@@ -138,6 +148,7 @@ export function createCorrectionExecutor(options: CorrectionExecutorOptions): Co
       at: options.now(),
     })
     if (!reserved.ok) return
+    options.markOwnReservation?.(taskID, task.version, reserved.value.task.version)
 
     // Separated recheck: a new input, wait, pause, completion, grant change,
     // location change or closing abandons the permanent reservation without
@@ -147,9 +158,8 @@ export function createCorrectionExecutor(options: CorrectionExecutorOptions): Co
       abort(taskID, reservationID, reserved.value.task.version, task.generation)
       return
     }
-    const current = options.authority.liveTasks().find((candidate) => candidate.taskID === taskID)
-    const currentSnapshot = options.authority.snapshot(taskID)
-    if (current === undefined || currentSnapshot === undefined) {
+    const sameAgain = await options.sameLocation(task.targetSessionID)
+    if (closing) {
       abort(taskID, reservationID, reserved.value.task.version, task.generation)
       return
     }
@@ -158,13 +168,17 @@ export function createCorrectionExecutor(options: CorrectionExecutorOptions): Co
       abort(taskID, reservationID, reserved.value.task.version, task.generation)
       return
     }
-    const sameAgain = await options.sameLocation(current.targetSessionID)
-    if (closing) {
+    const checkedAgain = checkedObservation(taskID, observationAgain)
+    const current = options.authority.liveTasks().find((candidate) => candidate.taskID === taskID)
+    const currentSnapshot = current === undefined ? undefined : options.authority.snapshot(taskID)
+    if (current === undefined || currentSnapshot === undefined) {
       abort(taskID, reservationID, reserved.value.task.version, task.generation)
       return
     }
+    // No await between this gate and claim: a new event cannot be processed in
+    // this turn, and the ledger repeats the version/generation checks.
     const second = gate(
-      gateInput(current, currentSnapshot, observationAgain, sameAgain, {
+      gateInput(current, currentSnapshot, checkedAgain, sameAgain, {
         ignoreAttemptID: reservationID,
       }),
     )
@@ -200,6 +214,16 @@ export function createCorrectionExecutor(options: CorrectionExecutorOptions): Co
       outcome = { kind: "unknown", reason: "the queue call threw without a definite rejection" }
     }
     record(taskID, reservationID, outcome)
+  }
+
+  const checkedObservation = (
+    taskID: string,
+    refreshed: WatchObservationView | null,
+  ): WatchObservationView | null => {
+    const current = options.observationFor(taskID)
+    if (current === null) return null
+    if (refreshed === null) return current
+    return (current.observedAt ?? 0) > (refreshed.observedAt ?? 0) ? current : refreshed
   }
 
   const freshObservation = async (taskID: string): Promise<WatchObservationView | null> =>

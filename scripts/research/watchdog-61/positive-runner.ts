@@ -15,14 +15,14 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { join } from "node:path"
 
-import { OpenCode } from "@opencode/client"
+import { OpenCode, type JsonValue } from "@opencode/client"
 
-import { createClient } from "../../harness/client.ts"
+import { createClient, type SessionMessage } from "../../harness/client.ts"
 import { MISSING, readLiveService } from "../../harness/isolation.ts"
-import { prepareScratch, startInstance, type InstanceHandle } from "../../harness/instance.ts"
+import { isPortOpen, prepareScratch, startInstance, type InstanceHandle } from "../../harness/instance.ts"
 import { STUB_MODEL_ID, STUB_PROVIDER_ID, defaultScratchRoot, scratchLayout, serviceJsonPath } from "../../harness/paths.ts"
 import { sleep } from "../../harness/instance.ts"
-import { promptForResult, waitForCall, type ToolCall } from "../../harness/stub/transcript.ts"
+import { promptForResult, toolCalls, waitForCall, type ToolCall } from "../../harness/stub/transcript.ts"
 import { messageText } from "../../harness/sessions.ts"
 import type { HarnessOptions } from "../../harness/args.ts"
 import { readWatchGrantPayload, readWatchPayload, type WatchPayload } from "../../../src/rpc.ts"
@@ -91,7 +91,7 @@ try {
       rpcID: "session-peers.v1",
       method,
       location: { directory: layout.projectA },
-      input: input as never,
+      input: input as JsonValue,
     })
     return (result as { output?: unknown }).output
   }
@@ -118,7 +118,7 @@ try {
     target.id,
     `${BEGIN_MARKER} taskID=${taskID} version=${enrolled.task.version} reportId=positive-begin`,
   )
-  if (begin.name !== "peers" || begin.metadata["ok"] !== true) throw new Error(`begin report failed: ${begin.text}`)
+  if (begin.name !== "peers" || watchMeta(begin)?.["ok"] !== true) throw new Error("begin report failed")
   evidence.push("target called peers watch report begin through the real tool")
 
   let shown = await watch({ operation: "show", sessionID: target.id, taskID })
@@ -133,7 +133,7 @@ try {
     }),
   )
   if (prepared?.challenge === null || prepared?.challenge === undefined) {
-    throw new Error(`grant prepare failed: ${JSON.stringify(prepared?.failure)}`)
+    throw new Error(`grant prepare failed: ${prepared?.failure?.code ?? "unknown"}`)
   }
   const confirmed = readWatchGrantPayload(
     await rpc("watchGrant", {
@@ -147,7 +147,7 @@ try {
       deployment: "single-host-same-location",
     }),
   )
-  if (confirmed?.ok !== true) throw new Error(`grant confirm failed: ${JSON.stringify(confirmed?.failure)}`)
+  if (confirmed?.ok !== true) throw new Error(`grant confirm failed: ${confirmed?.failure?.code ?? "unknown"}`)
   evidence.push("controlled RPC granted limited correction with the explicit deployment declaration")
 
   const correction = await waitForCorrectionPrompt(client, target.id, 120_000)
@@ -161,8 +161,8 @@ try {
     60_000,
   )
   if (receipt === undefined) throw new Error("the target never called receipt")
-  if (receipt.metadata["continuePermit"] !== true) {
-    throw new Error(`the target receipt did not get a continue permit: ${receipt.text}`)
+  if (watchMeta(receipt)?.["continuePermit"] !== true) {
+    throw new Error("the target receipt did not get a continue permit")
   }
   evidence.push("target tool receipt received one continue permit")
 
@@ -170,14 +170,18 @@ try {
   if (!recovered) throw new Error("the new progress did not produce recovery")
   evidence.push("new progress plus new result reference produced recovered")
 
-  const queueCount = (await client.context(target.id)).filter(
-    (message) => message.type === "user" && messageText(message).includes("[session-peers correction]"),
-  ).length
   shown = await watch({ operation: "show", sessionID: target.id, taskID })
   if (shown.task === null) throw new Error("the task disappeared")
   const used = shown.task.attempts.used
-  if (queueCount > used) throw new Error(`queue prompts ${queueCount} exceed permanent attempts ${used}`)
-  evidence.push(`queue prompts ${queueCount} <= permanent attempts ${used}`)
+  const queueMessages = await client.context(target.id)
+  if (queueCount(queueMessages) !== 1 || used !== 1) {
+    throw new Error(`expected one queue prompt and one permanent attempt, got ${queueCount(queueMessages)}/${used}`)
+  }
+  if (JSON.stringify(shown).includes(prompt.correlation)) {
+    throw new Error("the normal show leaked the dispatch correlation")
+  }
+  evidence.push("queue prompts exactly 1 and permanent attempts exactly 1")
+  evidence.push("normal show did not contain the correlation")
 
   await client.prompt(
     target.id,
@@ -192,7 +196,11 @@ try {
       call.metadata["duplicate"] === true,
     60_000,
   )
-  if (duplicate === undefined || duplicate.metadata["continuePermit"] !== false) {
+  if (
+    duplicate === undefined ||
+    watchMeta(duplicate)?.["duplicate"] !== true ||
+    watchMeta(duplicate)?.["continuePermit"] !== false
+  ) {
     throw new Error("the duplicate receipt was not observed as duplicate/no-permit")
   }
   evidence.push("duplicate receipt returned no second permit")
@@ -213,10 +221,17 @@ try {
     60_000,
   )
   if (wrong === undefined) throw new Error("the wrong caller never reached receipt")
-  const wrongWatch = wrong.metadata["watch"] as { failure?: { code?: string } } | undefined
-  if (wrongWatch?.failure?.code !== "E_WATCH_CALLER_MISMATCH") {
-    throw new Error(`wrong caller was not refused: ${wrong.text}`)
+  const wrongFailure = watchMeta(wrong)?.["failure"] as { code?: string } | undefined
+  if (wrongFailure?.code !== "E_WATCH_CALLER_MISMATCH") {
+    throw new Error("wrong caller was not refused with E_WATCH_CALLER_MISMATCH")
   }
+  const finalMessages = await client.context(target.id)
+  if (queueCount(finalMessages) !== 1) throw new Error("duplicate/wrong caller produced another correction prompt")
+  const permitCalls = finalMessages
+    .flatMap((message) => toolCalls([message]))
+    .filter((call) => call.name === "peers" && operationOf(call) === "receipt" && watchMeta(call)?.["continuePermit"] === true)
+  if (permitCalls.length !== 1) throw new Error(`expected exactly one continue permit, got ${permitCalls.length}`)
+  evidence.push("duplicate/wrong-caller produced no second correction or continue permit")
   evidence.push("a different local session was refused with E_WATCH_CALLER_MISMATCH")
 } catch (error) {
   failure = error instanceof Error ? error.message : String(error)
@@ -229,20 +244,32 @@ try {
       stop = { stopped: false, portClosed: false, observed: String(error) }
     }
   }
+  let stubStopError: string | undefined
+  let stubPortClosed = false
   try {
     await stub.stop()
-  } catch {
-    // reported below
+    stubPortClosed = !(await isPortOpen(stub.port))
+  } catch (error) {
+    stubStopError = error instanceof Error ? error.message : String(error)
   }
   const after = readLiveService(liveService)
   const report = {
-    ok: failure === undefined && stop?.stopped === true && stop.portClosed === true && before.digest === after.digest,
+    ok:
+      failure === undefined &&
+      stop?.stopped === true &&
+      stop.portClosed === true &&
+      stubStopError === undefined &&
+      stubPortClosed &&
+      before.digest === after.digest,
     failure: failure ?? null,
     evidence,
     childPid: instance?.pid ?? null,
     stopped: stop?.stopped ?? null,
     portClosed: stop?.portClosed ?? null,
     stopObserved: stop?.observed ?? null,
+    stubStopped: stubStopError === undefined,
+    stubPortClosed,
+    stubStopError: stubStopError ?? null,
     liveServiceDigestBefore: before.digest,
     liveServiceDigestAfter: after.digest,
     liveServiceUntouched: before.digest === after.digest,
@@ -284,6 +311,16 @@ function parseCorrectionPrompt(text: string): {
     throw new Error("the correction prompt JSON was incomplete")
   }
   return { taskID: call.watch.taskID, attemptID: call.watch.attemptID, correlation: call.watch.correlation }
+}
+
+function watchMeta(call: ToolCall): Record<string, unknown> | undefined {
+  const meta = call.metadata["watch"]
+  return typeof meta === "object" && meta !== null ? (meta as Record<string, unknown>) : undefined
+}
+
+function queueCount(messages: readonly SessionMessage[]): number {
+  return messages.filter((message) => message.type === "user" && messageText(message).includes("[session-peers correction]"))
+    .length
 }
 
 function operationOf(call: ToolCall): string | undefined {

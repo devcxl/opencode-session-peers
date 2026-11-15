@@ -99,6 +99,7 @@ export function plan(body: ChatRequest): Reply {
 
   const begin = beginDirective(userText)
   if (begin !== undefined) {
+    if (toolText.length > 0) return { kind: "text", text: STUB_DONE_TEXT }
     return tool({
       action: "watch",
       watch: {
@@ -114,6 +115,7 @@ export function plan(body: ChatRequest): Reply {
 
   const duplicate = duplicateDirective(userText)
   if (duplicate !== undefined) {
+    if (toolText.length > 0) return { kind: "text", text: STUB_DONE_TEXT }
     return tool({
       action: "watch",
       watch: {
@@ -127,6 +129,7 @@ export function plan(body: ChatRequest): Reply {
 
   const wrong = wrongCallerDirective(userText)
   if (wrong !== undefined) {
+    if (toolText.length > 0) return { kind: "text", text: STUB_DONE_TEXT }
     return tool({
       action: "watch",
       watch: {
@@ -152,7 +155,7 @@ export function plan(body: ChatRequest): Reply {
             reportId: "positive-progress",
             kind: "progress",
             evidence: {
-              summary: "the target completed the smallest next step",
+              summary: "WATCH61_PROGRESS: the target completed the smallest next step",
               reference: "new-host-result",
             },
           },
@@ -160,6 +163,10 @@ export function plan(body: ChatRequest): Reply {
       }
       return { kind: "text", text: STUB_DONE_TEXT }
     }
+    if (toolText.includes("no continue permit") || toolText.includes("already recorded")) {
+      return { kind: "text", text: STUB_DONE_TEXT }
+    }
+    if (toolText.length > 0) return { kind: "text", text: STUB_DONE_TEXT }
     return tool({ action: "watch", watch: { operation: "receipt", taskID: prompt.taskID, attemptID: prompt.attemptID, correlation: prompt.correlation } })
   }
 

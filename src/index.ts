@@ -72,6 +72,8 @@ export default {
             authority: correctionAuthority,
             observationFor: (taskID) => observer?.observationFor(taskID) ?? null,
             refreshObservation: async (taskID) => (await observer?.refresh(taskID)) ?? null,
+            markOwnReservation: (taskID, fromVersion, toVersion) =>
+              observer?.markOwnReservation(taskID, fromVersion, toVersion),
             sameLocation: (sessionID) => sessionAtLocation(host.sessions, sessionID, host.location.directory),
             runtime: () => {
               const status = watch.status()
@@ -253,10 +255,10 @@ export default {
       // Close the mutation entries synchronously before awaiting any in-flight
       // work. Receipts/grants/reports must not acquire new permits after this.
       watch?.beginClosing()
-      await executor?.close()
-      // Close the observer before awaiting any surface/context cleanup so a
-      // late sample cannot repopulate observations or emit a final nudge.
+      // Stop the observer's scheduling synchronously before waiting for the
+      // executor, so proactive alerts cannot keep writing while it drains.
       observer?.dispose()
+      await executor?.close()
       await surface.dispose()
       await contextInjection?.dispose()
       watch?.dispose()
