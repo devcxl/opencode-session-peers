@@ -7,7 +7,7 @@ import type { WatchPayload } from "../rpc.ts"
 import { ensurePeriod } from "./watch-format.ts"
 
 export function authorizationText(mode: WatchPayload["capability"]["mode"]): string {
-  return `${modeName(mode)} (the only mode this build offers)`
+  return modeName(mode)
 }
 
 export function modeName(mode: WatchPayload["capability"]["mode"]): string {

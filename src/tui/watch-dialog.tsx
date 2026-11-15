@@ -24,8 +24,8 @@ import {
 import { GRANT_TERMS, gatePageOf, gatePageSizeFor } from "./watch-correction.ts"
 import { waitPageOf, waitPageSizeFor } from "./watch-observation.ts"
 import { formatWatchTime } from "./watch-format.ts"
-import { watchContent, type WatchPane, type WatchState } from "./watch-view.ts"
-import type { Tone } from "./view.ts"
+import { watchContent, type WatchContent, type WatchPane, type WatchState } from "./watch-view.ts"
+import { foldSessionID, type Tone } from "./view.ts"
 import { colourFor, tableStyle } from "./table.ts"
 
 export interface WatchDialogProps {
@@ -143,8 +143,39 @@ export function WatchDialog(props: WatchDialogProps) {
     if (page.index !== gatePage()) setGatePage(page.index)
   })
 
-  const content = createMemo(() =>
-    watchContent({
+  const focusContent = createMemo<WatchContent | undefined>(() => {
+    const stage = grantStage()
+    if (stage === undefined) return undefined
+    const task = payload()?.task
+    const contextLines: string[] = []
+    if (task !== undefined && task !== null) {
+      contextLines.push(
+        task.targetSessionID === props.sessionID
+          ? `target: this session (${foldSessionID(props.sessionID)})`
+          : `target: ${foldSessionID(task.targetSessionID)}`,
+      )
+      contextLines.push(`task: ${task.taskID} · version ${task.version}`)
+    }
+    return {
+      pane: "correction",
+      title:
+        stage === "review"
+          ? "Session watch — grant review"
+          : stage === "confirm"
+            ? "Session watch — grant confirmation"
+            : "Session watch — downgrade review",
+      contextLines,
+      columns: [],
+      rows: [],
+      notes: [],
+      noteTone: "muted",
+    }
+  })
+
+  const content = createMemo(() => {
+    const focused = focusContent()
+    if (focused !== undefined) return focused
+    return watchContent({
       state: props.state(),
       sessionID: props.sessionID,
       pane: pane(),
@@ -156,8 +187,8 @@ export function WatchDialog(props: WatchDialogProps) {
       gatePage: gatePage(),
       gatePageSize: gatePageSize(),
       compact: dimensions().height < 52,
-    }),
-  )
+    })
+  })
 
   const canPause = createMemo(
     () => pane() === "task" && controlEnabled(props.state(), "pause"),
@@ -372,12 +403,19 @@ export function WatchDialog(props: WatchDialogProps) {
     if (busy()) return "Working…"
     switch (grantStage()) {
       case "review":
-        return `${GRANT_TERMS}\ny: prepare challenge · n: cancel`
+        return `${GRANT_TERMS}\ny: declare + prepare challenge · n: cancel`
       case "confirm": {
         const summary = grantSummary()
         const expires = grantExpiresAt()
-        const prepared = summary === undefined ? "Challenge prepared." : `Challenge prepared · ${summary}`
-        return `${prepared}${expires === undefined ? "" : ` · expires ${formatWatchTime(expires)}`}\ny: confirm · n: cancel`
+        const shortSummary =
+          summary === undefined
+            ? undefined
+            : summary.length > 240
+              ? `${summary.slice(0, 240).trimEnd()}…`
+              : summary
+        const prepared =
+          shortSummary === undefined ? "Challenge prepared." : `Challenge prepared · ${shortSummary}`
+        return `${prepared}${expires === undefined ? "" : ` · expires ${formatWatchTime(expires)}`}\ny: grant · n: cancel`
       }
       case "downgrade":
         return "Downgrade to alert-only? y: downgrade · n: cancel — business work continues; used attempts are not reset."

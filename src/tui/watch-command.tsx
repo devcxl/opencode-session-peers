@@ -423,7 +423,7 @@ export function installWatch(port: TuiPort, options: WatchCommandOptions = {}): 
         case "correct":
         case "receipt":
           port.toast(
-            "Sending a correction and submitting a receipt are model-tool paths; this panel cannot do either.",
+            "Only the automatic executor can send a correction; only the target model tool can submit a receipt. This panel cannot do either.",
             "warning",
           )
           return
