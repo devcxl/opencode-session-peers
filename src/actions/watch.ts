@@ -35,6 +35,31 @@ export interface WatchActionDeps {
   readonly directory: string
 }
 
+const WATCH_FIELDS = new Set([
+  "operation",
+  "taskID",
+  "alertID",
+  "expectedVersion",
+  "requestId",
+  "goal",
+  "targetSessionID",
+  "mode",
+  "reportId",
+  "kind",
+  "evidence",
+])
+const EVIDENCE_FIELDS = new Set([
+  "summary",
+  "reference",
+  "waitKind",
+  "waitFor",
+  "reason",
+  "waitID",
+  "waitUntil",
+  "clearsWaitID",
+  "clearEvidence",
+])
+
 const OPERATIONS = [
   "show",
   "enroll",
@@ -75,6 +100,12 @@ export async function watchAction(deps: WatchActionDeps, call: ToolCall, input: 
 
   switch (request.operation) {
     case "grant":
+      return outcomeResult(
+        failure(
+          "E_WATCH_UNSUPPORTED",
+          "A correction grant must be prepared and confirmed from the controlled TUI surface. A model tool call cannot confirm it.",
+        ),
+      )
     case "correct":
       return outcomeResult(failure("E_WATCH_UNSUPPORTED", CORRECTION_UNAVAILABLE_REASON))
     case "receipt":
@@ -176,6 +207,9 @@ function readWatchInput(input: unknown): Parsed {
     return { ok: false, reason: "the watch action needs a watch object" }
   }
   const fields = watch as Record<string, unknown>
+  for (const key of Object.keys(fields)) {
+    if (!WATCH_FIELDS.has(key)) return { ok: false, reason: `watch.${key} is not a supported field` }
+  }
   const operation = fields["operation"]
   if (typeof operation !== "string" || !OPERATIONS.includes(operation as Operation)) {
     return {
@@ -208,6 +242,9 @@ function readWatchInput(input: unknown): Parsed {
   if (rawEvidence !== undefined) {
     if (typeof rawEvidence !== "object" || rawEvidence === null || Array.isArray(rawEvidence)) {
       return { ok: false, reason: "watch.evidence must be an object" }
+    }
+    for (const key of Object.keys(rawEvidence)) {
+      if (!EVIDENCE_FIELDS.has(key)) return { ok: false, reason: `watch.evidence.${key} is not a supported field` }
     }
     evidence = rawEvidence as WatchEvidence
   }
@@ -313,7 +350,9 @@ function watchText(outcome: WatchOutcome): string {
     `Task state: ${task.taskState}`,
     `Supervision: ${task.watchState}${task.pause === null ? "" : ` (${task.pause.kind}: ${task.pause.reason})`}`,
     ...capabilityLines(outcome.capability),
-    `Correction attempts: ${task.attempts.used}/${task.attempts.limit} (correction itself is unavailable).`,
+    `Correction attempts: ${task.attempts.used}/${task.attempts.limit} permanent; policy: ${task.correction.executionPolicy}.`,
+    `Correction actual: ${task.correction.actual} — ${task.correction.actualReason}`,
+    `Correction grant: ${task.correction.authorization.mode}/${task.correction.authorization.state}, version ${task.correction.authorization.version}; phase ${task.correction.phase}.`,
     `Protocol participation: ${task.participation === "seen" ? "seen (a report has been recorded)" : "not seen (no report yet)"}`,
     `Ownership: ${task.ownership === "this-instance" ? "this plugin instance" : "another activation (read-only observation; no takeover)"}`,
     `State version: ${task.version}; generation: ${task.generation}`,
@@ -352,7 +391,7 @@ function watchText(outcome: WatchOutcome): string {
 /** The real capability, not the mode the user selected. */
 function capabilityLines(capability: WatchCapability): readonly string[] {
   return [
-    `Authorization: ${capability.mode === "alert" ? "alert-only (the only mode this build offers)" : capability.mode}`,
+    `Authorization: ${capability.mode === "alert" ? "alert-only" : capability.mode}`,
     `Actual capability: ${capability.monitoring}; automatic detection is ${capability.automaticDetection} — ${capability.automaticDetectionReason}`,
     `Correction: ${capability.correction} — ${capability.correctionReason}`,
   ]

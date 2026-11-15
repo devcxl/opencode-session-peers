@@ -13,7 +13,7 @@
  * processes can race for the same session without both succeeding.
  */
 
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import {
   accessSync,
   chmodSync,
@@ -41,9 +41,16 @@ import {
   WATCH_ALERT_REASON_LIMIT,
   WATCH_ALERT_SUMMARY_LIMIT,
   WATCH_CORRECTION_LIMIT,
+  WATCH_CORRECTION_TERMS,
+  WATCH_LIMITS,
   type WatchAlertKind,
   type WatchAlertRecord,
   type WatchAlertState,
+  type WatchCorrectionAttemptPhase,
+  type WatchCorrectionAttemptRecord,
+  type WatchCorrectionGrantRecord,
+  type WatchCorrectionSnapshot,
+  type WatchCorrectionStopReason,
   type WatchEvidence,
   type WatchMode,
   type WatchReportKind,
@@ -53,7 +60,7 @@ import {
   type WatchedTaskState,
 } from "../domain/watch.ts"
 
-export const WATCH_LEDGER_SCHEMA_VERSION = 7
+export const WATCH_LEDGER_SCHEMA_VERSION = 8
 export const WATCH_LEDGER_PROTOCOL_VERSION = 1
 export const WATCH_MIN_SQLITE = "3.51.3"
 
@@ -83,6 +90,18 @@ export type WatchLedgerErrorCode =
   | "ended"
   | "not_active"
   | "state_unknown"
+  | "not_granted"
+  | "grant_pending"
+  | "grant_expired"
+  | "attempt_limit"
+  | "pending_attempt"
+  | "session_unresolved"
+  | "claim_taken"
+  | "stale_owner"
+  | "stale_generation"
+  | "not_claimable"
+  | "receipt_conflict"
+  | "recovery_evidence_missing"
   | "ledger_error"
 
 export type LedgerResult<T> =
@@ -157,6 +176,100 @@ export interface WatchAlertAckInput {
   readonly at: number
 }
 
+export interface PrepareCorrectionGrantInput {
+  readonly taskId: string
+  readonly callerSessionId: string
+  readonly ownerActivation: string
+  readonly expectedVersion: number
+  readonly reviewSummary: string
+  readonly at: number
+  /** Short challenge lifetime, bounded by the ledger. */
+  readonly ttlMs?: number
+}
+
+export interface ConfirmCorrectionGrantInput {
+  readonly challenge: string
+  readonly taskId: string
+  readonly ownerActivation: string
+  readonly expectedVersion: number
+  readonly generation: number
+  readonly termsDigest: string
+  readonly at: number
+}
+
+export interface DowngradeCorrectionInput {
+  readonly taskId: string
+  readonly callerSessionId: string
+  readonly ownerActivation: string
+  readonly expectedVersion: number
+  readonly at: number
+}
+
+export interface ReserveCorrectionInput {
+  readonly taskId: string
+  readonly callerSessionId: string
+  readonly ownerActivation: string
+  readonly expectedVersion: number
+  readonly generation: number
+  readonly reservationId: string
+  readonly at: number
+}
+
+export interface ClaimCorrectionInput {
+  readonly taskId: string
+  readonly reservationId: string
+  readonly ownerActivation: string
+  readonly expectedVersion: number
+  readonly generation: number
+  readonly at: number
+}
+
+export interface RecordCorrectionOutcomeInput {
+  readonly taskId: string
+  readonly reservationId: string
+  readonly ownerActivation: string
+  readonly outcome: "accepted" | "rejected" | "unknown"
+  readonly at: number
+}
+
+export interface RecordCorrectionReceiptInput {
+  readonly taskId: string
+  readonly reservationId: string
+  readonly callerSessionId: string
+  readonly receiptId: string
+  readonly generation: number
+  readonly at: number
+}
+
+export interface AbortCorrectionInput {
+  readonly taskId: string
+  readonly reservationId: string
+  readonly ownerActivation: string
+  readonly expectedVersion: number
+  readonly generation: number
+  readonly at: number
+}
+
+export interface RecordCorrectionRecoveryInput {
+  readonly taskId: string
+  readonly reservationId: string
+  readonly callerSessionId: string
+  readonly progressReportId: string
+  readonly resultReference: string
+  readonly generation: number
+  readonly at: number
+}
+
+export interface CorrectionGrantChallenge {
+  readonly challenge: string
+  readonly taskID: string
+  readonly expectedVersion: number
+  readonly generation: number
+  readonly termsDigest: string
+  readonly reviewSummary: string
+  readonly expiresAt: number
+}
+
 export interface WatchLedger {
   readonly ledgerId: string
   readonly path: string
@@ -180,6 +293,54 @@ export interface WatchLedger {
     readonly at: number
   }): LedgerResult<{ readonly changed: boolean }>
   ackAlert(input: WatchAlertAckInput): LedgerResult<{ readonly alert: WatchAlertRecord; readonly changed: boolean }>
+  /** Create a short-lived controlled-surface challenge; never shown to the model. */
+  prepareCorrectionGrant(input: PrepareCorrectionGrantInput): LedgerResult<CorrectionGrantChallenge>
+  /** Consume one challenge and record a grant; a repeated challenge cannot grant twice. */
+  confirmCorrectionGrant(input: ConfirmCorrectionGrantInput): LedgerResult<{
+    readonly task: WatchTaskRecord
+    readonly grant: WatchCorrectionGrantRecord
+    readonly created: boolean
+  }>
+  /** Downgrade to alert-only without touching permanent attempt history. */
+  downgradeCorrection(input: DowngradeCorrectionInput): LedgerResult<{
+    readonly task: WatchTaskRecord
+    readonly grant: WatchCorrectionGrantRecord | null
+    readonly changed: boolean
+  }>
+  /** Permanently reserve the next attempt number. No refund path exists. */
+  reserveCorrection(input: ReserveCorrectionInput): LedgerResult<{
+    readonly task: WatchTaskRecord
+    readonly attempt: WatchCorrectionAttemptRecord
+    readonly created: boolean
+  }>
+  /** Claim the one send slot for a reservation; reopening cannot claim it again. */
+  claimCorrection(input: ClaimCorrectionInput): LedgerResult<{
+    readonly attempt: WatchCorrectionAttemptRecord
+    readonly claimed: boolean
+  }>
+  /** Merge a delivery outcome monotonically; never reopens the claimed slot. */
+  recordCorrectionOutcome(input: RecordCorrectionOutcomeInput): LedgerResult<{
+    readonly attempt: WatchCorrectionAttemptRecord
+    readonly changed: boolean
+  }>
+  /** Record the first receipt for an attempt; duplicates never issue a second permit. */
+  recordCorrectionReceipt(input: RecordCorrectionReceiptInput): LedgerResult<{
+    readonly attempt: WatchCorrectionAttemptRecord
+    readonly continuePermit: boolean
+    readonly duplicate: boolean
+  }>
+  /** Abandon a reservation before it was claimed; the ordinal is still spent. */
+  abortCorrection(input: AbortCorrectionInput): LedgerResult<{
+    readonly attempt: WatchCorrectionAttemptRecord
+    readonly aborted: boolean
+  }>
+  /** Confirm recovery from a new progress report and its matching new result. */
+  recordCorrectionRecovery(input: RecordCorrectionRecoveryInput): LedgerResult<{
+    readonly attempt: WatchCorrectionAttemptRecord
+    readonly recovered: boolean
+  }>
+  /** Read grants and permanent attempts without exposing the challenge nonce. */
+  correction(taskID: string): LedgerResult<WatchCorrectionSnapshot>
   close(): void
 }
 
@@ -238,6 +399,59 @@ interface ReportedWaitRow {
   readonly clear_evidence: string | null
 }
 
+interface CorrectionGrantRow {
+  readonly task_id: string
+  readonly grant_id: string
+  readonly mode: string
+  readonly state: string
+  readonly version: number
+  readonly generation: number
+  readonly scope_target_session_id: string
+  readonly review_summary: string
+  readonly terms_digest: string
+  readonly confirmation_id: string
+  readonly granted_at: number
+  readonly revoked_at: number | null
+}
+
+interface CorrectionChallengeRow {
+  readonly challenge: string
+  readonly task_id: string
+  readonly expected_version: number
+  readonly generation: number
+  readonly owner_activation: string
+  readonly terms_digest: string
+  readonly review_summary: string
+  readonly created_at: number
+  readonly expires_at: number
+  readonly consumed_at: number | null
+}
+
+interface CorrectionAttemptRow {
+  readonly reservation_id: string
+  readonly task_id: string
+  readonly attempt_no: number
+  readonly state: string
+  readonly reserved_at: number
+  readonly claimed_at: number | null
+  readonly claimed_by_activation: string | null
+  readonly claimed_generation: number | null
+  readonly accepted_at: number | null
+  readonly rejected_at: number | null
+  readonly unknown_at: number | null
+  readonly aborted_at: number | null
+  readonly receipt_id: string | null
+  readonly receipt_at: number | null
+  readonly receipt_caller_session_id: string | null
+  readonly receipt_generation: number | null
+  readonly receipt_permit_at: number | null
+  readonly receipt_refusal_reason: string | null
+  readonly recovery_report_id: string | null
+  readonly recovery_reference: string | null
+  readonly recovered_at: number | null
+  readonly stop_reason: string | null
+}
+
 interface AlertRow {
   readonly alert_id: string
   readonly task_id: string
@@ -267,7 +481,7 @@ CREATE TABLE IF NOT EXISTS watch_tasks (
   initiator_session_id TEXT NOT NULL,
   target_session_id TEXT NOT NULL,
   goal TEXT NOT NULL,
-  mode TEXT NOT NULL CHECK (mode = 'alert'),
+  mode TEXT NOT NULL CHECK (mode IN ('alert','limited-correction')),
   watch_state TEXT NOT NULL CHECK (watch_state IN ('active','paused','ended')),
   task_state TEXT NOT NULL CHECK (task_state IN ('not-started','in-progress','waiting','blocked','completed')),
   version INTEGER NOT NULL CHECK (version >= 1),
@@ -339,6 +553,69 @@ CREATE TABLE IF NOT EXISTS watch_reported_waits (
   clear_evidence TEXT,
   PRIMARY KEY (task_id, wait_id)
 );
+
+CREATE TABLE IF NOT EXISTS watch_correction_grants (
+  task_id TEXT PRIMARY KEY REFERENCES watch_tasks(task_id),
+  grant_id TEXT NOT NULL UNIQUE,
+  mode TEXT NOT NULL CHECK (mode = 'limited-correction'),
+  state TEXT NOT NULL CHECK (state IN ('granted','revoked')),
+  version INTEGER NOT NULL CHECK (version >= 1),
+  generation INTEGER NOT NULL CHECK (generation >= 1),
+  scope_target_session_id TEXT NOT NULL,
+  review_summary TEXT NOT NULL,
+  terms_digest TEXT NOT NULL,
+  confirmation_id TEXT NOT NULL,
+  granted_at INTEGER NOT NULL,
+  revoked_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS watch_correction_challenges (
+  challenge TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES watch_tasks(task_id),
+  expected_version INTEGER NOT NULL,
+  generation INTEGER NOT NULL,
+  owner_activation TEXT NOT NULL,
+  terms_digest TEXT NOT NULL,
+  review_summary TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  consumed_at INTEGER
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS one_open_correction_challenge
+  ON watch_correction_challenges(task_id) WHERE consumed_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS watch_correction_attempts (
+  reservation_id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES watch_tasks(task_id),
+  attempt_no INTEGER NOT NULL CHECK (attempt_no BETWEEN 1 AND ${WATCH_CORRECTION_LIMIT}),
+  state TEXT NOT NULL CHECK (state IN ('reserved','sending','accepted','rejected','unknown','receipted','recovered','aborted')),
+  reserved_at INTEGER NOT NULL,
+  claimed_at INTEGER,
+  claimed_by_activation TEXT,
+  claimed_generation INTEGER,
+  accepted_at INTEGER,
+  rejected_at INTEGER,
+  unknown_at INTEGER,
+  aborted_at INTEGER,
+  receipt_id TEXT UNIQUE,
+  receipt_at INTEGER,
+  receipt_caller_session_id TEXT,
+  receipt_generation INTEGER,
+  receipt_permit_at INTEGER,
+  receipt_refusal_reason TEXT,
+  recovery_report_id TEXT,
+  recovery_reference TEXT,
+  recovered_at INTEGER,
+  stop_reason TEXT,
+  UNIQUE (task_id, attempt_no)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS one_pending_correction_attempt
+  ON watch_correction_attempts(task_id) WHERE state IN ('reserved','sending','accepted','unknown');
+
+CREATE INDEX IF NOT EXISTS correction_attempts_by_task
+  ON watch_correction_attempts(task_id, attempt_no);
 `
 
 const REQUIRED_TABLES = [
@@ -348,6 +625,9 @@ const REQUIRED_TABLES = [
   "watch_reports",
   "watch_alerts",
   "watch_reported_waits",
+  "watch_correction_grants",
+  "watch_correction_challenges",
+  "watch_correction_attempts",
 ]
 const REQUIRED_TASK_COLUMNS = [
   "task_id",
@@ -386,6 +666,56 @@ const REQUIRED_REPORTED_WAIT_COLUMNS = [
   "wait_at",
   "cleared_at",
   "clear_evidence",
+]
+const REQUIRED_CORRECTION_GRANT_COLUMNS = [
+  "task_id",
+  "grant_id",
+  "mode",
+  "state",
+  "version",
+  "generation",
+  "scope_target_session_id",
+  "review_summary",
+  "terms_digest",
+  "confirmation_id",
+  "granted_at",
+  "revoked_at",
+]
+const REQUIRED_CORRECTION_CHALLENGE_COLUMNS = [
+  "challenge",
+  "task_id",
+  "expected_version",
+  "generation",
+  "owner_activation",
+  "terms_digest",
+  "review_summary",
+  "created_at",
+  "expires_at",
+  "consumed_at",
+]
+const REQUIRED_CORRECTION_ATTEMPT_COLUMNS = [
+  "reservation_id",
+  "task_id",
+  "attempt_no",
+  "state",
+  "reserved_at",
+  "claimed_at",
+  "claimed_by_activation",
+  "claimed_generation",
+  "accepted_at",
+  "rejected_at",
+  "unknown_at",
+  "aborted_at",
+  "receipt_id",
+  "receipt_at",
+  "receipt_caller_session_id",
+  "receipt_generation",
+  "receipt_permit_at",
+  "receipt_refusal_reason",
+  "recovery_report_id",
+  "recovery_reference",
+  "recovered_at",
+  "stop_reason",
 ]
 const REQUIRED_ALERT_COLUMNS = [
   "alert_id",
@@ -610,6 +940,9 @@ function openOnce(options: OpenWatchLedgerOptions): OpenWatchLedgerResult {
       assertColumns(db, "enrollment_requests", REQUIRED_ENROLLMENT_COLUMNS)
       assertColumns(db, "watch_alerts", REQUIRED_ALERT_COLUMNS)
       assertColumns(db, "watch_reported_waits", REQUIRED_REPORTED_WAIT_COLUMNS)
+      assertColumns(db, "watch_correction_grants", REQUIRED_CORRECTION_GRANT_COLUMNS)
+      assertColumns(db, "watch_correction_challenges", REQUIRED_CORRECTION_CHALLENGE_COLUMNS)
+      assertColumns(db, "watch_correction_attempts", REQUIRED_CORRECTION_ATTEMPT_COLUMNS)
     }
 
     const metadata = readMetadata(db)
@@ -723,6 +1056,23 @@ function assertAttemptsIntegrity(db: Database): void {
     .get(WATCH_CORRECTION_LIMIT) as { n: number }
   if (bad.n !== 0) {
     throw new LedgerFailure("corrupt", "a task row has an invalid attempts_used value")
+  }
+  const mismatch = db
+    .query(
+      `SELECT COUNT(*) AS n FROM watch_tasks t
+       WHERE attempts_used <> (
+         SELECT COUNT(*) FROM watch_correction_attempts a WHERE a.task_id = t.task_id
+       )`,
+    )
+    .get() as { n: number }
+  if (mismatch.n !== 0) {
+    throw new LedgerFailure("corrupt", "attempts_used does not match the permanent attempt rows")
+  }
+  const badGrant = db
+    .query("SELECT COUNT(*) AS n FROM watch_correction_grants WHERE mode <> 'limited-correction' OR version < 1")
+    .get() as { n: number }
+  if (badGrant.n !== 0) {
+    throw new LedgerFailure("corrupt", "a correction grant row is invalid")
   }
 }
 
@@ -1149,6 +1499,611 @@ class SqliteWatchLedger implements WatchLedger {
     })
   }
 
+  prepareCorrectionGrant(input: PrepareCorrectionGrantInput): LedgerResult<CorrectionGrantChallenge> {
+    return this.immediate(() => {
+      const taskID = requiredIdentifier(input.taskId, "taskId")
+      const caller = requiredIdentifier(input.callerSessionId, "callerSessionId")
+      const owner = requiredIdentifier(input.ownerActivation, "ownerActivation")
+      const reviewSummary = readBoundedText(input.reviewSummary, "reviewSummary", WATCH_ALERT_REASON_LIMIT)
+      if (!reviewSummary.ok) throw new LedgerFailure("invalid_input", reviewSummary.reason)
+      if (!Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 1) {
+        throw new LedgerFailure("invalid_input", "expectedVersion must be a positive integer")
+      }
+      if (!Number.isSafeInteger(input.at) || input.at < 0) {
+        throw new LedgerFailure("invalid_input", "at must be a non-negative integer")
+      }
+      const task = this.taskRow(taskID)
+      if (task === null) throw new LedgerFailure("unknown_task", taskID)
+      this.checkLedger(task)
+      if (task.initiator_session_id !== caller) {
+        throw new LedgerFailure("caller_mismatch", "only the task initiator may prepare a grant")
+      }
+      if (task.owner_activation !== owner) {
+        throw new LedgerFailure("stale_owner", "the current activation does not own this task")
+      }
+      if (task.version !== input.expectedVersion) {
+        throw new LedgerFailure("stale_version", `the task is at version ${task.version}`)
+      }
+      if (task.watch_state === "ended" || task.task_state === "completed") {
+        throw new LedgerFailure("invalid_transition", "a completed or ended task cannot receive a grant")
+      }
+      const ttl = Math.min(Math.max(Math.trunc(input.ttlMs ?? 120_000), 30_000), 300_000)
+      const termsDigest = createHash("sha256")
+        .update(
+          canonicalJson([
+            WATCH_CORRECTION_TERMS,
+            task.initiator_session_id,
+            task.target_session_id,
+            task.goal,
+            task.version,
+            task.generation,
+          ]),
+        )
+        .digest("hex")
+      this.db
+        .query("UPDATE watch_correction_challenges SET consumed_at = ? WHERE task_id = ? AND consumed_at IS NULL")
+        .run(input.at, taskID)
+      const challenge = randomUUID()
+      const expiresAt = input.at + ttl
+      this.db
+        .query(
+          `INSERT INTO watch_correction_challenges (
+            challenge, task_id, expected_version, generation, owner_activation,
+            terms_digest, review_summary, created_at, expires_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          challenge,
+          taskID,
+          task.version,
+          task.generation,
+          task.owner_activation,
+          termsDigest,
+          reviewSummary.value,
+          input.at,
+          expiresAt,
+        )
+      return {
+        challenge,
+        taskID,
+        expectedVersion: task.version,
+        generation: task.generation,
+        termsDigest,
+        reviewSummary: reviewSummary.value,
+        expiresAt,
+      }
+    })
+  }
+
+  confirmCorrectionGrant(input: ConfirmCorrectionGrantInput): LedgerResult<{
+    readonly task: WatchTaskRecord
+    readonly grant: WatchCorrectionGrantRecord
+    readonly created: boolean
+  }> {
+    return this.immediate(() => {
+      const taskID = requiredIdentifier(input.taskId, "taskId")
+      const challenge = requiredIdentifier(input.challenge, "challenge")
+      const owner = requiredIdentifier(input.ownerActivation, "ownerActivation")
+      const termsDigest = requiredIdentifier(input.termsDigest, "termsDigest")
+      if (!Number.isSafeInteger(input.at) || input.at < 0) {
+        throw new LedgerFailure("invalid_input", "at must be a non-negative integer")
+      }
+      const task = this.taskRow(taskID)
+      if (task === null) throw new LedgerFailure("unknown_task", taskID)
+      this.checkLedger(task)
+      if (task.owner_activation !== owner) {
+        throw new LedgerFailure("stale_owner", "the current activation does not own this task")
+      }
+      if (task.version !== input.expectedVersion || task.generation !== input.generation) {
+        throw new LedgerFailure("stale_version", "the task version or generation changed")
+      }
+      const row = this.db
+        .query("SELECT * FROM watch_correction_challenges WHERE challenge = ?")
+        .get(challenge) as CorrectionChallengeRow | null
+      if (row === null || row.consumed_at !== null) {
+        throw new LedgerFailure("grant_expired", "the challenge is unknown or already consumed")
+      }
+      if (row.expires_at <= input.at) {
+        this.db
+          .query("UPDATE watch_correction_challenges SET consumed_at = ? WHERE challenge = ?")
+          .run(input.at, challenge)
+        throw new LedgerFailure("grant_expired", "the challenge has expired")
+      }
+      if (
+        row.task_id !== task.task_id ||
+        row.expected_version !== input.expectedVersion ||
+        row.generation !== input.generation ||
+        row.owner_activation !== owner ||
+        row.terms_digest !== termsDigest
+      ) {
+        throw new LedgerFailure("grant_expired", "the challenge does not match this task, version or terms")
+      }
+      const existing = this.db
+        .query("SELECT * FROM watch_correction_grants WHERE task_id = ?")
+        .get(task.task_id) as CorrectionGrantRow | null
+      const version = (existing?.version ?? 0) + 1
+      this.db
+        .query("UPDATE watch_correction_challenges SET consumed_at = ? WHERE challenge = ?")
+        .run(input.at, challenge)
+      if (existing === null) {
+        this.db
+          .query(
+            `INSERT INTO watch_correction_grants (
+              task_id, grant_id, mode, state, version, generation,
+              scope_target_session_id, review_summary, terms_digest,
+              confirmation_id, granted_at
+            ) VALUES (?, ?, 'limited-correction', 'granted', ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            task.task_id,
+            randomUUID(),
+            version,
+            task.generation,
+            task.target_session_id,
+            row.review_summary,
+            row.terms_digest,
+            row.challenge,
+            input.at,
+          )
+      } else {
+        this.db
+          .query(
+            `UPDATE watch_correction_grants SET
+              grant_id = ?, mode = 'limited-correction', state = 'granted', version = ?,
+              generation = ?, scope_target_session_id = ?, review_summary = ?,
+              terms_digest = ?, confirmation_id = ?, granted_at = ?, revoked_at = NULL
+             WHERE task_id = ?`,
+          )
+          .run(
+            randomUUID(),
+            version,
+            task.generation,
+            task.target_session_id,
+            row.review_summary,
+            row.terms_digest,
+            row.challenge,
+            input.at,
+            task.task_id,
+          )
+      }
+      this.db
+        .query("UPDATE watch_tasks SET mode = 'limited-correction', version = version + 1, updated_at = ? WHERE task_id = ?")
+        .run(input.at, task.task_id)
+      return {
+        task: this.task(task.task_id),
+        grant: correctionGrantFromRow(this.correctionGrantRow(task.task_id)),
+        created: existing === null,
+      }
+    })
+  }
+
+  downgradeCorrection(input: DowngradeCorrectionInput): LedgerResult<{
+    readonly task: WatchTaskRecord
+    readonly grant: WatchCorrectionGrantRecord | null
+    readonly changed: boolean
+  }> {
+    return this.immediate(() => {
+      const taskID = requiredIdentifier(input.taskId, "taskId")
+      const caller = requiredIdentifier(input.callerSessionId, "callerSessionId")
+      const owner = requiredIdentifier(input.ownerActivation, "ownerActivation")
+      const task = this.taskRow(taskID)
+      if (task === null) throw new LedgerFailure("unknown_task", taskID)
+      this.checkLedger(task)
+      if (task.initiator_session_id !== caller) {
+        throw new LedgerFailure("caller_mismatch", "only the task initiator may downgrade its grant")
+      }
+      if (task.owner_activation !== owner) {
+        throw new LedgerFailure("stale_owner", "the current activation does not own this task")
+      }
+      if (task.version !== input.expectedVersion) {
+        throw new LedgerFailure("stale_version", `the task is at version ${task.version}`)
+      }
+      const row = this.correctionGrantRow(task.task_id)
+      if (row === null) throw new LedgerFailure("not_granted", "there is no correction grant to downgrade")
+      if (row.state === "revoked") {
+        return { task: this.task(task.task_id), grant: correctionGrantFromRow(row), changed: false }
+      }
+      this.db
+        .query("UPDATE watch_correction_grants SET state = 'revoked', version = version + 1, revoked_at = ? WHERE task_id = ?")
+        .run(input.at, task.task_id)
+      this.db
+        .query("UPDATE watch_tasks SET mode = 'alert', version = version + 1, updated_at = ? WHERE task_id = ?")
+        .run(input.at, task.task_id)
+      return {
+        task: this.task(task.task_id),
+        grant: correctionGrantFromRow(this.correctionGrantRow(task.task_id)),
+        changed: true,
+      }
+    })
+  }
+
+  reserveCorrection(input: ReserveCorrectionInput): LedgerResult<{
+    readonly task: WatchTaskRecord
+    readonly attempt: WatchCorrectionAttemptRecord
+    readonly created: boolean
+  }> {
+    return this.immediate(() => {
+      const taskID = requiredIdentifier(input.taskId, "taskId")
+      const caller = requiredIdentifier(input.callerSessionId, "callerSessionId")
+      const owner = requiredIdentifier(input.ownerActivation, "ownerActivation")
+      const reservationID = requiredIdentifier(input.reservationId, "reservationId")
+      const task = this.taskRow(taskID)
+      if (task === null) throw new LedgerFailure("unknown_task", taskID)
+      this.checkLedger(task)
+      if (task.initiator_session_id !== caller) {
+        throw new LedgerFailure("caller_mismatch", "only the task initiator may reserve an attempt")
+      }
+      if (task.owner_activation !== owner) {
+        throw new LedgerFailure("stale_owner", "the current activation does not own this task")
+      }
+      const existing = this.correctionAttemptRow(reservationID)
+      if (existing !== null) {
+        if (existing.task_id !== taskID) {
+          throw new LedgerFailure("conflict", "that reservation id belongs to another task")
+        }
+        return { task: this.task(taskID), attempt: correctionAttemptFromRow(existing), created: false }
+      }
+      if (task.version !== input.expectedVersion) {
+        throw new LedgerFailure("stale_version", `the task is at version ${task.version}`)
+      }
+      if (task.generation !== input.generation) {
+        throw new LedgerFailure("stale_generation", `the task is at generation ${task.generation}`)
+      }
+      if (task.watch_state !== "active" || task.task_state === "completed") {
+        throw new LedgerFailure("not_active", "the task is not active and unfinished")
+      }
+      if (task.last_report_id === null) {
+        throw new LedgerFailure("not_granted", "the target has not participated in the protocol")
+      }
+      const grant = this.correctionGrantRow(task.task_id)
+      if (grant === null) throw new LedgerFailure("not_granted", "no correction grant is recorded")
+      if (grant.state !== "granted" || grant.generation !== task.generation) {
+        throw new LedgerFailure("not_granted", "the correction grant is revoked or bound to another generation")
+      }
+      if (grant.scope_target_session_id !== task.target_session_id) {
+        throw new LedgerFailure("not_granted", "the correction grant does not cover this target")
+      }
+      const counts = this.db
+        .query("SELECT COUNT(*) AS used, COALESCE(MAX(attempt_no), 0) AS highest FROM watch_correction_attempts WHERE task_id = ?")
+        .get(task.task_id) as { used: number; highest: number }
+      if (counts.used >= WATCH_CORRECTION_LIMIT) {
+        throw new LedgerFailure("attempt_limit", "the task has spent all three permanent attempts")
+      }
+      const pending = this.db
+        .query(
+          "SELECT 1 AS yes FROM watch_correction_attempts WHERE task_id = ? AND state IN ('reserved','sending','accepted','unknown') LIMIT 1",
+        )
+        .get(task.task_id) as { yes: number } | null
+      if (pending !== null) throw new LedgerFailure("pending_attempt", "the task already has an unresolved attempt")
+      const sessionUnresolved = this.db
+        .query(
+          `SELECT 1 AS yes FROM watch_correction_attempts a
+           JOIN watch_tasks t ON t.task_id = a.task_id
+           WHERE t.target_session_id = ? AND t.task_id <> ?
+             AND a.state IN ('reserved','sending','accepted','unknown')
+           LIMIT 1`,
+        )
+        .get(task.target_session_id, task.task_id) as { yes: number } | null
+      if (sessionUnresolved !== null) {
+        throw new LedgerFailure("session_unresolved", "an older task for this session still has an unresolved attempt")
+      }
+      const ordinal = counts.highest + 1
+      try {
+        this.db
+          .query(
+            `INSERT INTO watch_correction_attempts (
+              reservation_id, task_id, attempt_no, state, reserved_at
+            ) VALUES (?, ?, ?, 'reserved', ?)`,
+          )
+          .run(reservationID, task.task_id, ordinal, input.at)
+      } catch (error) {
+        const text = String(error)
+        if (text.includes("one_pending_correction_attempt")) {
+          throw new LedgerFailure("pending_attempt", "another attempt was reserved concurrently")
+        }
+        if (text.includes("attempt_no")) {
+          throw new LedgerFailure("attempt_limit", "the task has spent all three permanent attempts")
+        }
+        throw error
+      }
+      const taskVersion = task.version + 1
+      this.db
+        .query(
+          "UPDATE watch_tasks SET attempts_used = ?, version = ?, updated_at = ? WHERE task_id = ? AND version = ?",
+        )
+        .run(ordinal, taskVersion, input.at, task.task_id, task.version)
+      return {
+        task: this.task(task.task_id),
+        attempt: correctionAttemptFromRow(this.correctionAttemptRow(reservationID)),
+        created: true,
+      }
+    })
+  }
+
+  claimCorrection(input: ClaimCorrectionInput): LedgerResult<{
+    readonly attempt: WatchCorrectionAttemptRecord
+    readonly claimed: boolean
+  }> {
+    return this.immediate(() => {
+      const taskID = requiredIdentifier(input.taskId, "taskId")
+      const reservationID = requiredIdentifier(input.reservationId, "reservationId")
+      const owner = requiredIdentifier(input.ownerActivation, "ownerActivation")
+      const task = this.taskRow(taskID)
+      if (task === null) throw new LedgerFailure("unknown_task", taskID)
+      this.checkLedger(task)
+      if (task.owner_activation !== owner) {
+        throw new LedgerFailure("stale_owner", "the current activation does not own this task")
+      }
+      if (task.version !== input.expectedVersion) {
+        throw new LedgerFailure("stale_version", `the task is at version ${task.version}`)
+      }
+      if (task.generation !== input.generation) {
+        throw new LedgerFailure("stale_generation", `the task is at generation ${task.generation}`)
+      }
+      if (task.watch_state !== "active" || task.task_state === "completed") {
+        throw new LedgerFailure("not_active", "the task is not active and unfinished")
+      }
+      const row = this.correctionAttemptRow(reservationID)
+      if (row === null || row.task_id !== taskID) throw new LedgerFailure("unknown_task", reservationID)
+      if (row.state !== "reserved" || row.claimed_at !== null) {
+        throw new LedgerFailure("claim_taken", "the one send slot for this reservation is already claimed")
+      }
+      const changed = this.db
+        .query(
+          `UPDATE watch_correction_attempts SET
+            state = 'sending', claimed_at = ?, claimed_by_activation = ?, claimed_generation = ?
+           WHERE reservation_id = ? AND state = 'reserved' AND claimed_at IS NULL`,
+        )
+        .run(input.at, owner, task.generation, reservationID)
+      if (changed.changes !== 1) {
+        throw new LedgerFailure("claim_taken", "another process claimed this reservation")
+      }
+      return { attempt: correctionAttemptFromRow(this.correctionAttemptRow(reservationID)), claimed: true }
+    })
+  }
+
+  recordCorrectionOutcome(input: RecordCorrectionOutcomeInput): LedgerResult<{
+    readonly attempt: WatchCorrectionAttemptRecord
+    readonly changed: boolean
+  }> {
+    return this.immediate(() => {
+      const taskID = requiredIdentifier(input.taskId, "taskId")
+      const reservationID = requiredIdentifier(input.reservationId, "reservationId")
+      const owner = requiredIdentifier(input.ownerActivation, "ownerActivation")
+      if (input.outcome !== "accepted" && input.outcome !== "rejected" && input.outcome !== "unknown") {
+        throw new LedgerFailure("invalid_input", "outcome must be accepted, rejected or unknown")
+      }
+      const task = this.taskRow(taskID)
+      if (task === null) throw new LedgerFailure("unknown_task", taskID)
+      this.checkLedger(task)
+      if (task.owner_activation !== owner) {
+        throw new LedgerFailure("stale_owner", "the current activation does not own this task")
+      }
+      const row = this.correctionAttemptRow(reservationID)
+      if (row === null || row.task_id !== taskID) throw new LedgerFailure("unknown_task", reservationID)
+      if (row.state === "reserved") throw new LedgerFailure("not_claimable", "the attempt was not claimed")
+      const phase = row.state as WatchCorrectionAttemptPhase
+      if (phase === "aborted") {
+        throw new LedgerFailure("invalid_transition", "an aborted reservation has no delivery outcome")
+      }
+      if ((phase === "accepted" || phase === "rejected") && input.outcome !== phase) {
+        return { attempt: correctionAttemptFromRow(row), changed: false }
+      }
+      if (phase === "unknown" && input.outcome === "unknown") {
+        return { attempt: correctionAttemptFromRow(row), changed: false }
+      }
+      const column =
+        input.outcome === "accepted" ? "accepted_at" : input.outcome === "rejected" ? "rejected_at" : "unknown_at"
+      if (phase === "receipted" || phase === "recovered") {
+        this.db
+          .query(`UPDATE watch_correction_attempts SET ${column} = ? WHERE reservation_id = ?`)
+          .run(input.at, reservationID)
+        return { attempt: correctionAttemptFromRow(this.correctionAttemptRow(reservationID)), changed: true }
+      }
+      const nextPhase = input.outcome === "rejected" ? "rejected" : input.outcome
+      this.db
+        .query(`UPDATE watch_correction_attempts SET state = ?, ${column} = ? WHERE reservation_id = ?`)
+        .run(nextPhase, input.at, reservationID)
+      return { attempt: correctionAttemptFromRow(this.correctionAttemptRow(reservationID)), changed: true }
+    })
+  }
+
+  recordCorrectionReceipt(input: RecordCorrectionReceiptInput): LedgerResult<{
+    readonly attempt: WatchCorrectionAttemptRecord
+    readonly continuePermit: boolean
+    readonly duplicate: boolean
+  }> {
+    return this.immediate(() => {
+      const taskID = requiredIdentifier(input.taskId, "taskId")
+      const reservationID = requiredIdentifier(input.reservationId, "reservationId")
+      const caller = requiredIdentifier(input.callerSessionId, "callerSessionId")
+      const receiptID = requiredIdentifier(input.receiptId, "receiptId")
+      const task = this.taskRow(taskID)
+      if (task === null) throw new LedgerFailure("unknown_task", taskID)
+      this.checkLedger(task)
+      if (task.target_session_id !== caller) {
+        throw new LedgerFailure("caller_mismatch", "only the target session may submit a correction receipt")
+      }
+      const row = this.correctionAttemptRow(reservationID)
+      if (row === null || row.task_id !== taskID) throw new LedgerFailure("unknown_task", reservationID)
+      if (row.receipt_id !== null) {
+        if (row.receipt_id === receiptID) {
+          return { attempt: correctionAttemptFromRow(row), continuePermit: false, duplicate: true }
+        }
+        throw new LedgerFailure("receipt_conflict", "a different receipt is already recorded for this attempt")
+      }
+      if (row.state === "reserved") throw new LedgerFailure("not_claimable", "the attempt was not claimed")
+      if (row.state === "rejected") {
+        throw new LedgerFailure("invalid_transition", "a rejected delivery cannot be receipted")
+      }
+      if (row.state === "aborted") {
+        throw new LedgerFailure("invalid_transition", "an aborted attempt cannot be receipted")
+      }
+      if (row.state === "recovered") {
+        throw new LedgerFailure("receipt_conflict", "the attempt already recovered")
+      }
+      const refusal =
+        task.watch_state !== "active"
+          ? `task-${task.watch_state}`
+          : task.task_state === "completed"
+            ? "task-completed"
+            : task.generation !== input.generation
+              ? "stale-generation"
+              : null
+      const permitAt = refusal === null ? input.at : null
+      try {
+        this.db
+          .query(
+            `UPDATE watch_correction_attempts SET
+              state = 'receipted', receipt_id = ?, receipt_at = ?, receipt_caller_session_id = ?,
+              receipt_generation = ?, receipt_permit_at = ?, receipt_refusal_reason = ?
+             WHERE reservation_id = ? AND receipt_id IS NULL`,
+          )
+          .run(receiptID, input.at, caller, input.generation, permitAt, refusal, reservationID)
+      } catch (error) {
+        const text = String(error)
+        if (text.includes("receipt_id")) {
+          throw new LedgerFailure("receipt_conflict", "that receipt id is already used")
+        }
+        throw error
+      }
+      return {
+        attempt: correctionAttemptFromRow(this.correctionAttemptRow(reservationID)),
+        continuePermit: permitAt !== null,
+        duplicate: false,
+      }
+    })
+  }
+
+  abortCorrection(input: AbortCorrectionInput): LedgerResult<{
+    readonly attempt: WatchCorrectionAttemptRecord
+    readonly aborted: boolean
+  }> {
+    return this.immediate(() => {
+      const taskID = requiredIdentifier(input.taskId, "taskId")
+      const reservationID = requiredIdentifier(input.reservationId, "reservationId")
+      const owner = requiredIdentifier(input.ownerActivation, "ownerActivation")
+      const task = this.taskRow(taskID)
+      if (task === null) throw new LedgerFailure("unknown_task", taskID)
+      this.checkLedger(task)
+      if (task.owner_activation !== owner) {
+        throw new LedgerFailure("stale_owner", "the current activation does not own this task")
+      }
+      if (task.version !== input.expectedVersion) {
+        throw new LedgerFailure("stale_version", `the task is at version ${task.version}`)
+      }
+      if (task.generation !== input.generation) {
+        throw new LedgerFailure("stale_generation", `the task is at generation ${task.generation}`)
+      }
+      const row = this.correctionAttemptRow(reservationID)
+      if (row === null || row.task_id !== taskID) throw new LedgerFailure("unknown_task", reservationID)
+      if (row.state === "aborted") {
+        return { attempt: correctionAttemptFromRow(row), aborted: false }
+      }
+      if (row.state !== "reserved" || row.claimed_at !== null) {
+        throw new LedgerFailure("not_claimable", "only an unclaimed reservation can be aborted")
+      }
+      this.db
+        .query(
+          "UPDATE watch_correction_attempts SET state = 'aborted', aborted_at = ?, stop_reason = 'attempt-aborted' WHERE reservation_id = ?",
+        )
+        .run(input.at, reservationID)
+      return { attempt: correctionAttemptFromRow(this.correctionAttemptRow(reservationID)), aborted: true }
+    })
+  }
+
+  recordCorrectionRecovery(input: RecordCorrectionRecoveryInput): LedgerResult<{
+    readonly attempt: WatchCorrectionAttemptRecord
+    readonly recovered: boolean
+  }> {
+    return this.immediate(() => {
+      const taskID = requiredIdentifier(input.taskId, "taskId")
+      const reservationID = requiredIdentifier(input.reservationId, "reservationId")
+      const caller = requiredIdentifier(input.callerSessionId, "callerSessionId")
+      const reportID = requiredIdentifier(input.progressReportId, "progressReportId")
+      const reference = readBoundedText(input.resultReference, "resultReference", WATCH_LIMITS.reference)
+      if (!reference.ok) throw new LedgerFailure("invalid_input", reference.reason)
+      const task = this.taskRow(taskID)
+      if (task === null) throw new LedgerFailure("unknown_task", taskID)
+      this.checkLedger(task)
+      if (task.target_session_id !== caller) {
+        throw new LedgerFailure("caller_mismatch", "only the target session may confirm recovery")
+      }
+      if (task.generation !== input.generation) {
+        throw new LedgerFailure("stale_generation", `the task is at generation ${task.generation}`)
+      }
+      const row = this.correctionAttemptRow(reservationID)
+      if (row === null || row.task_id !== taskID) throw new LedgerFailure("unknown_task", reservationID)
+      if (row.state === "recovered") {
+        return { attempt: correctionAttemptFromRow(row), recovered: true }
+      }
+      if (row.state !== "receipted" || row.receipt_at === null) {
+        throw new LedgerFailure("recovery_evidence_missing", "a valid receipt is required before recovery")
+      }
+      if (row.receipt_permit_at === null) {
+        throw new LedgerFailure("recovery_evidence_missing", "the recorded receipt did not issue a continue permit")
+      }
+      const report = this.db
+        .query("SELECT * FROM watch_reports WHERE task_id = ? AND report_id = ?")
+        .get(taskID, reportID) as ReportRow | null
+      if (report === null || report.kind !== "progress") {
+        throw new LedgerFailure("recovery_evidence_missing", "the referenced progress report does not exist")
+      }
+      if (report.created_at <= row.receipt_at) {
+        throw new LedgerFailure("recovery_evidence_missing", "the progress report predates the correction receipt")
+      }
+      const evidence = parseEvidence(report.evidence)
+      if (evidence.reference !== reference.value) {
+        throw new LedgerFailure("recovery_evidence_missing", "the progress report does not carry the new result reference")
+      }
+      this.db
+        .query(
+          `UPDATE watch_correction_attempts SET
+            state = 'recovered', recovery_report_id = ?, recovery_reference = ?, recovered_at = ?
+           WHERE reservation_id = ?`,
+        )
+        .run(reportID, reference.value, input.at, reservationID)
+      return { attempt: correctionAttemptFromRow(this.correctionAttemptRow(reservationID)), recovered: true }
+    })
+  }
+
+  correction(taskID: string): LedgerResult<WatchCorrectionSnapshot> {
+    return this.read(() => {
+      const id = requiredIdentifier(taskID, "taskID")
+      const task = this.taskRow(id)
+      if (task === null) throw new LedgerFailure("unknown_task", id)
+      this.checkLedger(task)
+      const grant = this.correctionGrantRow(id)
+      const rows = this.db
+        .query("SELECT * FROM watch_correction_attempts WHERE task_id = ? ORDER BY attempt_no")
+        .all(id) as CorrectionAttemptRow[]
+      const unresolved = this.db
+        .query(
+          `SELECT 1 AS yes FROM watch_correction_attempts a
+           JOIN watch_tasks t ON t.task_id = a.task_id
+           WHERE t.target_session_id = ? AND t.task_id <> ?
+             AND a.state IN ('reserved','sending','accepted','unknown')
+           LIMIT 1`,
+        )
+        .get(task.target_session_id, task.task_id) as { yes: number } | null
+      return {
+        grant: grant === null ? null : correctionGrantFromRow(grant),
+        attempts: rows.map(correctionAttemptFromRow),
+        sessionUnresolved: unresolved !== null,
+      }
+    })
+  }
+
+  private correctionGrantRow(taskID: string): CorrectionGrantRow | null {
+    return this.db.query("SELECT * FROM watch_correction_grants WHERE task_id = ?").get(taskID) as CorrectionGrantRow | null
+  }
+
+  private correctionAttemptRow(reservationID: string): CorrectionAttemptRow | null {
+    return this.db
+      .query("SELECT * FROM watch_correction_attempts WHERE reservation_id = ?")
+      .get(reservationID) as CorrectionAttemptRow | null
+  }
+
   private reportedWaits(taskID: string): WatchReportedWait[] {
     const rows = this.db
       .query(
@@ -1365,7 +2320,7 @@ function taskFromRow(row: TaskRow, reportedWaits: readonly WatchReportedWait[] =
     initiatorSessionID: row.initiator_session_id,
     targetSessionID: row.target_session_id,
     goal: row.goal,
-    mode: "alert",
+    mode: parseWatchMode(row.mode),
     watchState: parseWatchState(row.watch_state),
     taskState: parseTaskState(row.task_state),
     version: row.version,
@@ -1386,6 +2341,106 @@ function parseWaitKind(value: string): WatchReportedWait["waitKind"] {
     return value
   }
   throw new LedgerFailure("corrupt", `unknown wait kind ${value}`)
+}
+
+function correctionGrantFromRow(row: CorrectionGrantRow | null): WatchCorrectionGrantRecord {
+  if (row === null) throw new LedgerFailure("corrupt", "the correction grant disappeared")
+  if (row.state !== "granted" && row.state !== "revoked") {
+    throw new LedgerFailure("corrupt", `unknown correction grant state ${row.state}`)
+  }
+  return {
+    grantID: row.grant_id,
+    taskID: row.task_id,
+    mode: "limited-correction",
+    state: row.state,
+    version: row.version,
+    generation: row.generation,
+    scopeTargetSessionID: row.scope_target_session_id,
+    reviewSummary: row.review_summary,
+    termsDigest: row.terms_digest,
+    confirmationID: row.confirmation_id,
+    grantedAt: row.granted_at,
+    ...(row.revoked_at === null ? {} : { revokedAt: row.revoked_at }),
+  }
+}
+
+function correctionAttemptFromRow(row: CorrectionAttemptRow | null): WatchCorrectionAttemptRecord {
+  if (row === null) throw new LedgerFailure("corrupt", "the correction attempt disappeared")
+  return {
+    reservationID: row.reservation_id,
+    taskID: row.task_id,
+    ordinal: row.attempt_no,
+    phase: parseCorrectionPhase(row.state),
+    reservedAt: row.reserved_at,
+    ...(row.claimed_at === null ? {} : { claimedAt: row.claimed_at }),
+    ...(row.claimed_by_activation === null ? {} : { claimedByActivation: row.claimed_by_activation }),
+    ...(row.claimed_generation === null ? {} : { claimedGeneration: row.claimed_generation }),
+    ...(row.accepted_at === null ? {} : { acceptedAt: row.accepted_at }),
+    ...(row.rejected_at === null ? {} : { rejectedAt: row.rejected_at }),
+    ...(row.unknown_at === null ? {} : { unknownAt: row.unknown_at }),
+    ...(row.aborted_at === null ? {} : { abortedAt: row.aborted_at }),
+    ...(row.receipt_id === null ? {} : { receiptID: row.receipt_id }),
+    ...(row.receipt_at === null ? {} : { receiptAt: row.receipt_at }),
+    ...(row.receipt_caller_session_id === null ? {} : { receiptCallerSessionID: row.receipt_caller_session_id }),
+    ...(row.receipt_generation === null ? {} : { receiptGeneration: row.receipt_generation }),
+    ...(row.receipt_permit_at === null ? {} : { receiptPermitAt: row.receipt_permit_at }),
+    ...(row.receipt_refusal_reason === null ? {} : { receiptRefusalReason: row.receipt_refusal_reason }),
+    ...(row.recovery_report_id === null ? {} : { recoveryReportID: row.recovery_report_id }),
+    ...(row.recovery_reference === null ? {} : { recoveryReference: row.recovery_reference }),
+    ...(row.recovered_at === null ? {} : { recoveredAt: row.recovered_at }),
+    ...(row.stop_reason === null ? {} : { stopReason: parseCorrectionStopReason(row.stop_reason) }),
+  }
+}
+
+function parseCorrectionPhase(value: string): WatchCorrectionAttemptPhase {
+  if (
+    value === "reserved" ||
+    value === "sending" ||
+    value === "accepted" ||
+    value === "rejected" ||
+    value === "unknown" ||
+    value === "receipted" ||
+    value === "recovered" ||
+    value === "aborted"
+  ) {
+    return value
+  }
+  throw new LedgerFailure("corrupt", `unknown correction attempt state ${value}`)
+}
+
+function parseCorrectionStopReason(value: string): WatchCorrectionStopReason {
+  const reasons: readonly WatchCorrectionStopReason[] = [
+    "grant-missing",
+    "grant-pending",
+    "grant-expired",
+    "attempt-limit",
+    "session-unresolved",
+    "reservation-pending",
+    "sending-unaccounted",
+    "accepted-without-receipt",
+    "unknown-result",
+    "first-attempt-policy",
+    "receipted-awaiting-recovery",
+    "attempt-aborted",
+    "closing",
+    "rejected",
+    "recovered",
+    "runtime-unsupported",
+    "single-host-unconfirmed",
+    "cross-location",
+    "protocol-unseen",
+    "task-paused",
+    "task-ended",
+    "task-completed",
+    "observation-untrusted",
+    "normal-wait",
+    "observation-gap",
+    "executor-unavailable",
+  ]
+  if (!reasons.includes(value as WatchCorrectionStopReason)) {
+    throw new LedgerFailure("corrupt", `unknown correction stop reason ${value}`)
+  }
+  return value as WatchCorrectionStopReason
 }
 
 function alertFromRow(row: AlertRow): WatchAlertRecord {
@@ -1423,6 +2478,11 @@ function parseAttemptsUsed(value: unknown): number {
     throw new LedgerFailure("corrupt", "stored attempts_used is not an integer in the allowed range")
   }
   return value
+}
+
+function parseWatchMode(value: string): WatchMode {
+  if (value === "alert" || value === "limited-correction") return value
+  throw new LedgerFailure("corrupt", `unknown watch mode ${value}`)
 }
 
 function parseWatchState(value: string): WatchState {

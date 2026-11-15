@@ -18,6 +18,7 @@ import { Database } from "bun:sqlite"
 
 import plugin from "../src/index.ts"
 import { WATCH_STATE_DIR_ENV } from "../src/host/watch.ts"
+import { openWatchLedger } from "../src/watch/ledger.ts"
 import { readWatchPayload, type WatchPayload } from "../src/rpc.ts"
 import { CALLER_SESSION_ID, fakeHost, type FakeHost, type FakeHostOptions } from "./fake-host.ts"
 
@@ -86,8 +87,9 @@ async function enroll(host: FakeHost, requestId = "observe-req", sessionID = CAL
     },
     sessionID,
   )
-  const task = (result.details as { watch: { task: { taskID: string } } }).watch.task
-  return task.taskID
+  const watch = (result.details as { watch: { ok: boolean; task: { taskID: string } | null; failure: unknown } }).watch
+  if (watch.ok !== true || watch.task === null) throw new Error(`enroll failed: ${JSON.stringify(watch.failure)}`)
+  return watch.task.taskID
 }
 
 async function show(host: FakeHost): Promise<WatchPayload> {
@@ -121,9 +123,10 @@ describeWatch("trusted idle and running observation", () => {
       await enroll(host)
       const payload = await show(host)
       expect(payload.task?.correction).toMatchObject({
-        authorization: { mode: "alert-only", state: "not-granted", version: 1 },
+        authorization: { mode: "alert", state: "not-granted", version: 1 },
         actual: "unavailable",
         attempts: { used: 0, limit: 3 },
+        executionPolicy: "first-attempt-only",
         phase: "idle",
         pending: null,
         last: null,
@@ -244,6 +247,136 @@ describeWatch("trusted idle and running observation", () => {
       expect(after.observation).toMatchObject({ state: "idle-candidate", trusted: true })
       expect(after.observation?.waits.some((wait) => wait.waitID === "form:foreign-form")).toBe(false)
       expect(after.alerts?.items[0]?.alertID).toBe(alertID)
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
+  test("a seeded grant is visible as limited correction while the executor stays closed", async () => {
+    const state = stateDirectory()
+    const clock = { value: 1_000 }
+    const opened = openWatchLedger({
+      path: join(state, "watch-ledger.sqlite3"),
+      busyTimeoutMs: 2_000,
+      openAttempts: 20,
+      now: () => clock.value,
+    })
+    if (!opened.ok) throw new Error(`${opened.code}: ${opened.detail}`)
+    const seeded = opened.ledger
+    let taskID = ""
+    try {
+      const enrolled = seeded.enroll({
+        requestId: "surface-grant",
+        initiatorSessionId: CALLER_SESSION_ID,
+        targetSessionId: CALLER_SESSION_ID,
+        goal: "Seeded correction contract",
+        mode: "alert",
+        ownerActivation: "seed-activation",
+      })
+      if (!enrolled.ok) throw new Error(enrolled.code)
+      taskID = enrolled.value.task.taskID
+      const began = seeded.report({
+        taskId: taskID,
+        callerSessionId: CALLER_SESSION_ID,
+        expectedVersion: enrolled.value.task.version,
+        reportId: "surface-begin",
+        kind: "begin",
+        evidence: {},
+      })
+      if (!began.ok) throw new Error(began.code)
+      const prepared = seeded.prepareCorrectionGrant({
+        taskId: taskID,
+        callerSessionId: CALLER_SESSION_ID,
+        ownerActivation: "seed-activation",
+        expectedVersion: began.value.task.version,
+        reviewSummary: "Seeded review",
+        at: clock.value,
+      })
+      if (!prepared.ok) throw new Error(`${prepared.code}: ${prepared.detail}`)
+      const confirmed = seeded.confirmCorrectionGrant({
+        challenge: prepared.value.challenge,
+        taskId: taskID,
+        ownerActivation: "seed-activation",
+        expectedVersion: prepared.value.expectedVersion,
+        generation: prepared.value.generation,
+        termsDigest: prepared.value.termsDigest,
+        at: clock.value,
+      })
+      if (!confirmed.ok) throw new Error(`${confirmed.code}: ${confirmed.detail}`)
+      const reserved = seeded.reserveCorrection({
+        taskId: taskID,
+        callerSessionId: CALLER_SESSION_ID,
+        ownerActivation: "seed-activation",
+        expectedVersion: confirmed.value.task.version,
+        generation: confirmed.value.task.generation,
+        reservationId: "surface-reservation",
+        at: clock.value,
+      })
+      if (!reserved.ok) throw new Error(`${reserved.code}: ${reserved.detail}`)
+      const claimed = seeded.claimCorrection({
+        taskId: taskID,
+        reservationId: "surface-reservation",
+        ownerActivation: "seed-activation",
+        expectedVersion: reserved.value.task.version,
+        generation: confirmed.value.task.generation,
+        at: clock.value,
+      })
+      if (!claimed.ok) throw new Error(`${claimed.code}: ${claimed.detail}`)
+    } finally {
+      seeded.close()
+    }
+
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } }, state)
+    try {
+      const payload = await show(host)
+      expect(payload.task?.mode).toBe("limited-correction")
+      expect(payload.capability.mode).toBe("limited-correction")
+      expect(payload.task?.correction).toMatchObject({
+        authorization: { mode: "limited-correction", state: "granted", version: 1 },
+        actual: "unavailable",
+        executionPolicy: "first-attempt-only",
+        attempts: { used: 1, limit: 3 },
+        phase: "sending",
+        pending: { ordinal: 1, phase: "sending", receipt: null },
+        stop: { reason: "sending-unaccounted" },
+        businessCompleted: false,
+      })
+      expect(payload.task?.correction.gates.map((gate) => gate.gate)).toEqual([
+        "grant",
+        "attempts",
+        "pending-attempt",
+        "business-unfinished",
+        "runtime",
+        "single-host",
+        "location",
+        "owner-generation",
+        "protocol",
+        "observation",
+        "waits",
+        "closing",
+        "executor",
+      ])
+      expect(JSON.stringify(payload)).not.toContain("challenge")
+
+      const before = await show(host)
+      const confirmField = await host.call("peers", {
+        action: "watch",
+        watch: { operation: "grant", taskID, confirm: true },
+      })
+      expect((confirmField.details as { watch: { failure: { code: string } } }).watch.failure.code).toBe(
+        "E_WATCH_INVALID",
+      )
+      expect(confirmField.text).toContain("confirm is not a supported field")
+      const consumedField = await host.call("peers", {
+        action: "watch",
+        watch: { operation: "receipt", taskID, consumed: true },
+      })
+      expect((consumedField.details as { watch: { failure: { code: string } } }).watch.failure.code).toBe(
+        "E_WATCH_INVALID",
+      )
+      const after = await show(host)
+      expect(after.task?.version).toBe(before.task?.version)
       expectNoAgentCalls(host)
     } finally {
       await unload()
