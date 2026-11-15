@@ -138,11 +138,14 @@ describe("the watch refresh floor", () => {
     expect(whileOpen).toBeGreaterThan(2)
 
     feed.close()
+    // The subscription stays live so a reopen can still hear events, but a
+    // closed panel must not read them.
+    expect(src.subscribed()).toBe(true)
     await tick(20)
     const afterClose = src.requests().length
     src.announce()
     await tick(0)
-    expect(src.requests().length).toBe(afterClose + 1)
+    expect(src.requests().length).toBe(afterClose)
 
     feed.dispose()
     await tick(20)
@@ -174,7 +177,7 @@ describe("a control answer", () => {
     feed.dispose()
   })
 
-  test("a refresh asked for during that read happens after it settles", async () => {
+  test("a refresh after a control reads the committed state without doubling a same-epoch read", async () => {
     const first = deferred<unknown>()
     let calls = 0
     const src = source(() => {
@@ -188,14 +191,91 @@ describe("a control answer", () => {
     feed.apply(payload("paused"))
     feed.refresh()
     await tick(0)
-    // The first read is still in flight; refresh waits rather than stacking.
-    expect(src.requests()).toHaveLength(1)
+    // The control invalidated the old read, so the refresh may start at once;
+    // the old answer is still ineligible.
+    expect(src.requests()).toHaveLength(2)
 
     first.resolve(payload("active"))
     await tick(0)
     expect(src.requests()).toHaveLength(2)
     expect(payloadOf(feed).task?.watchState).toBe("paused")
     feed.dispose()
+  })
+
+  test("closing during a read ignores its late answer and reads nothing new", async () => {
+    const first = deferred<unknown>()
+    const src = source(() => first.promise)
+    const feed = createWatchFeed(src, { refreshMs: 60_000 })
+
+    feed.open(SELF)
+    await tick(0)
+    expect(feed.state().kind).toBe("loading")
+
+    feed.close()
+    src.announce()
+    await tick(0)
+    expect(src.requests()).toHaveLength(1)
+
+    first.resolve(payload("active"))
+    await tick(0)
+    expect(feed.state()).toEqual({ kind: "loading" })
+    expect(src.requests()).toHaveLength(1)
+    feed.dispose()
+  })
+
+  test("a closed panel ignores a control answer and a direct refresh", async () => {
+    const src = source()
+    const feed = createWatchFeed(src, { refreshMs: 60_000 })
+    feed.open(SELF)
+    await tick(0)
+    const before = payloadOf(feed)
+
+    feed.close()
+    feed.apply(payload("paused"))
+    feed.refresh()
+    await tick(0)
+    expect(src.requests()).toHaveLength(1)
+    expect(payloadOf(feed)).toBe(before)
+    feed.dispose()
+  })
+
+  test("reopening takes a fresh snapshot and a late answer from the old open cannot replace it", async () => {
+    const first = deferred<unknown>()
+    const src = source((request) =>
+      request.sessionID === "ses_old" ? first.promise : Promise.resolve(payload("paused")),
+    )
+    const feed = createWatchFeed(src, { refreshMs: 60_000 })
+
+    feed.open("ses_old")
+    await tick(0)
+    feed.close()
+    feed.open("ses_new")
+    await tick(0)
+    expect(src.requests()).toEqual([{ sessionID: "ses_old" }, { sessionID: "ses_new" }])
+    expect(payloadOf(feed).task?.watchState).toBe("paused")
+
+    first.resolve(payload("active"))
+    await tick(0)
+    expect(payloadOf(feed).task?.watchState).toBe("paused")
+    expect(src.requests()).toHaveLength(2)
+    feed.dispose()
+  })
+
+  test("dispose makes open, apply and refresh no-ops and never restarts the floor", async () => {
+    const src = source()
+    const feed = createWatchFeed(src, { refreshMs: 10 })
+    feed.open(SELF)
+    await tick(0)
+    const before = payloadOf(feed)
+    feed.dispose()
+    expect(src.subscribed()).toBe(false)
+
+    feed.open("ses_new")
+    feed.apply(payload("paused"))
+    feed.refresh()
+    await tick(35)
+    expect(src.requests()).toHaveLength(1)
+    expect(payloadOf(feed)).toBe(before)
   })
 })
 

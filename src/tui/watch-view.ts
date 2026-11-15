@@ -81,7 +81,7 @@ export function watchContent(input: WatchViewInput): WatchContent {
       if (!payload.ledger.available) {
         const reason = payload.ledger.reason ?? "no reason was given"
         return unavailable(
-          `Watch ledger unavailable: ${reason}. No watched task was created or changed.`,
+          `Watch ledger unavailable: ${reason}. The current task state could not be read; re-read to verify. No rollback is assumed.`,
         )
       }
       if (payload.failure !== null) {

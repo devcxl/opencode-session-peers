@@ -8,8 +8,13 @@
  * A control answer is different from a read: it is the newest state the plugin
  * just committed, so it is applied at once. An older read may still be in
  * flight; the epoch stamp makes that answer ineligible, so a pause cannot flip
- * back to active a moment later. A refresh asked for during that read waits
- * for it to settle and then reads once more, rather than stacking requests.
+ * back to active a moment later. A same-epoch event coalesces into one more
+ * read; a new opening or a control starts its own epoch, so an old request can
+ * no longer block or overwrite it.
+ *
+ * Closing stops the floor and stops applying answers, but leaves the
+ * subscription installed so the next opening can still hear events. Disposing
+ * is final: open, apply and refresh become no-ops and no timer is restarted.
  */
 
 import { createSignal } from "solid-js"
@@ -24,15 +29,15 @@ const REFRESH_MS = 60_000
 
 export interface WatchFeed {
   readonly state: () => WatchState
-  /** Takes a snapshot for this session and starts the refresh floor. */
+  /** Takes a snapshot and starts the floor; ignored after dispose. */
   open(sessionID: string): void
-  /** Reads again now, coalescing with a read already in flight. */
+  /** Reads again now; a same-epoch read in flight becomes one follow-up. */
   refresh(): void
-  /** Applies the answer a control just committed, before any later read. */
+  /** Applies a committed control answer while the panel is open. */
   apply(payload: WatchPayload): void
-  /** Stops the floor; the subscription stays until dispose. */
+  /** Stops reads and the floor; the subscription stays until dispose. */
   close(): void
-  /** Ends the subscription; reads still in flight stop updating the state. */
+  /** Ends the subscription; later open/apply/refresh do nothing. */
   dispose(): void
 }
 
@@ -43,38 +48,40 @@ export function createWatchFeed(
   const refreshMs = options.refreshMs ?? REFRESH_MS
   const [state, setState] = createSignal<WatchState>({ kind: "loading" })
   let sessionID: string | undefined
-  let reading = false
+  let opened = false
+  let disposed = false
   let stale = false
-  let closed = false
   let epoch = 0
+  /** The epoch of the read in flight, if any. A newer epoch may run beside it. */
+  let inFlightEpoch: number | undefined
   let refresh: ReturnType<typeof setInterval> | undefined
 
   const read = (): void => {
-    if (closed || sessionID === undefined) return
-    if (reading) {
+    if (disposed || !opened || sessionID === undefined) return
+    if (inFlightEpoch === epoch) {
       // The answer in flight may predate whatever asked for this read.
       stale = true
       return
     }
     const requestEpoch = epoch
     const request: WatchReadRequest = { sessionID }
-    reading = true
+    inFlightEpoch = requestEpoch
     void source
       .read(request)
       .then((answer) => {
-        if (closed || requestEpoch !== epoch) return
+        if (disposed || !opened || requestEpoch !== epoch) return
         const payload = readWatchPayload(answer)
         setState(
           payload === undefined ? { kind: "unreadable" } : { kind: "payload", payload },
         )
       })
       .catch((cause: unknown) => {
-        if (closed || requestEpoch !== epoch) return
+        if (disposed || !opened || requestEpoch !== epoch) return
         setState({ kind: "failed", reason: failureText(cause) })
       })
       .finally(() => {
-        reading = false
-        if (stale) {
+        if (inFlightEpoch === requestEpoch) inFlightEpoch = undefined
+        if (!disposed && opened && requestEpoch === epoch && stale) {
           stale = false
           read()
         }
@@ -88,27 +95,43 @@ export function createWatchFeed(
   return {
     state,
     open: (openedSessionID) => {
+      if (disposed) return
+      opened = true
       sessionID = openedSessionID
       // A read for the previous open is no longer about this panel.
       epoch += 1
+      stale = false
       setState({ kind: "loading" })
       read()
       if (refresh === undefined) refresh = setInterval(() => read(), refreshMs)
     },
     refresh: read,
     apply: (payload) => {
-      if (closed) return
+      if (disposed || !opened) return
       // Anything already in flight was requested before this commit.
       epoch += 1
+      stale = false
       setState({ kind: "payload", payload })
     },
     close: () => {
-      if (refresh === undefined) return
-      clearInterval(refresh)
-      refresh = undefined
+      if (disposed) return
+      opened = false
+      sessionID = undefined
+      // A late answer or event now belongs to a panel that is no longer shown.
+      epoch += 1
+      stale = false
+      if (refresh !== undefined) {
+        clearInterval(refresh)
+        refresh = undefined
+      }
     },
     dispose: () => {
-      closed = true
+      if (disposed) return
+      disposed = true
+      opened = false
+      sessionID = undefined
+      epoch += 1
+      stale = false
       stop()
       if (refresh !== undefined) clearInterval(refresh)
       refresh = undefined
