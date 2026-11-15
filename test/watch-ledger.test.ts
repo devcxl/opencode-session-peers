@@ -22,6 +22,7 @@ import { dirname, join } from "node:path"
 
 import type { WatchEvidence, WatchReportKind } from "../src/domain/watch.ts"
 import { openWatchLedger, type WatchLedger } from "../src/watch/ledger.ts"
+import { mapLedgerFailure } from "../src/watch/service.ts"
 
 const ROOT = mkdtempSync(join(tmpdir(), "session-peers-watch-ledger-"))
 afterAll(() => rmSync(ROOT, { recursive: true, force: true }))
@@ -481,6 +482,60 @@ describeSafe("the security ledger", () => {
   })
 })
 
+describeSafe("schema and integrity gates", () => {
+  test("an old schema version is unsupported, not read as the current one", () => {
+    const path = ledgerPath("old-schema")
+    const ledger = open(path)
+    const enrolled = ledger.enroll(enrollInput({ requestId: "req-old-schema" }))
+    expect(enrolled.ok).toBe(true)
+    ledger.close()
+
+    const db = new Database(path)
+    db.run("UPDATE meta SET value = '1' WHERE key = 'schema_version'")
+    db.close()
+    expect(openWatchLedger({ path })).toMatchObject({ ok: false, code: "unsupported_schema" })
+  })
+
+  test("a missing attempts_used column is corrupt, not a zero fallback", () => {
+    const path = ledgerPath("missing-attempts")
+    const ledger = open(path)
+    expect(ledger.enroll(enrollInput({ requestId: "req-missing-attempts" })).ok).toBe(true)
+    ledger.close()
+
+    const db = new Database(path)
+    db.run("ALTER TABLE watch_tasks DROP COLUMN attempts_used")
+    db.close()
+    expect(openWatchLedger({ path })).toMatchObject({ ok: false, code: "corrupt" })
+  })
+
+  test("a non-integer attempts_used is corrupt, not coerced", () => {
+    const path = ledgerPath("bad-attempts")
+    const ledger = open(path)
+    const enrolled = ledger.enroll(enrollInput({ requestId: "req-bad-attempts" }))
+    expect(enrolled.ok).toBe(true)
+    ledger.close()
+
+    const db = new Database(path)
+    // The CHECK constraint stops an out-of-range write; this real value gets
+    // past the range but fails the integer/type integrity gate.
+    db.run("UPDATE watch_tasks SET attempts_used = 1.5")
+    db.close()
+    expect(openWatchLedger({ path })).toMatchObject({ ok: false, code: "corrupt" })
+  })
+
+  test("a non-numeric schema string is not truncated into a version", () => {
+    const path = ledgerPath("bad-version")
+    const ledger = open(path)
+    expect(ledger.enroll(enrollInput({ requestId: "req-bad-version" })).ok).toBe(true)
+    ledger.close()
+
+    const db = new Database(path)
+    db.run("UPDATE meta SET value = '2junk' WHERE key = 'schema_version'")
+    db.close()
+    expect(openWatchLedger({ path })).toMatchObject({ ok: false, code: "unsupported_schema" })
+  })
+})
+
 describeSafe("the ledger across independent processes", () => {
   test("six processes sharing one request produce one task", async () => {
     const path = ledgerPath("concurrent-same")
@@ -514,6 +569,17 @@ describeSafe("the ledger across independent processes", () => {
     expect(winners[0]?.created).toBe(true)
     expect(new Set(results.map((result) => result.ledgerId)).size).toBe(1)
     expect(results.filter((result) => result.code === "session_conflict")).toHaveLength(5)
+  })
+})
+
+describe("a post-commit failure is not described as an unchanged ledger", () => {
+  test("says the state may have changed and asks for a re-read", () => {
+    const failure = mapLedgerFailure("state_unknown", "chmod denied")
+    expect(failure.code).toBe("E_WATCH_UNAVAILABLE")
+    expect(failure.reason).toContain("may already have changed")
+    expect(failure.reason).toContain("re-read")
+    expect(failure.reason).toContain("No automatic retry")
+    expect(failure.reason).not.toContain("No watched task was created or changed")
   })
 })
 

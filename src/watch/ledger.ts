@@ -45,7 +45,7 @@ import {
   type WatchedTaskState,
 } from "../domain/watch.ts"
 
-export const WATCH_LEDGER_SCHEMA_VERSION = 1
+export const WATCH_LEDGER_SCHEMA_VERSION = 2
 export const WATCH_LEDGER_PROTOCOL_VERSION = 1
 export const WATCH_MIN_SQLITE = "3.51.3"
 
@@ -70,6 +70,7 @@ export type WatchLedgerErrorCode =
   | "report_conflict"
   | "invalid_transition"
   | "ended"
+  | "state_unknown"
   | "ledger_error"
 
 export type LedgerResult<T> =
@@ -228,6 +229,32 @@ CREATE TABLE IF NOT EXISTS watch_reports (
 `
 
 const REQUIRED_TABLES = ["meta", "watch_tasks", "enrollment_requests", "watch_reports"]
+const REQUIRED_TASK_COLUMNS = [
+  "task_id",
+  "ledger_id",
+  "schema_version",
+  "protocol_version",
+  "initiator_session_id",
+  "target_session_id",
+  "goal",
+  "mode",
+  "watch_state",
+  "task_state",
+  "version",
+  "generation",
+  "attempts_used",
+  "owner_activation",
+  "last_report_id",
+  "last_report_kind",
+  "last_report_evidence",
+  "last_report_at",
+  "last_report_version",
+  "created_at",
+  "updated_at",
+  "completed_at",
+  "ended_at",
+]
+const REQUIRED_REPORT_COLUMNS = ["task_id", "report_id", "kind", "evidence", "version", "created_at"]
 const ANCHOR_NAME = "watch-ledger.identity.json"
 
 interface LedgerAnchor {
@@ -424,6 +451,8 @@ function openOnce(options: OpenWatchLedgerOptions): OpenWatchLedgerResult {
       for (const table of REQUIRED_TABLES) {
         if (!tables.has(table)) throw new LedgerFailure("corrupt", `the ledger is missing the ${table} table`)
       }
+      assertColumns(db, "watch_tasks", REQUIRED_TASK_COLUMNS)
+      assertColumns(db, "watch_reports", REQUIRED_REPORT_COLUMNS)
     }
 
     const metadata = readMetadata(db)
@@ -446,6 +475,7 @@ function openOnce(options: OpenWatchLedgerOptions): OpenWatchLedgerResult {
     if (mismatch.n !== 0) {
       throw new LedgerFailure("ledger_mismatch", "task rows carry a different ledger id")
     }
+    assertAttemptsIntegrity(db)
     if (anchor !== undefined) {
       if (anchor.ledgerId !== metadata.ledgerId) {
         throw new LedgerFailure(
@@ -513,6 +543,32 @@ function initializeLedger(db: Database, canonical: string, now: number): void {
   }).immediate()
 }
 
+function assertColumns(db: Database, table: string, required: readonly string[]): void {
+  const columns = new Set(
+    (db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((row) => row.name),
+  )
+  for (const column of required) {
+    if (!columns.has(column)) {
+      throw new LedgerFailure("corrupt", `the ${table} table is missing the ${column} column`)
+    }
+  }
+}
+
+function assertAttemptsIntegrity(db: Database): void {
+  const bad = db
+    .query(
+      `SELECT COUNT(*) AS n FROM watch_tasks
+       WHERE attempts_used IS NULL
+          OR typeof(attempts_used) <> 'integer'
+          OR attempts_used < 0
+          OR attempts_used > ?`,
+    )
+    .get(WATCH_CORRECTION_LIMIT) as { n: number }
+  if (bad.n !== 0) {
+    throw new LedgerFailure("corrupt", "a task row has an invalid attempts_used value")
+  }
+}
+
 interface Metadata {
   readonly ledgerId?: string
   readonly schemaVersion?: number
@@ -527,7 +583,10 @@ function readMetadata(db: Database): Metadata {
   const number = (key: string): number | undefined => {
     const value = values.get(key)
     if (value === undefined) return undefined
-    const parsed = Number.parseInt(value, 10)
+    // `parseInt("1junk")` is 1; a stored protocol number must be exactly a
+    // non-negative integer string.
+    if (!/^(0|[1-9][0-9]*)$/.test(value)) return undefined
+    const parsed = Number(value)
     return Number.isSafeInteger(parsed) ? parsed : undefined
   }
   return {
@@ -816,13 +875,26 @@ class SqliteWatchLedger implements WatchLedger {
   }
 
   private immediate<T>(fn: () => T): LedgerResult<T> {
+    let value: T
     try {
-      const value = this.db.transaction(fn).immediate() as T
-      this.secureFiles()
-      return { ok: true, value }
+      value = this.db.transaction(fn).immediate() as T
     } catch (error) {
       return { ok: false, ...mapError(error) }
     }
+    // The transaction has committed. A failure to chmod the files now means
+    // the caller cannot know whether the state changed, so do not claim it did
+    // not; report the uncertainty and let the caller re-read.
+    try {
+      this.secureFiles()
+    } catch (error) {
+      const mapped = mapError(error)
+      return {
+        ok: false,
+        code: "state_unknown",
+        detail: `${mapped.code}: ${mapped.detail}`,
+      }
+    }
+    return { ok: true, value }
   }
 
   private read<T>(fn: () => T): LedgerResult<T> {
@@ -855,7 +927,7 @@ function taskFromRow(row: TaskRow): WatchTaskRecord {
     taskState: parseTaskState(row.task_state),
     version: row.version,
     generation: row.generation,
-    attemptsUsed: row.attempts_used ?? 0,
+    attemptsUsed: parseAttemptsUsed(row.attempts_used),
     ownerActivation: row.owner_activation,
     ...(lastReport === undefined ? {} : { lastReport }),
     createdAt: row.created_at,
@@ -863,6 +935,18 @@ function taskFromRow(row: TaskRow): WatchTaskRecord {
     ...(row.completed_at === null ? {} : { completedAt: row.completed_at }),
     ...(row.ended_at === null ? {} : { endedAt: row.ended_at }),
   }
+}
+
+function parseAttemptsUsed(value: unknown): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value < 0 ||
+    value > WATCH_CORRECTION_LIMIT
+  ) {
+    throw new LedgerFailure("corrupt", "stored attempts_used is not an integer in the allowed range")
+  }
+  return value
 }
 
 function parseWatchState(value: string): WatchState {
