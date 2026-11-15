@@ -17,11 +17,15 @@ function capability(): WatchPayload["capability"] {
     mode: "alert",
     monitoring: "participant-reports-only",
     automaticDetection: "unavailable",
+    automaticDetectionReason: "No supported execution signal is available in this build.",
     correction: "unavailable",
     correctionReason: "Finite correction is not implemented in this build.",
     delegation: "unavailable",
+    delegationReason: "Child-task delegation is not open in this build.",
     transfer: "unavailable",
+    transferReason: "Watch ownership transfer is not implemented in this build.",
     recovery: "unavailable",
+    recoveryReason: "Resume and recovery confirmation are not implemented in this build.",
   }
 }
 
@@ -55,6 +59,8 @@ function payload(watchState: "active" | "paused" | "ended" = "active"): WatchPay
       generation: 1,
       ownership: "this-instance",
       participation: "seen",
+      attempts: { used: 0, limit: 3 },
+      pause: watchState === "paused" ? { kind: "manual", reason: "paused by the user" } : null,
       lastReport: null,
       createdAt: Date.UTC(2026, 10, 16, 4, 0, 0),
       updatedAt: Date.UTC(2026, 10, 16, 4, 30, 0),

@@ -7,10 +7,9 @@
  * attempts and protocol participation each keep their own row, because this
  * feature must not let one read as another.
  *
- * The view never invents a fact the answer did not carry. In particular, this
- * build's contract has no attempt counter and no separate safety-pause reason;
- * the rows say "not reported" and "paused" instead of guessing a number or a
- * cause. A later contract can make those cells more specific.
+ * The view renders the answer's own attempts, pause cause and capability
+ * reasons. It does not compute a counter, infer a safety pause or decide that
+ * a completed task is over; those are the plugin's facts.
  */
 
 import type { WatchPayload } from "../rpc.ts"
@@ -118,7 +117,7 @@ function taskContent(payload: WatchPayload, sessionID: string): WatchContent {
       ],
       notes: [
         "No watched task is enrolled for this session.",
-        "The target is this session; the mode is alert-only.",
+        `The target is this session; the mode is ${modeName(payload.capability.mode)}.`,
         ...capabilityNotes(payload),
         "enroll: /peers-watch enroll <goal> · esc: close",
       ],
@@ -131,7 +130,7 @@ function taskContent(payload: WatchPayload, sessionID: string): WatchContent {
     notes.push("The executing session has not reported yet; enrollment is not readiness.")
   }
   if (task.watchState === "paused") {
-    notes.push("Supervision is paused; the business session is not paused.")
+    notes.push(pauseNote(task))
     notes.push(`Resume is unavailable: ${payload.controls.resume.reason ?? "this build cannot resume a watch."}`)
   }
   if (task.ownership === "another-activation") {
@@ -163,11 +162,11 @@ function taskContent(payload: WatchPayload, sessionID: string): WatchContent {
     rows: [
       fact("Goal", goalText(task.goal)),
       fact("Task state", taskStateText(task.taskState)),
-      fact("Supervision", supervisionText(task.watchState)),
+      fact("Supervision", supervisionText(task)),
       fact("Authorization", authorizationText(task.mode)),
       fact("Actual capability", capabilityText(payload.capability)),
       fact("Owner", ownerText(task.ownership, task.generation)),
-      fact("Attempts", "not reported by this server"),
+      fact("Attempts", attemptsText(task.attempts)),
       fact("Protocol", protocolText(task.participation)),
       fact("Last report", lastReportText(task.lastReport)),
       fact("Result", resultText(task)),
@@ -218,15 +217,29 @@ function taskStateText(state: NonNullable<WatchPayload["task"]>["taskState"]): s
   }
 }
 
-function supervisionText(state: NonNullable<WatchPayload["task"]>["watchState"]): string {
-  switch (state) {
+function supervisionText(task: NonNullable<WatchPayload["task"]>): string {
+  switch (task.watchState) {
     case "active":
       return "active"
     case "paused":
+      if (task.pause?.kind === "manual") return "paused (manual)"
+      if (task.pause?.kind === "safety") return "paused (safety pause)"
       return "paused"
     case "ended":
-      return "ended"
+      return task.taskState === "completed" ? "ended (task completed)" : "ended"
   }
+}
+
+function pauseNote(task: NonNullable<WatchPayload["task"]>): string {
+  if (task.pause === null) {
+    return "Supervision is paused; the business session is not paused, and pausing stops new reminders."
+  }
+  const kind = task.pause.kind === "safety" ? "safety pause" : "manual"
+  return `Supervision is paused (${kind}): ${ensurePeriod(task.pause.reason)} The business session is not paused; pausing stops new reminders.`
+}
+
+function attemptsText(attempts: NonNullable<WatchPayload["task"]>["attempts"]): string {
+  return `${attempts.used} of ${attempts.limit} used`
 }
 
 function ownerText(
@@ -292,9 +305,13 @@ function goalText(goal: string): string {
 }
 
 function authorizationText(mode: WatchPayload["capability"]["mode"]): string {
+  return `${modeName(mode)} (the only mode this build offers)`
+}
+
+function modeName(mode: WatchPayload["capability"]["mode"]): string {
   switch (mode) {
     case "alert":
-      return "alert-only (the only mode this build offers)"
+      return "alert-only"
   }
 }
 
@@ -312,14 +329,22 @@ function capabilityText(capability: WatchPayload["capability"]): string {
 
 function capabilityNotes(payload: WatchPayload): string[] {
   const notes: string[] = []
-  if (payload.capability.correction === "unavailable") {
-    notes.push(`Correction: unavailable — ${ensurePeriod(payload.capability.correctionReason)}`)
+  const capability = payload.capability
+  if (capability.automaticDetection === "unavailable") {
+    notes.push(
+      `Automatic detection: unavailable — ${ensurePeriod(capability.automaticDetectionReason)}`,
+    )
   }
-  if (payload.capability.delegation === "unavailable") {
-    notes.push("Child-task enrollment: unavailable in this build.")
+  if (capability.correction === "unavailable") {
+    notes.push(`Correction: unavailable — ${ensurePeriod(capability.correctionReason)}`)
   }
-  if (payload.capability.transfer === "unavailable" || payload.capability.recovery === "unavailable") {
-    notes.push("Ownership transfer and recovery: unavailable in this build.")
+  if (capability.delegation === "unavailable") {
+    notes.push(`Child-task enrollment: unavailable — ${ensurePeriod(capability.delegationReason)}`)
+  }
+  if (capability.transfer === "unavailable" || capability.recovery === "unavailable") {
+    notes.push(
+      `Ownership transfer and recovery: unavailable — ${ensurePeriod(capability.transferReason)} / ${ensurePeriod(capability.recoveryReason)}`,
+    )
   }
   return notes
 }

@@ -37,12 +37,16 @@ function capability(): WatchPayload["capability"] {
     mode: "alert",
     monitoring: "participant-reports-only",
     automaticDetection: "unavailable",
+    automaticDetectionReason: "No supported execution signal is available in this build.",
     correction: "unavailable",
     correctionReason:
       "Finite correction is not implemented in this build; this watch can only record reports.",
     delegation: "unavailable",
+    delegationReason: "Child-task delegation is not open in this build; enroll the calling session itself.",
     transfer: "unavailable",
+    transferReason: "Watch ownership transfer is not implemented in this build.",
     recovery: "unavailable",
+    recoveryReason: "Resume and recovery confirmation are not implemented in this build.",
   }
 }
 
@@ -70,6 +74,8 @@ function task(overrides: Partial<Task> = {}): Task {
     generation: 1,
     ownership: "this-instance",
     participation: "seen",
+    attempts: { used: 0, limit: 3 },
+    pause: null,
     lastReport: {
       reportID: "report_1",
       kind: "progress",
@@ -142,6 +148,7 @@ describe("the watch dialog draws the panel", () => {
     expect(text()).toContain("active")
     expect(text()).toContain("alert-only")
     expect(text()).toContain("this plugin instance · generation 1")
+    expect(text()).toContain("0 of 3 used")
     expect(text()).toContain("Protocol")
     expect(text()).not.toContain("idle")
   })
@@ -175,6 +182,7 @@ describe("the watch dialog draws the panel", () => {
     await setup.flush()
     expect(text()).not.toContain("reading the watch…")
     expect(text()).toContain("completed")
+    expect(text()).toContain("ended (task completed)")
     expect(text()).toContain("migration finished")
     expect(text()).toContain("Completion is recorded; supervision ended.")
     expect(text()).not.toContain("not a business success")
@@ -285,12 +293,18 @@ describe("the two-step controls", () => {
     setState({
       kind: "payload",
       payload: payload({
-        task: task({ watchState: "paused", version: 4 }),
+        task: task({
+          watchState: "paused",
+          version: 4,
+          pause: { kind: "manual", reason: "paused by the user" },
+        }),
         controls: controls({ pause: control(false, "the watch is already paused") }),
       }),
     })
     await setup.flush()
     expect(text()).not.toContain("Pause supervision?")
+    expect(text()).toContain("paused (manual)")
+    expect(text()).toContain("paused by the user")
 
     setup.mockInput.pressKey("y")
     await setup.flush()

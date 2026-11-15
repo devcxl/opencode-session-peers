@@ -20,6 +20,7 @@ import { useKeyboard } from "@opentui/solid"
 
 import type { TuiPalette } from "../host/tui.ts"
 import { watchContent, type WatchState } from "./watch-view.ts"
+import type { Tone } from "./view.ts"
 import { colourFor, tableStyle } from "./table.ts"
 
 export interface WatchDialogProps {
@@ -99,14 +100,20 @@ export function WatchDialog(props: WatchDialogProps) {
     switch (pending()) {
       case "pause":
         return "Pause supervision? y: yes · n: cancel — the business session keeps running."
-      case "end":
-        return "End supervision? y: yes · n: cancel — this is not a business success and does not stop the session."
+      case "end": {
+        const state = props.state()
+        const completed =
+          state.kind === "payload" && state.payload.task?.taskState === "completed"
+        return completed
+          ? "End supervision? y: yes · n: cancel — the task remains recorded as completed."
+          : "End supervision? y: yes · n: cancel — this is not a business success and does not stop the session."
+      }
       case undefined:
         return ""
     }
   })
 
-  const colour = (tone: "base" | "muted" | "error") => colourFor(tone, props.palette())
+  const colour = (tone: Tone) => colourFor(tone, props.palette())
 
   return (
     <box flexDirection="column" paddingTop={1} paddingBottom={1} paddingLeft={2} paddingRight={2}>
