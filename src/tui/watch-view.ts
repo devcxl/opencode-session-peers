@@ -445,8 +445,6 @@ function taskRows(
     fact("Last report", lastReportText(task.lastReport)),
     fact("Result", resultText(task)),
   ]
-  if (!(compact && payload.alerts.available && payload.alerts.total === 0)) {
-    rows.push(fact("Alerts", alertsSummary(payload.alerts)))
-  }
+  if (!compact) rows.push(fact("Alerts", alertsSummary(payload.alerts)))
   return rows
 }

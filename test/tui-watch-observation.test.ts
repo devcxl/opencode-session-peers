@@ -68,6 +68,30 @@ describe("the observation rows", () => {
     expect(blocks.notes.join("\n")).not.toContain("stalled")
   })
 
+  test("keeps a trusted-false running-silence as the server's reminder state, not unknown", () => {
+    const blocks = content(
+      state({
+        task: task(),
+        observation: observation({
+          state: "running-silence",
+          trusted: false,
+          waitsPartial: true,
+          reason: "a form wait may have been missed after a gap",
+        }),
+      }),
+    )
+    expect(valueOf(blocks, "Observation")).toBe(
+      "running, no new activity — reminder only · silence threshold 10m",
+    )
+    expect(valueOf(blocks, "Snapshot")).toBe(
+      "observed 2026-11-16 04:34:00Z · baseline 2026-11-16 04:30:00Z · not trusted — a form wait may have been missed after a gap",
+    )
+    expect(valueOf(blocks, "Wait state")).toBe("incomplete — absence is not proof")
+    expect(blocks.notes.join("\n")).toContain("The task is still running")
+    expect(blocks.notes.join("\n")).toContain("Wait evidence is partial")
+    expect(valueOf(blocks, "Observation")).not.toContain("unknown")
+  })
+
   test("does not turn missing evidence into idle or no-wait", () => {
     const blocks = content(
       state({

@@ -432,4 +432,16 @@ describe("a short terminal", () => {
     expect(text()).toContain("Pause supervision?")
     expect(text()).toContain("the business session keeps running")
   })
+
+  test("keeps the title and alert entry visible when an alert exists", async () => {
+    const { text } = await rendered(
+      {
+        kind: "payload",
+        payload: payload({ alerts: alertsView([alert({ alertID: "alert_0001" })]) }),
+      },
+      { height: 40 },
+    )
+    expect(text()).toContain("Session watch")
+    expect(text()).toContain("v: alerts")
+  })
 })
