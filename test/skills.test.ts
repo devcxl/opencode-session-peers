@@ -108,6 +108,7 @@ describe("the peers skill", () => {
       "E_WATCH_STALE",
       "E_WATCH_UNAVAILABLE",
       "E_WATCH_UNSUPPORTED",
+      "E_WATCH_NOT_FOUND",
     ]) {
       expect(skill.content).toContain(phrase)
     }
