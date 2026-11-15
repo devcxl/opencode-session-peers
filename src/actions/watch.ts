@@ -84,6 +84,9 @@ const LOCAL_OPERATIONS: readonly Operation[] = ["show", "enroll", "report", "pau
 
 export async function watchAction(deps: WatchActionDeps, call: ToolCall, input: unknown): Promise<ActionResult> {
   if (deps.watch === undefined) return outcomeResult(failure("E_WATCH_DISABLED", "Session peers is disabled by configuration."))
+  if (deps.watch.isClosing()) {
+    return outcomeResult(failure("E_WATCH_UNAVAILABLE", "The watch application is closing; no action was taken."))
+  }
 
   const parsed = readWatchInput(input)
   if (!parsed.ok) return outcomeResult(failure("E_WATCH_INVALID", parsed.reason))
@@ -97,6 +100,9 @@ export async function watchAction(deps: WatchActionDeps, call: ToolCall, input: 
           `This location does not serve the calling session "${call.sessionID}".`,
         ),
       )
+    }
+    if (deps.watch.isClosing()) {
+      return outcomeResult(failure("E_WATCH_UNAVAILABLE", "The watch application is closing; no action was taken."))
     }
   }
 

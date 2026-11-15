@@ -203,8 +203,14 @@ describeExecutor("correction executor", () => {
       executor.kick(task.taskID)
       await executor.settle()
       expect(sent).toHaveLength(1)
-      expect(sent[0]?.text).toContain("attempt 1")
-      expect(sent[0]?.text).toContain("correlation ")
+      const parsed = JSON.parse(/peers\((\{.*\})\)/.exec(sent[0]?.text ?? "")?.[1] ?? "{}") as {
+        watch?: { taskID?: string; attemptID?: string; correlation?: string }
+      }
+      expect(parsed.watch).toMatchObject({
+        taskID: task.taskID,
+        attemptID: sent[0]?.attemptID,
+        correlation: sent[0]?.correlation,
+      })
       expect(attempts(ledger, task.taskID)[0]).toMatchObject({
         phase: "accepted",
         admissionID: "admission-1",
@@ -252,6 +258,44 @@ describeExecutor("correction executor", () => {
     }
   })
 
+  test("a fresh recheck that sees running work aborts the reservation instead of queueing", async () => {
+    const clock = { value: 1_000 }
+    const ledger = open(clock)
+    try {
+      const task = seed(ledger, clock)
+      let reads = 0
+      const sent: CorrectionDeliveryRequest[] = []
+      const executor = createCorrectionExecutor({
+        authority: authority(ledger),
+        observationFor: () => observation(),
+        refreshObservation: async () => {
+          reads += 1
+          return reads === 1 ? observation() : { ...observation(), state: "active" }
+        },
+        sameLocation: async () => true,
+        runtime: () => runtime,
+        gate: correctionGateWithVerifiedTuples(["2.3.0/linux/x64"]),
+        delivery: {
+          async send(request) {
+            sent.push(request)
+            return { kind: "accepted", admissionID: "must-not-happen" }
+          },
+        },
+        activationID: "activation-a",
+        now: () => clock.value,
+        warn: () => {},
+      })
+      executor.kick(task.taskID)
+      await executor.settle()
+      expect(sent).toHaveLength(0)
+      expect(attempts(ledger, task.taskID)).toHaveLength(1)
+      expect(attempts(ledger, task.taskID)[0]).toMatchObject({ phase: "aborted" })
+      await executor.close()
+    } finally {
+      ledger.close()
+    }
+  })
+
   test("a change between reserve and claim spends the ordinal without sending", async () => {
     const clock = { value: 1_000 }
     const ledger = open(clock)
@@ -291,6 +335,55 @@ describeExecutor("correction executor", () => {
     }
   })
 
+  test("a report between reserve and recheck still aborts the unclaimed reservation", async () => {
+    const clock = { value: 1_000 }
+    const ledger = open(clock)
+    try {
+      const task = seed(ledger, clock)
+      let calls = 0
+      const sent: CorrectionDeliveryRequest[] = []
+      const executor = createCorrectionExecutor({
+        authority: authority(ledger),
+        observationFor: () => observation(),
+        sameLocation: async () => true,
+        runtime: () => runtime,
+        gate: (input) => {
+          calls += 1
+          if (calls === 1) return correctionGateWithVerifiedTuples(["2.3.0/linux/x64"])(input)
+          const shown = ledger.show({ taskID: task.taskID, sessionID: "ses_a" })
+          if (shown.ok && shown.value !== null) {
+            ledger.report({
+              taskId: task.taskID,
+              callerSessionId: "ses_a",
+              expectedVersion: shown.value.version,
+              reportId: "recheck-report",
+              kind: "progress",
+              evidence: { summary: "new input", reference: "recheck-reference" },
+            })
+          }
+          return correctionGate(input)
+        },
+        delivery: {
+          async send(request) {
+            sent.push(request)
+            return { kind: "accepted", admissionID: "must-not-happen" }
+          },
+        },
+        activationID: "activation-a",
+        now: () => clock.value,
+        warn: () => {},
+      })
+      executor.kick(task.taskID)
+      await executor.settle()
+      expect(sent).toHaveLength(0)
+      expect(attempts(ledger, task.taskID)).toHaveLength(1)
+      expect(attempts(ledger, task.taskID)[0]).toMatchObject({ phase: "aborted" })
+      await executor.close()
+    } finally {
+      ledger.close()
+    }
+  })
+
   test("a receipt can arrive before the queue result and never issues a second permit", async () => {
     const clock = { value: 1_000 }
     const ledger = open(clock)
@@ -305,12 +398,23 @@ describeExecutor("correction executor", () => {
         gate: correctionGateWithVerifiedTuples(["2.3.0/linux/x64"]),
         delivery: {
           async send(request) {
-            correlation = request.correlation
+            const parsed = JSON.parse(/peers\((\{.*\})\)/.exec(request.text)?.[1] ?? "{}") as {
+              watch?: { taskID?: string; attemptID?: string; correlation?: string }
+            }
+            if (
+              parsed.watch?.taskID !== task.taskID ||
+              parsed.watch.attemptID !== request.attemptID ||
+              parsed.watch.correlation === undefined
+            ) {
+              throw new Error("the prompt did not carry a concrete receipt call")
+            }
+            correlation = parsed.watch.correlation
             const receipt = ledger.recordCorrectionReceipt({
-              taskId: task.taskID,
-              reservationId: request.attemptID,
+              taskId: parsed.watch.taskID,
+              reservationId: parsed.watch.attemptID,
               callerSessionId: "ses_a",
-              correlation: request.correlation,
+              currentActivationId: "activation-a",
+              correlation: parsed.watch.correlation,
               at: clock.value,
             })
             expect(receipt).toMatchObject({ ok: true, value: { continuePermit: true } })
@@ -323,11 +427,12 @@ describeExecutor("correction executor", () => {
       })
       executor.kick(task.taskID)
       await executor.settle()
-      expect(attempts(ledger, task.taskID)[0]).toMatchObject({ phase: "receipted" })
+      expect(attempts(ledger, task.taskID)[0]).toMatchObject({ phase: "receipted", admissionID: "admission-early" })
       const duplicate = ledger.recordCorrectionReceipt({
         taskId: task.taskID,
         reservationId: attempts(ledger, task.taskID)[0]?.reservationID ?? "",
         callerSessionId: "ses_a",
+        currentActivationId: 'activation-a',
         correlation,
         at: clock.value,
       })
@@ -364,6 +469,48 @@ describeExecutor("correction executor", () => {
       await executor.close()
       expect(sent).toBe(0)
       expect(attempts(ledger, task.taskID)).toHaveLength(0)
+    } finally {
+      ledger.close()
+    }
+  })
+
+  test("a late accepted result after close is recorded once without a new send", async () => {
+    const clock = { value: 1_000 }
+    const ledger = open(clock)
+    try {
+      const task = seed(ledger, clock)
+      let release: (() => void) | undefined
+      const hold = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      let sent = 0
+      const executor = createCorrectionExecutor({
+        authority: authority(ledger),
+        observationFor: () => observation(),
+        sameLocation: async () => true,
+        runtime: () => runtime,
+        gate: correctionGateWithVerifiedTuples(["2.3.0/linux/x64"]),
+        delivery: {
+          async send() {
+            sent += 1
+            await hold
+            return { kind: "accepted", admissionID: "late-close" }
+          },
+        },
+        activationID: "activation-a",
+        now: () => clock.value,
+        warn: () => {},
+      })
+      executor.kick(task.taskID)
+      while (sent === 0) await new Promise((resolve) => setTimeout(resolve, 0))
+      const closing = executor.close()
+      release?.()
+      await closing
+      expect(sent).toBe(1)
+      expect(attempts(ledger, task.taskID)[0]).toMatchObject({
+        phase: "accepted",
+        admissionID: "late-close",
+      })
     } finally {
       ledger.close()
     }
@@ -473,6 +620,7 @@ describeExecutor("correction executor", () => {
         taskId: task.taskID,
         reservationId: attempts(ledger, task.taskID)[0]?.reservationID ?? "",
         callerSessionId: "ses_a",
+        currentActivationId: 'activation-a',
         correlation,
         at: clock.value,
       })

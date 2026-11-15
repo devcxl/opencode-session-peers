@@ -584,6 +584,27 @@ describeWatch("trusted idle and running observation", () => {
     }
   })
 
+  test("a later target event invalidates the cached idle sample before the next tick", async () => {
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      const at = host.now()
+      settle(host, at)
+      await enroll(host)
+      await host.advance(1_000)
+      await host.advance(1_000)
+      let payload = await show(host)
+      expect(payload.observation).toMatchObject({ state: "idle-candidate", trusted: true })
+
+      host.emit("session.text.started", { sessionID: CALLER_SESSION_ID }, host.now())
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      payload = await show(host)
+      expect(payload.observation).toBeNull()
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
   test("a terminal execution plus a sustained idle window forms one persistent alert", async () => {
     const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
     try {

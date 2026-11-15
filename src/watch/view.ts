@@ -67,7 +67,13 @@ export function watchTaskView(
     correction: watchCorrectionView(task, correction, activationID, runtime, observation, closing),
     pause:
       task.watchState === "paused"
-        ? { kind: "manual", reason: "paused by the user; business execution is untouched" }
+        ? task.ownerActivation === activationID
+          ? { kind: "manual", reason: "paused by the user; business execution is untouched" }
+          : {
+              kind: "safety",
+              reason:
+                "another activation owns this task; automatic correction is paused and old authority is not inherited",
+            }
         : null,
     lastReport: task.lastReport === undefined ? null : reportView(task.lastReport),
     createdAt: task.createdAt,

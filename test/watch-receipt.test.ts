@@ -15,7 +15,7 @@ import { Database } from "bun:sqlite"
 import plugin from "../src/index.ts"
 import { openWatchLedger } from "../src/watch/ledger.ts"
 import { WATCH_STATE_DIR_ENV } from "../src/host/watch.ts"
-import { readWatchPayload, type WatchPayload } from "../src/rpc.ts"
+import { readWatchGrantPayload, readWatchPayload, type WatchPayload } from "../src/rpc.ts"
 import { CALLER_SESSION_ID, fakeHost, type FakeHost, type FakeHostOptions } from "./fake-host.ts"
 
 const runtimeVersion = (() => {
@@ -189,7 +189,7 @@ function receipt(host: FakeHost, seeded: Seeded, sessionID = CALLER_SESSION_ID, 
 }
 
 describeReceipt("correction receipt surface", () => {
-  test("the real caller receives one permit, duplicates get none and recovery needs new progress", async () => {
+  test("a reloaded activation records seen but never inherits a continue permit", async () => {
     const state = stateDirectory()
     const seeded = seed(state)
     const { host, unload } = await loaded(
@@ -201,25 +201,19 @@ describeReceipt("correction receipt surface", () => {
       const firstWatch = (first.details as { watch: Record<string, unknown> }).watch
       expect(firstWatch).toMatchObject({
         ok: true,
-        continuePermit: true,
+        continuePermit: false,
         duplicate: false,
         seen: true,
-        refusalReason: null,
+        refusalReason: "grant-changed",
       })
-      expect(firstWatch["correlation"]).toBeUndefined()
-      expect(first.text).toContain("One continue permit")
+      expect(first.text).toContain("no continue permit")
       expect(first.text).not.toContain(seeded.correlation)
-      expect((await show(host)).task?.correction.history[0]).toMatchObject({
-        phase: "receipted",
-        receipt: { continuePermitIssuedAt: expect.any(Number) },
-      })
 
       const duplicate = await receipt(host, seeded)
       expect((duplicate.details as { watch: Record<string, unknown> }).watch).toMatchObject({
         continuePermit: false,
         duplicate: true,
       })
-      expect(duplicate.text).toContain("already recorded")
 
       const wrongToken = await receipt(host, seeded, CALLER_SESSION_ID, { correlation: "forged" })
       expect((wrongToken.details as { watch: { failure: { code: string } } }).watch.failure.code).toBe(
@@ -229,30 +223,244 @@ describeReceipt("correction receipt surface", () => {
       expect((wrongCaller.details as { watch: { failure: { code: string } } }).watch.failure.code).toBe(
         "E_WATCH_CALLER_MISMATCH",
       )
+      expect(host.prompts).toEqual([])
+      expect(host.generations).toEqual([])
+      expect(host.interrupts).toEqual([])
+    } finally {
+      await unload()
+    }
+  })
 
-      const task = (await show(host)).task
+  test("the current activation receives one permit and recovery needs new progress", async () => {
+    const state = stateDirectory()
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } }, state)
+    try {
+      const taskID = (await host.call("peers", {
+        action: "watch",
+        watch: { operation: "enroll", requestId: "same-activation", goal: "receipt task" },
+      }, CALLER_SESSION_ID)).details as { watch: { task: { taskID: string; version: number } } }
+      const enrolled = taskID.watch.task
+      const began = await host.call("peers", {
+        action: "watch",
+        watch: {
+          operation: "report",
+          taskID: enrolled.taskID,
+          expectedVersion: enrolled.version,
+          reportId: "same-begin",
+          kind: "begin",
+          evidence: {},
+        },
+      }, CALLER_SESSION_ID)
+      const beganTask = (began.details as { watch: { task: { version: number } } }).watch.task
+      const rpc = host.rpcs[0]
+      if (rpc === undefined) throw new Error("no RPC surface")
+      const prepared = readWatchGrantPayload(
+        await rpc.call("watchGrant", {
+          operation: "prepare",
+          sessionID: CALLER_SESSION_ID,
+          taskID: enrolled.taskID,
+          expectedVersion: beganTask.version,
+          deployment: "single-host-same-location",
+        }),
+      )
+      if (prepared?.challenge === null || prepared?.challenge === undefined) throw new Error("no grant challenge")
+      const confirmed = readWatchGrantPayload(
+        await rpc.call("watchGrant", {
+          operation: "confirm",
+          sessionID: CALLER_SESSION_ID,
+          taskID: enrolled.taskID,
+          expectedVersion: prepared.challenge.expectedVersion,
+          generation: prepared.challenge.generation,
+          termsDigest: prepared.challenge.termsDigest,
+          challenge: prepared.challenge.challenge,
+          deployment: "single-host-same-location",
+        }),
+      )
+      expect(confirmed?.ok).toBe(true)
+
+      const opened = openWatchLedger({
+        path: join(state, "watch-ledger.sqlite3"),
+        busyTimeoutMs: 2_000,
+        openAttempts: 20,
+      })
+      if (!opened.ok) throw new Error(opened.code)
+      const ledger = opened.ledger
+      let seededAttempt: { taskID: string; attemptID: string; correlation: string }
+      try {
+        const shown = ledger.show({ taskID: enrolled.taskID, sessionID: CALLER_SESSION_ID })
+        if (!shown.ok || shown.value === null) throw new Error("task missing")
+        const reserved = ledger.reserveCorrection({
+          taskId: enrolled.taskID,
+          callerSessionId: CALLER_SESSION_ID,
+          ownerActivation: shown.value.ownerActivation,
+          expectedVersion: shown.value.version,
+          generation: shown.value.generation,
+          reservationId: "same-attempt",
+          at: host.now(),
+        })
+        if (!reserved.ok) throw new Error(`${reserved.code}: ${reserved.detail}`)
+        const claimed = ledger.claimCorrection({
+          taskId: enrolled.taskID,
+          reservationId: "same-attempt",
+          ownerActivation: shown.value.ownerActivation,
+          expectedVersion: reserved.value.task.version,
+          generation: shown.value.generation,
+          at: host.now(),
+        })
+        if (!claimed.ok) throw new Error(`${claimed.code}: ${claimed.detail}`)
+        seededAttempt = {
+          taskID: enrolled.taskID,
+          attemptID: "same-attempt",
+          correlation: claimed.value.correlation,
+        }
+      } finally {
+        ledger.close()
+      }
+
+      const first = await receipt(host, seededAttempt)
+      expect((first.details as { watch: Record<string, unknown> }).watch).toMatchObject({
+        ok: true,
+        continuePermit: true,
+        duplicate: false,
+        seen: true,
+        refusalReason: null,
+      })
+      expect(first.text).toContain("One continue permit")
+      expect(first.text).not.toContain(seededAttempt.correlation)
+
+      const duplicate = await receipt(host, seededAttempt)
+      expect((duplicate.details as { watch: Record<string, unknown> }).watch).toMatchObject({
+        continuePermit: false,
+        duplicate: true,
+      })
+      expect(duplicate.text).toContain("already recorded")
+
+      const shown = await show(host)
       await host.advance(1_000)
       const progress = await host.call("peers", {
         action: "watch",
         watch: {
           operation: "report",
-          taskID: seeded.taskID,
-          expectedVersion: task?.version,
-          reportId: "receipt-progress",
+          taskID: seededAttempt.taskID,
+          expectedVersion: shown.task?.version,
+          reportId: "same-progress",
           kind: "progress",
-          evidence: { summary: "new checkpoint", reference: "receipt-new-result" },
+          evidence: { summary: "new checkpoint", reference: "same-new-result" },
         },
-      })
+      }, CALLER_SESSION_ID)
       expect((progress.details as { watch: { ok: boolean } }).watch.ok).toBe(true)
       expect((await show(host)).task?.correction.history[0]).toMatchObject({
         phase: "recovered",
-        recovery: { resultReference: "receipt-new-result" },
+        recovery: { resultReference: "same-new-result" },
       })
       expect(host.prompts).toEqual([])
       expect(host.generations).toEqual([])
       expect(host.interrupts).toEqual([])
     } finally {
       await unload()
+    }
+  })
+
+  test("a grant lookup that finishes after unload begins cannot mutate", async () => {
+    const state = stateDirectory()
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } }, state)
+    try {
+      const enrolled = (await host.call("peers", {
+        action: "watch",
+        watch: { operation: "enroll", requestId: "closing-grant", goal: "closing grant" },
+      }, CALLER_SESSION_ID)).details as { watch: { task: { taskID: string; version: number } } }
+      const began = await host.call("peers", {
+        action: "watch",
+        watch: {
+          operation: "report",
+          taskID: enrolled.watch.task.taskID,
+          expectedVersion: enrolled.watch.task.version,
+          reportId: "closing-begin",
+          kind: "begin",
+          evidence: {},
+        },
+      }, CALLER_SESSION_ID)
+      const version = (began.details as { watch: { task: { version: number } } }).watch.task.version
+      const rpc = host.rpcs[0]
+      if (rpc === undefined) throw new Error("no RPC surface")
+      const prepared = readWatchGrantPayload(
+        await rpc.call("watchGrant", {
+          operation: "prepare",
+          sessionID: CALLER_SESSION_ID,
+          taskID: enrolled.watch.task.taskID,
+          expectedVersion: version,
+          deployment: "single-host-same-location",
+        }),
+      )
+      if (prepared?.challenge === null || prepared?.challenge === undefined) throw new Error("no challenge")
+      let release: (() => void) | undefined
+      const gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      host.setSessionGetGate(gate)
+      const pending = rpc.call("watchGrant", {
+        operation: "confirm",
+        sessionID: CALLER_SESSION_ID,
+        taskID: enrolled.watch.task.taskID,
+        expectedVersion: prepared.challenge.expectedVersion,
+        generation: prepared.challenge.generation,
+        termsDigest: prepared.challenge.termsDigest,
+        challenge: prepared.challenge.challenge,
+        deployment: "single-host-same-location",
+      })
+      const unloading = unload()
+      const blockedReport = await host.call("peers", {
+        action: "watch",
+        watch: {
+          operation: "report",
+          taskID: enrolled.watch.task.taskID,
+          expectedVersion: version,
+          reportId: "blocked-report",
+          kind: "progress",
+          evidence: { summary: "must not record", reference: "blocked" },
+        },
+      }, CALLER_SESSION_ID)
+      expect((blockedReport.details as { watch: { failure: { code: string } } }).watch.failure.code).toBe(
+        "E_WATCH_UNAVAILABLE",
+      )
+      const blockedReceipt = await host.call("peers", {
+        action: "watch",
+        watch: {
+          operation: "receipt",
+          taskID: enrolled.watch.task.taskID,
+          attemptID: "none",
+          correlation: "none",
+        },
+      }, CALLER_SESSION_ID)
+      expect((blockedReceipt.details as { watch: { failure: { code: string } } }).watch.failure.code).toBe(
+        "E_WATCH_UNAVAILABLE",
+      )
+      release?.()
+      const result = await pending.catch(() => undefined)
+      await unloading
+      if (result !== undefined) {
+        const payload = readWatchGrantPayload(result)
+        expect(payload?.ok).toBe(false)
+        if (payload?.ok === false) expect(payload.failure?.code).toBe("E_WATCH_UNAVAILABLE")
+      }
+      const opened = openWatchLedger({
+        path: join(state, "watch-ledger.sqlite3"),
+        busyTimeoutMs: 2_000,
+        openAttempts: 20,
+      })
+      if (!opened.ok) throw new Error(opened.code)
+      try {
+        const shown = opened.ledger.show({ taskID: enrolled.watch.task.taskID, sessionID: CALLER_SESSION_ID })
+        if (!shown.ok || shown.value === null) throw new Error("task missing")
+        expect(shown.value.mode).toBe("alert")
+        const snapshot = opened.ledger.correction(enrolled.watch.task.taskID)
+        expect(snapshot.ok).toBe(true)
+        if (snapshot.ok) expect(snapshot.value.grant).toBeNull()
+      } finally {
+        opened.ledger.close()
+      }
+    } finally {
+      await unload().catch(() => undefined)
     }
   })
 
