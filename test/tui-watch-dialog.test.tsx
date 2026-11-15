@@ -47,6 +47,9 @@ function capability(): WatchPayload["capability"] {
     transferReason: "Watch ownership transfer is not implemented in this build.",
     recovery: "unavailable",
     recoveryReason: "Resume and recovery confirmation are not implemented in this build.",
+    safetyPause: "unavailable",
+    safetyPauseReason:
+      "Watch safety pause is not implemented in this build; only a manual pause can occur.",
   }
 }
 

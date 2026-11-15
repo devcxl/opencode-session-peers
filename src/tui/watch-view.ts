@@ -134,7 +134,9 @@ function taskContent(payload: WatchPayload, sessionID: string): WatchContent {
     notes.push(`Resume is unavailable: ${payload.controls.resume.reason ?? "this build cannot resume a watch."}`)
   }
   if (task.ownership === "another-activation") {
-    notes.push("This plugin instance did not enroll this watch; it did not inherit automatic supervision.")
+    notes.push(
+      "This activation is observation-only for automatic supervision; no takeover. It does not infer that the previous owner stopped.",
+    )
   }
   if (task.watchState === "ended") {
     if (task.taskState === "completed") {
@@ -345,6 +347,9 @@ function capabilityNotes(payload: WatchPayload): string[] {
     notes.push(
       `Ownership transfer and recovery: unavailable — ${ensurePeriod(capability.transferReason)} / ${ensurePeriod(capability.recoveryReason)}`,
     )
+  }
+  if (capability.safetyPause === "unavailable") {
+    notes.push(`Safety pause: unavailable — ${ensurePeriod(capability.safetyPauseReason)}`)
   }
   return notes
 }

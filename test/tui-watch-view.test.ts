@@ -40,6 +40,9 @@ function capability(
     transferReason: "Watch ownership transfer is not implemented in this build.",
     recovery: "unavailable",
     recoveryReason: "Resume and recovery confirmation are not implemented in this build.",
+    safetyPause: "unavailable",
+    safetyPauseReason:
+      "Watch safety pause is not implemented in this build; only a manual pause can occur.",
     ...overrides,
   }
 }
@@ -274,7 +277,7 @@ describe("a watched task", () => {
     )
     expect(valueOf(blocks, "Owner")).toBe("another activation · generation 2")
     expect(blocks.notes.join("\n")).toContain(
-      "This plugin instance did not enroll this watch; it did not inherit automatic supervision.",
+      "This activation is observation-only for automatic supervision; no takeover. It does not infer that the previous owner stopped.",
     )
   })
 
@@ -362,6 +365,9 @@ describe("a watched task", () => {
     )
     expect(notes).toContain(
       "Ownership transfer and recovery: unavailable — Watch ownership transfer is not implemented in this build. / Resume and recovery confirmation are not implemented in this build.",
+    )
+    expect(notes).toContain(
+      "Safety pause: unavailable — Watch safety pause is not implemented in this build; only a manual pause can occur.",
     )
   })
 
