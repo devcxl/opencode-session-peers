@@ -639,6 +639,7 @@ describe("the correction pane and controlled grant review", () => {
     expect(review).toContain("3 permanent attempts")
     expect(review).toContain("only the first attempt")
     expect(review).toContain("same OS user and location")
+    expect(review).toContain("controlled panel confirmation channel")
     expect(review).toContain("not same-OS-user authentication")
     expect(review).toContain("not proof that no other service is running")
     expect(review).toContain("does not stop business work or reset used attempts")
