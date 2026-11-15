@@ -100,6 +100,137 @@ export interface WatchAttempts {
   readonly limit: number
 }
 
+/**
+ * The user's correction authorization and the automatic send capability are
+ * separate facts. A grant does not make a send eligible, and a busy/waiting
+ * target does not mean the user never granted anything.
+ */
+export type WatchCorrectionGrantMode = "alert-only" | "single-attempt"
+export type WatchCorrectionGrantState = "not-granted" | "pending-confirmation" | "granted" | "revoked"
+export type WatchCorrectionActual = "unavailable" | "ready"
+
+/** The persisted phase of one permanent attempt. */
+export type WatchCorrectionAttemptPhase =
+  | "reserved"
+  | "sending"
+  | "accepted"
+  | "rejected"
+  | "unknown"
+  | "receipted"
+  | "recovered"
+
+/** Why an automatic send is not eligible now; never a judgement of the goal. */
+export type WatchCorrectionStopReason =
+  | "grant-missing"
+  | "grant-pending"
+  | "grant-expired"
+  | "attempt-limit"
+  | "session-unresolved"
+  | "reservation-pending"
+  | "sending-unaccounted"
+  | "accepted-without-receipt"
+  | "unknown-result"
+  | "receipted-awaiting-recovery"
+  | "rejected"
+  | "recovered"
+  | "runtime-unsupported"
+  | "single-host-unconfirmed"
+  | "cross-location"
+  | "protocol-unseen"
+  | "task-paused"
+  | "task-ended"
+  | "task-completed"
+  | "observation-untrusted"
+  | "normal-wait"
+  | "observation-gap"
+  | "executor-unavailable"
+
+export interface WatchCorrectionAttemptView {
+  /** Stable reservation id; never a model-provided proof token. */
+  readonly attemptID: string
+  readonly ordinal: number
+  readonly phase: WatchCorrectionAttemptPhase
+  readonly reservedAt: number
+  readonly claimedAt: number | null
+  readonly acceptedAt: number | null
+  readonly rejectedAt: number | null
+  readonly unknownAt: number | null
+  readonly receipt: WatchCorrectionReceiptView | null
+  readonly recovery: WatchCorrectionRecoveryView | null
+  readonly stopReason: WatchCorrectionStopReason | null
+}
+
+export interface WatchCorrectionReceiptView {
+  readonly receiptID: string
+  readonly at: number
+}
+
+/** Recovery needs a new progress report and its matching new result reference. */
+export interface WatchCorrectionRecoveryView {
+  readonly progressReportID: string
+  readonly resultReference: string
+  readonly at: number
+}
+
+export interface WatchCorrectionGrantView {
+  readonly mode: WatchCorrectionGrantMode
+  readonly state: WatchCorrectionGrantState
+  /** Increments on grant, downgrade or revocation; never resets attempts. */
+  readonly version: number
+  readonly reviewSummary: string | null
+  readonly grantedAt: number | null
+}
+
+/**
+ * A short-lived challenge returned only to the controlled TUI surface by the
+ * prepare call. It is not human proof, never enters the model context or the
+ * normal task snapshot, and is consumed by the matching confirm call.
+ */
+export interface WatchCorrectionChallenge {
+  readonly challenge: string
+  readonly taskID: string
+  readonly expectedVersion: number
+  readonly generation: number
+  readonly termsDigest: string
+  readonly reviewSummary: string
+  readonly expiresAt: number
+}
+
+export interface WatchCorrectionGateView {
+  readonly gate:
+    | "grant"
+    | "attempts"
+    | "pending-attempt"
+    | "business-unfinished"
+    | "executor"
+  readonly ok: boolean
+  readonly reason: string | null
+}
+
+export interface WatchCorrectionControls {
+  /** Requesting a grant starts a controlled review; it never grants by itself. */
+  readonly grant: WatchControl
+  readonly downgrade: WatchControl
+}
+
+export interface WatchCorrectionView {
+  readonly authorization: WatchCorrectionGrantView
+  /** What this build can really do now, distinct from the granted mode. */
+  readonly actual: WatchCorrectionActual
+  readonly actualReason: string
+  readonly attempts: WatchAttempts
+  /** The current attempt phase, or `idle` when no attempt is in flight. */
+  readonly phase: WatchCorrectionAttemptPhase | "idle"
+  readonly pending: WatchCorrectionAttemptView | null
+  readonly last: WatchCorrectionAttemptView | null
+  readonly history: readonly WatchCorrectionAttemptView[]
+  readonly stop: { readonly reason: WatchCorrectionStopReason; readonly missingEvidence: string | null } | null
+  readonly gates: readonly WatchCorrectionGateView[]
+  /** Business completion is independent of supervision and correction. */
+  readonly businessCompleted: boolean
+  readonly controls: WatchCorrectionControls
+}
+
 /** Why supervision is paused; this build only produces `manual`. */
 export interface WatchPause {
   readonly kind: "manual" | "safety"
@@ -120,6 +251,7 @@ export interface WatchTaskView {
   readonly ownership: WatchOwnership
   readonly participation: WatchParticipation
   readonly attempts: WatchAttempts
+  readonly correction: WatchCorrectionView
   readonly pause: WatchPause | null
   readonly lastReport: WatchReportView | null
   readonly createdAt: number
@@ -328,7 +460,7 @@ export const WATCH_ALERT_SUMMARY_LIMIT = 300
 export const WATCH_ALERT_REASON_LIMIT = 500
 
 export const CORRECTION_UNAVAILABLE_REASON =
-  "Finite correction is not implemented in this build; this watch can observe and alert but cannot correct or resume."
+  "Automatic correction is not enabled in this build; the security ledger and attempt contract exist, but no controlled grant confirmation or executor path is open."
 export const DELEGATION_UNAVAILABLE_REASON =
   "Child-task delegation is not open in this build; enroll the calling session itself."
 export const TRANSFER_UNAVAILABLE_REASON =
