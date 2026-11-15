@@ -443,6 +443,7 @@ describeWatch("trusted idle and running observation", () => {
         taskID,
         expectedVersion: payload.task?.version,
         generation: payload.task?.generation,
+        deployment: "single-host-same-location",
         reviewSummary: expect.stringContaining("three permanent attempts"),
       })
       expect(prepared?.challenge?.challenge).toBeString()
