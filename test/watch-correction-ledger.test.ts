@@ -902,6 +902,40 @@ describeCorrection("correction ledger", () => {
     }
   })
 
+  test("independent processes claim one reservation only once", async () => {
+    const clock = { value: 1_000 }
+    const directory = mkdtempSync(join(tmpdir(), "session-peers-correction-claim-"))
+    scratch.push(directory)
+    const path = join(directory, "watch-ledger.sqlite3")
+    const ledger = open(clock, directory)
+    try {
+      let task = enroll(ledger)
+      task = grant(ledger, task.taskID, task.version, clock).task
+      const reserved = reserve(ledger, task.taskID, task.version, task.generation, "res-claim-once", clock)
+      if (!reserved.ok) return
+      const results = await Promise.all(
+        Array.from({ length: 4 }, () =>
+          worker(
+            "claim",
+            path,
+            task.taskID,
+            "ses_a",
+            "activation-a",
+            reserved.value.task.version,
+            task.generation,
+            "res-claim-once",
+            clock.value,
+          ),
+        ),
+      )
+      expect(results.filter((result) => result.ok)).toHaveLength(1)
+      expect(results.filter((result) => !result.ok).every((result) => result.code === "claim_taken")).toBe(true)
+      expect(attemptOf(ledger.correction(task.taskID))[0]).toMatchObject({ phase: "sending" })
+    } finally {
+      ledger.close()
+    }
+  })
+
   test("a claimed send survives a process kill and is never claimed again", async () => {
     const clock = { value: 1_000 }
     const directory = mkdtempSync(join(tmpdir(), "session-peers-correction-kill-"))
