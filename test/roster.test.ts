@@ -394,6 +394,8 @@ describe("when a location's instance is replaced", () => {
     await alpha.host.call("peers", { action: "list" })
     await beta.host.call("peers", { action: "list" })
     expect(peerRecords(storage)).toHaveLength(2)
+    const betaSubscriptions = beta.host.subscribers()
+    expect(betaSubscriptions).toBeGreaterThan(0)
 
     await alpha.unload()
 
@@ -401,9 +403,10 @@ describe("when a location's instance is replaced", () => {
     // idle session in that location off the roster until it ran something.
     expect(peerRecords(storage).map((peer) => peer.sessionID).sort()).toEqual([ALPHA.id, BETA.id])
     expect(alpha.host.subscribers()).toBe(0)
-    expect(beta.host.subscribers()).toBe(1)
+    expect(beta.host.subscribers()).toBe(betaSubscriptions)
 
     await beta.unload()
+    expect(beta.host.subscribers()).toBe(0)
   })
 
   test("publishes an idle session again under the successor, without it doing anything", async () => {

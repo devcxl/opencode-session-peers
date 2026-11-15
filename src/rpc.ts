@@ -37,12 +37,15 @@
  *   republishes its roster row. It fails when the location does not serve it.
  *   This is what `/peers-scope` calls; `scope` is the group the session joins.
  *
- *   method `watch`, input `{ operation: "show" | "enroll" | "pause" | "end",
- *   sessionID: string, taskID?, expectedVersion?, requestId?, goal?,
+ *   method `watch`, input `{ operation: "show" | "enroll" | "pause" | "end" | "ack",
+ *   sessionID: string, taskID?, alertID?, expectedVersion?, requestId?, goal?,
  *   targetSessionID?, mode? }`, output `WatchPayload`. It is the panel's one
  *   read/control call. `show` is read-only; `enroll` is explicit and alert-only;
- *   `pause` and `end` need the version last read. `report` stays on the tool
- *   path because it must carry the host-supplied calling session. Correction,
+ *   `pause` and `end` need the version last read. `ack` needs an alert id, not
+ *   a task version, and changes only its read flag. `WatchPayload` includes
+ *   task/capability/controls, observation/activity snapshots (nullable), and a
+ *   required bounded alerts view with availability, counts and retained history.
+ *   `report` stays on the tool path because it must carry the host-supplied calling session. Correction,
  *   delegation, transfer and recovery are not part of this method: this build
  *   refuses them on the tool path rather than pretending to accept them.
  *
@@ -52,11 +55,18 @@
  *   live-only, so a reader that starts late must snapshot rather than wait.
  *
  *   event `watchChanged`, data `{ at: number }`: a watched task's state, report
- *   or supervision may have changed; take a fresh `watch` snapshot. Like
+ *   supervision or persistent alerts may have changed; take a fresh `watch` snapshot. Like
  *   `changed`, it is only a nudge and carries no task value.
  *
  * The method is registered even when the plugin is disabled, so a reader can
  * tell "off here" from "not loaded here" (`rpc.unavailable`).
+ *
+ * Compatibility: `watch` is an unreleased additive method in this development
+ * series; the #59 and #60 checkpoints are not separately released wire versions.
+ * Its server and TUI ship together and must use the same package version.
+ * Existing roster/setScope contracts remain unchanged. Once this watch shape
+ * is released, incompatible required-field changes require a new RPC id rather
+ * than a reader that silently invents missing observations or authority.
  *
  * A `RosterPeer` is a wire shape, not `domain/types.ts`'s `Peer`: it carries
  * what a reader renders and nothing else — no instance id, no timestamps.
