@@ -72,7 +72,7 @@ export interface WatchTaskRecord {
   readonly taskState: WatchedTaskState
   readonly version: number
   readonly generation: number
-  /** Corrective attempts already spent; this build has no path to spend one. */
+  /** Permanent correction attempts already spent; this build may spend at most the first automatically. */
   readonly attemptsUsed: number
   /** The activation that enrolled the task; a later activation only observes it. */
   readonly ownerActivation: string
@@ -473,16 +473,18 @@ export interface WatchAlertsView {
 
 /**
  * What this build can actually do, as distinct from the mode the user chose.
- * This build observes local execution and persists alerts, but it does not
- * correct, wake or judge goal progress: the panel must show that partial
- * capability instead of letting `alert` read as full automation.
+ * Observation and alerts are always available. Automatic correction is
+ * `first-attempt` only when the task's own gate is ready on a verified runtime;
+ * it is not inferred from the selected mode. Manual correction, delegation,
+ * transfer and resume remain unavailable, and safety pause is a displayed
+ * state rather than a resume/takeover capability.
  */
 export interface WatchCapability {
   readonly mode: WatchMode
   readonly monitoring: "observer-alerts"
   readonly automaticDetection: "partial"
   readonly automaticDetectionReason: string
-  readonly correction: "unavailable"
+  readonly correction: "unavailable" | "first-attempt"
   readonly correctionReason: string
   readonly delegation: "unavailable"
   readonly delegationReason: string
@@ -545,15 +547,17 @@ export const WATCH_ALERT_SUMMARY_LIMIT = 300
 export const WATCH_ALERT_REASON_LIMIT = 500
 
 export const CORRECTION_UNAVAILABLE_REASON =
-  "Automatic correction is not enabled in this build; the security ledger and controlled grant RPC exist, but the automatic executor and queue path are closed."
+  "The automatic correction code path exists, but its runtime/protocol tuple is not verified (or the task gate is closed); no queue is sent. Manual correction, resume and transfer remain unavailable."
+export const MANUAL_CORRECTION_UNAVAILABLE_REASON =
+  "Manual correction is not implemented in this build; only the gated first automatic attempt, when the runtime is verified, can queue a correction."
 export const DELEGATION_UNAVAILABLE_REASON =
   "Child-task delegation is not open in this build; enroll the calling session itself."
 export const TRANSFER_UNAVAILABLE_REASON =
   "Watch ownership transfer is not implemented in this build."
 export const RECOVERY_UNAVAILABLE_REASON =
-  "Resume and recovery confirmation are not implemented in this build."
+  "Automatic resume and ownership recovery are not implemented in this build. A correction receipt followed by new progress and a new result reference can confirm recovery evidence for an existing attempt, but it does not resume a session or transfer ownership."
 export const SAFETY_PAUSE_UNAVAILABLE_REASON =
-  "Watch safety pause is not implemented in this build; only a manual pause can occur."
+  "A safety pause can be displayed when another activation owns the task, but resume, ownership takeover and a quiescence proof are not implemented in this build; manual pause/end remain the only controls."
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/
 const WAIT_KINDS: readonly WatchWaitKind[] = ["human", "peer", "permission", "form", "child", "other"]

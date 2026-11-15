@@ -21,8 +21,11 @@ both cases.
 
 opencode loads a plugin from a local directory or from a package it installs itself. Only an
 opencode v2 server is needed: the plugin is TypeScript source with no build step and no runtime
-dependencies. It is developed and measured against opencode 2.0.29; `docs/research/README.md`
-records the pinned versions and the host drift behind each measurement.
+dependencies. Messaging is developed and measured against opencode 2.0.29; the watchdog
+candidate runtime was additionally measured on opencode 2.3.0 with embedded
+SQLite 3.53.4, which is candidate evidence rather than a support claim.
+`docs/research/README.md` records the pinned versions and the host drift behind
+each measurement.
 
 The directory form below is what works today, before the first npm release:
 
@@ -102,7 +105,7 @@ server log; `trigger` fails closed to `"never"`.
 | `cancel` | Request a stop to this session's local ask wait (`replyTo` names it; omit it if only one is waiting). It does not withdraw the question or stop the recipient. |
 | `handover` | Summarise this session with this session's own model and send the summary to one peer, which continues the work. |
 | `status` | This session's id, its scope, and whether the host is answering. |
-| `watch` | Explicitly enroll, inspect, report on, pause or end an alert-only watched task. See [Watching a task](#watching-a-task-alert-only). |
+| `watch` | Explicitly enroll, inspect, report on, pause/end, acknowledge alerts, or submit a correction receipt. Default alert-only; automatic correction is gated. See [Watching a task](#watching-a-task). |
 
 `to` accepts a full session id, the short id `list` shows in parentheses, or a session title. An
 address that matches more than one peer is refused, never guessed. A message carries text and
@@ -143,7 +146,7 @@ Behaviour worth knowing before you rely on it:
   though the tool is available inside it; the fix is one turn. This is why an empty `list` usually means
   "nobody has done anything yet", not "nothing is running".
 
-## Watching a task (alert-only)
+## Watching a task
 
 A session can explicitly enroll one task for observation. A session being idle is not a watched
 task. This slice targets only the calling session (the open session served at this plugin location in `/peers-watch`),
@@ -157,8 +160,10 @@ peers({ action: "watch", watch: {
 } })
 ```
 
-The default and only available mode is **alert-only**. Enrollment, reading, pausing and ending
-never prompt a model, generate text or interrupt a session. The executing session sees the task
+The default mode is **alert-only**. Enrollment, reading, pausing and ending never prompt a model,
+generate text or interrupt a session. Limited correction exists behind a separate controlled grant
+and a verified-runtime gate; a normal install in this repository has no verified runtime tuple and
+therefore stays alert-only. No config, environment variable or model input can enable it. The executing session sees the task
 reference and reporting protocol in its next normal model context; no extra turn is started, and
 the raw goal is not copied into that system notice (read it with `watch show`). Completion is not
 the same as ending supervision: a `completed` report ends the watch because the business task is
@@ -184,8 +189,8 @@ carry `waitID` and `waitUntil`; a later report clears only the named wait with `
 `clearEvidence`. Repeated report ids with the same evidence are idempotent; a stale version or a
 different payload is refused.
 
-The panel now separates the business task, supervision, authorization, actual capability,
-observation, activity, waits and persistent alerts. Observation uses execution lifecycle events,
+The panel separates the business task, supervision, authorization, actual capability,
+observation, activity, waits, permanent attempts, receipt/recovery and persistent alerts. Observation uses execution lifecycle events,
 the target's own text/step/tool/shell activity and same-location permission/ask snapshots; missing
 terminals, a busy time newer than idle, a failed/interrupted last run, event gaps, reloads and
 unavailable form/retry snapshots are shown as `unknown`/degraded rather than inferred as idle. An
@@ -202,10 +207,39 @@ database. Observation is intentionally partial: it does not prove goal progress 
 uniqueness, and restoration is never automatic. Event-only wait coverage requires observing
 the session's own same-location `session.created` from creation; an existing session without that
 event remains `unknown`/`partial` even after a fresh terminal, because a form or retry wait may
-predate observation. **Finite correction, child-task delegation,
-receipts, watch ownership transfer and recovery are not implemented in this build**; the tool and
-panel show them as unavailable rather than accepting them silently. A general `/peers-watch`
-command and the panel share the same application path.
+predate observation.
+
+**Limited correction is explicit and currently closed by default.** The ledger has a permanent cap
+of three attempts, but this build's automatic executor may use only the first attempt. Before any
+send it requires a controlled grant, the current activation, a trusted idle candidate, no wait or
+new input, a same-location target, an unfinished task and a verified runtime tuple. The production
+whitelist is empty in this repository; only an isolated candidate build may statically add a tuple
+for verification. The server never accepts a model-reported consent, a config switch or a
+`forceCapability` value. Until the real host protocol passes, the panel reports automatic correction
+as unavailable rather than pretending it is enabled. When that task's own gates are ready on a
+verified runtime, the capability payload says `correction: "first-attempt"`; it never opens manual
+`correct`. The `recovery` capability still means resume/ownership recovery, not the evidence-based
+recovery confirmation of an existing attempt, and a displayed safety pause is not a resume control.
+
+A grant is not a model tool action: `peers({ action: "watch", watch: { operation: "grant" } })` is
+refused. The user reviews the terms in the controlled TUI surface and the private `watchGrant` RPC
+performs `prepare` then one `confirm` with the explicit
+`deployment: "single-host-same-location"` declaration. That declaration is a deployment statement,
+not proof that no other service exists, and the same-OS-user boundary is not authentication. The
+model can request that the user review a grant; it cannot confirm one.
+
+When a correction prompt actually arrives, it carries the task, attempt and one opaque correlation
+in a concrete `peers` call. Before any business step, the target submits that call with
+`operation: "receipt"`. Only `continuePermit: true` for that attempt permits the smallest next step;
+a duplicate receipt returns no second permit. The correlation is never exposed by `watch show`.
+A receipt is not recovery: recovery requires new progress and a new result reference after the
+receipt. Queue admission is not a read receipt, the last check and the host enqueue are not atomic,
+and an already admitted message cannot be retracted.
+
+Reload does not inherit correction authority: a new activation observes and shows a safety pause,
+an old receipt is recorded as seen but issues no permit, and no quiescence proof or ownership
+takeover is invented. Manual pause/end and safety pause never interrupt the business session.
+A general `/peers-watch` command and the panel share the same application path.
 
 The plugin registers two skills, both loaded on demand. `session-peers` covers how to use the tool
 for coordination: which action fits which situation, the rules above in more detail, the failure

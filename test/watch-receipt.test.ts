@@ -290,6 +290,11 @@ describeReceipt("correction receipt surface", () => {
         }),
       )
       expect(confirmed?.ok).toBe(true)
+      const notice = (await host.modelContext(CALLER_SESSION_ID)).join("\n")
+      expect(notice).toContain("Authorization: limited-correction")
+      expect(notice).toContain("Automatic correction: unavailable")
+      expect(notice).toContain("gate is closed")
+      expect(notice).not.toContain("alert-only")
 
       const opened = openWatchLedger({
         path: join(state, "watch-ledger.sqlite3"),

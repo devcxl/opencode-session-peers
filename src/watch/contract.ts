@@ -399,7 +399,7 @@ const capabilitySchema = {
     monitoring: { type: "string", enum: ["observer-alerts"] },
     automaticDetection: { type: "string", enum: ["partial"] },
     automaticDetectionReason: { type: "string" },
-    correction: { type: "string", enum: ["unavailable"] },
+    correction: { type: "string", enum: ["unavailable", "first-attempt"] },
     correctionReason: { type: "string" },
     delegation: { type: "string", enum: ["unavailable"] },
     delegationReason: { type: "string" },
@@ -1491,7 +1491,7 @@ function readCapability(value: unknown): WatchCapability | undefined {
     monitoring !== "observer-alerts" ||
     automaticDetection !== "partial" ||
     typeof automaticDetectionReason !== "string" ||
-    correction !== "unavailable" ||
+    (correction !== "unavailable" && correction !== "first-attempt") ||
     typeof correctionReason !== "string" ||
     delegation !== "unavailable" ||
     typeof delegationReason !== "string" ||
