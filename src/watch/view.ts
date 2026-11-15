@@ -37,7 +37,7 @@ export function watchTaskView(task: WatchTaskRecord, activationID: string): Watc
     generation: task.generation,
     ownership: task.ownerActivation === activationID ? "this-instance" : "another-activation",
     participation: task.lastReport === undefined ? "not-seen" : "seen",
-    attempts: { used: 0, limit: WATCH_CORRECTION_LIMIT },
+    attempts: { used: task.attemptsUsed, limit: WATCH_CORRECTION_LIMIT },
     pause:
       task.watchState === "paused"
         ? { kind: "manual", reason: "paused by the user; business execution is untouched" }

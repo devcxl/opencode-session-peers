@@ -52,6 +52,8 @@ export interface WatchTaskRecord {
   readonly taskState: WatchedTaskState
   readonly version: number
   readonly generation: number
+  /** Corrective attempts already spent; this build has no path to spend one. */
+  readonly attemptsUsed: number
   /** The activation that enrolled the task; a later activation only observes it. */
   readonly ownerActivation: string
   readonly lastReport?: WatchReportRecord

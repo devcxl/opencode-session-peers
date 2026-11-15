@@ -36,6 +36,7 @@ import {
   readGoal,
   readIdentifier,
   readReportKind,
+  WATCH_CORRECTION_LIMIT,
   type WatchEvidence,
   type WatchMode,
   type WatchReportKind,
@@ -151,6 +152,7 @@ interface TaskRow {
   readonly task_state: string
   readonly version: number
   readonly generation: number
+  readonly attempts_used: number
   readonly owner_activation: string
   readonly last_report_id: string | null
   readonly last_report_kind: string | null
@@ -190,6 +192,7 @@ CREATE TABLE IF NOT EXISTS watch_tasks (
   task_state TEXT NOT NULL CHECK (task_state IN ('not-started','in-progress','waiting','blocked','completed')),
   version INTEGER NOT NULL CHECK (version >= 1),
   generation INTEGER NOT NULL CHECK (generation >= 1),
+  attempts_used INTEGER NOT NULL DEFAULT 0 CHECK (attempts_used BETWEEN 0 AND ${WATCH_CORRECTION_LIMIT}),
   owner_activation TEXT NOT NULL,
   last_report_id TEXT,
   last_report_kind TEXT,
@@ -852,6 +855,7 @@ function taskFromRow(row: TaskRow): WatchTaskRecord {
     taskState: parseTaskState(row.task_state),
     version: row.version,
     generation: row.generation,
+    attemptsUsed: row.attempts_used ?? 0,
     ownerActivation: row.owner_activation,
     ...(lastReport === undefined ? {} : { lastReport }),
     createdAt: row.created_at,

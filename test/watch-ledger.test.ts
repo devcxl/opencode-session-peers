@@ -146,6 +146,7 @@ describeSafe("the security ledger", () => {
         taskState: "not-started",
         version: 1,
         generation: 1,
+        attemptsUsed: 0,
         ownerActivation: "activation-a",
       })
       expect(enrolled.value.task.lastReport).toBeUndefined()
@@ -419,6 +420,8 @@ describeSafe("the security ledger", () => {
     expect(lostTask.ok).toBe(true)
     lostLedger.close()
     rmSync(lost)
+    expect(openWatchLedger({ path: lost })).toMatchObject({ ok: false, code: "ledger_missing" })
+    writeFileSync(lost, "")
     expect(openWatchLedger({ path: lost })).toMatchObject({ ok: false, code: "ledger_missing" })
 
     const mismatched = ledgerPath("mismatched")
