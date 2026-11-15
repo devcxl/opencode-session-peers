@@ -1,7 +1,8 @@
 # #61 isolated runtime smoke plan
 
-Status: proposed, not executed. The parent must review this plan and the script
-paths before anyone starts a real opencode service.
+Status: the parent reviewed and executed the runtime-only probe on 2026-11-16.
+The production queue/receipt protocol is not yet verified; automatic sending
+remains closed.
 
 ## Assets
 
@@ -26,7 +27,8 @@ Optional: `WATCH61_OPENCODE_BIN=/path/to/opencode` and
 
 ## Isolation
 
-- Scratch root: `/tmp/opencode/watchdog-61-smoke-<time>-<pid>`.
+- Scratch root: `/tmp/opencode/watchdog-61-smoke-<random>`. The parent ran with
+  `TMPDIR=/tmp`, so the harness's default scratch base resolved to `/tmp/opencode`.
 - `HOME`, `TMPDIR`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME` and
   `XDG_CONFIG_HOME` all point inside that root.
 - Base environment is a whitelist: `PATH`, scratch `HOME`, scratch `TMPDIR`,
@@ -36,9 +38,10 @@ Optional: `WATCH61_OPENCODE_BIN=/path/to/opencode` and
   the literal `stub` key; no developer credential is copied or printed.
 - `startInstance` picks a free `127.0.0.1` port and passes the explicit URL to
   its client; it never reads the live `service.json` URL for requests.
-- The probe creates one explicit session in `layout.projectA` (no prompt) so
-  the project-scoped probe plugin actually loads. The recorded directory must
-  be that scratch project.
+- The probe requests the model list for `layout.projectA` to initialize its
+  project-scoped plugin, then creates one explicit session (no prompt). Session
+  creation alone did not initialize the plugin on the measured host. The
+  recorded directory must be that scratch project.
 - The live `service.json` md5 and pid/url are read only as isolation evidence.
   The probe never writes it, never restarts the live service and never sends a
   request to the live URL.
@@ -76,3 +79,26 @@ When authorized later, the isolated run should cover:
 - every expected failure stays alert-only and sends no prompt.
 
 These are not claimed by the probe or by the FakeHost tests.
+
+## Runtime-only observations
+
+The initial run created a session but produced no probe record. It failed
+closed; its child stopped, its port closed, and the live registry digest was
+unchanged. Adding the existing harness's model-discovery initialization made
+the second run pass:
+
+| Fact | Observed in the child service |
+| --- | --- |
+| OpenCode / platform | 2.3.0 / linux / x64 |
+| Embedded SQLite | 3.53.4 |
+| Journal / synchronous | wal / 2 (FULL) |
+| `busy_timeout` readback | 500 ms |
+| Filesystem type | 16914836 (`0x01021994`, tmpfs) |
+| Project / database / pid | Matched the scratch project, probe DB and child |
+| Teardown | Child stopped after SIGTERM; port closed |
+| Live service registry | Before/after digest identical |
+
+No prompt was sent and no developer authentication was copied. These facts
+establish a usable candidate runtime for later isolated protocol tests, not
+production-ledger durability, support for arbitrary filesystems, or permission
+to add a verified tuple. Both scratch directories were retained for inspection.

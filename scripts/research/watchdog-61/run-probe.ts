@@ -65,9 +65,11 @@ try {
     bootTimeoutMs: 30_000,
     env: { ...base, WATCH61_PROBE_LOG: probeLog, WATCH61_PROBE_DB: probeDb },
   })
-  // The plugin is project-scoped. Booting the server alone does not load a
-  // project; this explicit scratch-project session does, without a prompt.
-  await createClient(instance.url, instance.password).createSession({
+  // Session creation alone does not initialize project plugins on this host.
+  // Model discovery loads that location without sending a model prompt.
+  const client = createClient(instance.url, instance.password)
+  await client.models(layout.projectA)
+  await client.createSession({
     directory: layout.projectA,
     title: "watchdog-61 runtime probe",
   })
