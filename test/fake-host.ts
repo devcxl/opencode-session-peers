@@ -38,6 +38,18 @@ type ToolResult = Awaited<ReturnType<ToolInfo["execute"]>>
 type SkillTransform = Plugin.Context["skill"]["transform"]
 type SkillEditor = Parameters<Parameters<SkillTransform>[0]>[0]
 
+type CommandTransform = Plugin.Context["command"]["transform"]
+type CommandEditor = Parameters<Parameters<CommandTransform>[0]>[0]
+type FakeCommand = Parameters<CommandEditor["add"]>[0]
+
+/** The slice of a model request the plugin's context hook may read or mutate. */
+interface FakeModelContext {
+  readonly sessionID: string
+  readonly system: { type: "text"; text: string; metadata?: Record<string, unknown> }[]
+}
+
+type ContextHook = (input: FakeModelContext) => Promise<void> | void
+
 /** A session as the fake host knows it. Everything else has a default. */
 export interface FakeSession {
   readonly id: string
@@ -127,16 +139,28 @@ export interface FakeHost {
   readonly vcsLookups: readonly FakeVcsLookup[]
   /** Tools the plugin registered, in order. */
   readonly tools: readonly ToolInfo[]
+  /** Commands the plugin registered, in order. */
+  readonly commands: readonly FakeCommand[]
   /** Skills the plugin registered, in order. */
   readonly skills: readonly FakeSkill[]
   /** RPC surfaces the plugin registered, in order. */
   readonly rpcs: readonly FakeRpc[]
+  /** Sessions the plugin asked the host to interrupt, in order. */
+  readonly interrupts: readonly string[]
   /** The storage the plugin wrote to; the same object the host was given. */
   readonly storage: FakeStorage
   /** Delivers an event to the plugin's subscription, as the host would. */
   emit(type: string, data: Readonly<Record<string, unknown>>): void
   /** Live event subscriptions; zero once the plugin has unsubscribed. */
   subscribers(): number
+  /**
+   * Runs the context hooks the plugin registered for one model request and
+   * returns the system text they added. This is the host's normal request path,
+   * not a prompt: no turn starts.
+   */
+  modelContext(sessionID?: string): Promise<readonly string[]>
+  /** Invoke a registered server command, as the host would. */
+  runCommand(name: string, sessionID: string, text: string): Promise<void>
   /**
    * Invoke a registered tool, and report what the model would receive. The
    * signal is the tool call's own: aborting it stands in for the turn being
@@ -165,7 +189,10 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
   const generations: FakeGeneration[] = []
   const vcsLookups: FakeVcsLookup[] = []
   const tools: ToolInfo[] = []
+  const commands: FakeCommand[] = []
   const skills: FakeSkill[] = []
+  const interrupts: string[] = []
+  const contextHooks: ContextHook[] = []
   const rpc = fakeRpcSurface()
   const refused = new Set(options.promptRefuses ?? [])
   const unreadable = new Set(options.contextRefuses ?? [])
@@ -252,6 +279,18 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
           text: options.generate ?? "",
         }
       },
+      hook: async (_name: string, callback: ContextHook) => {
+        contextHooks.push(callback)
+        return {
+          dispose: async () => {
+            const index = contextHooks.indexOf(callback)
+            if (index >= 0) contextHooks.splice(index, 1)
+          },
+        }
+      },
+      interrupt: async (input: { readonly sessionID: string }) => {
+        interrupts.push(input.sessionID)
+      },
     },
     vcs: {
       get: async (input?: { readonly location?: { readonly directory?: string } }) => {
@@ -287,8 +326,8 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
       },
     },
     command: {
-      transform: async (edit: (editor: { add: () => void }) => void) => {
-        edit({ add: () => {} })
+      transform: async (edit: (editor: CommandEditor) => void) => {
+        edit({ add: (command) => commands.push(command) })
         return { dispose: async () => {} }
       },
     },
@@ -311,10 +350,12 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
     generations,
     vcsLookups,
     tools,
+    commands,
     skills,
     get rpcs(): readonly FakeRpc[] {
       return rpc.rpcs()
     },
+    interrupts,
     storage,
     emit(type, data) {
       eventCounter += 1
@@ -322,6 +363,20 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
       for (const subscription of [...subscriptions]) subscription.push(event as unknown as HostEvent)
     },
     subscribers: () => subscriptions.size,
+    async modelContext(sessionID = caller) {
+      const input: FakeModelContext = { sessionID, system: [] }
+      for (const hook of [...contextHooks]) await hook(input)
+      return input.system.map((part) => part.text)
+    },
+    async runCommand(name, sessionID, text) {
+      const command = commands.find((candidate) => candidate.name === name)
+      if (command === undefined) throw new Error(`No command named "${name}" is registered`)
+      await command.execute({
+        sessionID: sessionID as never,
+        prompt: { text },
+        delivery: "steer",
+      })
+    },
     async call(name, input, sessionID = caller, signal) {
       const tool = tools.find((candidate) => candidate.name === name)
       if (tool === undefined) throw new Error(`No tool named "${name}" is registered`)

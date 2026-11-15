@@ -17,6 +17,7 @@ import { pendingAction } from "./actions/pending.ts"
 import { replyAction } from "./actions/reply.ts"
 import { sendAction } from "./actions/send.ts"
 import { statusAction } from "./actions/status.ts"
+import { watchAction } from "./actions/watch.ts"
 import type { Config } from "./config.ts"
 import type { HandoverSupport } from "./host/handover.ts"
 import type { SessionLookup } from "./host/session.ts"
@@ -24,6 +25,7 @@ import type { PluginStorage } from "./host/storage.ts"
 import type { ToolSpec } from "./host/tools.ts"
 import type { Roster } from "./peers/roster.ts"
 import type { LocalAskWaits } from "./ask/handshake.ts"
+import type { WatchApplication } from "./watch/service.ts"
 
 export const PEERS_TOOL_NAME = "peers"
 
@@ -39,7 +41,9 @@ const PEERS_TOOL_DESCRIPTION =
   `"cancel" — request a stop to this session's local ask wait; it cannot withdraw the message; ` +
   `"handover" — summarize this session with this session's own model and send the summary ` +
   `to one peer, which continues the work; ` +
-  `"status" — this session's id, its scope, and whether the host is answering.`
+  `"status" — this session's id, its scope, and whether the host is answering; ` +
+  `"watch" — enroll or inspect an explicitly watched task, report its state, or pause/end supervision. ` +
+  `Watch is alert-only: it never prompts, generates, corrects or interrupts.`
 
 const PEERS_TOOL_INPUT = {
   type: "object",
@@ -47,7 +51,7 @@ const PEERS_TOOL_INPUT = {
   properties: {
     action: {
       type: "string",
-      enum: ["list", "list-cwd", "send", "ask", "reply", "pending", "cancel", "handover", "status"],
+      enum: ["list", "list-cwd", "send", "ask", "reply", "pending", "cancel", "handover", "status", "watch"],
       description:
         `Action to run: "list" every live peer in scope, "list-cwd" the peers in this ` +
         `session's directory, "send" a message to one peer, "ask" a question that waits for ` +
@@ -99,6 +103,79 @@ const PEERS_TOOL_INPUT = {
         `omit it when only one local wait exists. Not for "send", "ask" or ` +
         `"handover": a handover that carries a reply reference is refused.`,
     },
+    watch: {
+      type: "object",
+      additionalProperties: false,
+      description:
+        `For "watch": one bounded watchdog request. Enroll is explicit and alert-only; show, pause and end ` +
+        `are read/control operations. Reporting is for the executing session. Correction, delegation, ` +
+        `receipt and ownership transfer are refused explicitly because this build does not implement them.`,
+      properties: {
+        operation: {
+          type: "string",
+          enum: [
+            "show",
+            "enroll",
+            "report",
+            "pause",
+            "end",
+            "grant",
+            "correct",
+            "receipt",
+            "delegate",
+            "transfer",
+            "resume",
+          ],
+          description:
+            `"show" a task, "enroll" the calling session, "report" begin/progress/waiting/blocked/completed, ` +
+            `"pause" or "end" supervision. The remaining operations are explicit unavailable refusals in this build.`,
+        },
+        taskID: { type: "string", description: `The watched task id for show, report, pause or end.` },
+        expectedVersion: {
+          type: "integer",
+          description: `The state version read from show; report, pause and end reject a stale value.`,
+        },
+        requestId: {
+          type: "string",
+          description: `A stable idempotency key for enroll; repeating it with the same parameters is the same task.`,
+        },
+        goal: { type: "string", description: `The user's real task goal, required for enroll.` },
+        targetSessionID: {
+          type: "string",
+          description:
+            `The session being watched. This build only accepts the calling session; another session is refused, not silently accepted.`,
+        },
+        mode: {
+          type: "string",
+          enum: ["alert", "correct"],
+          description: `Authorization mode; alert is the only available mode, and correct is an explicit refusal.`,
+        },
+        reportId: {
+          type: "string",
+          description: `A stable idempotency key for one report; a repeat with the same evidence is not a second report.`,
+        },
+        kind: {
+          type: "string",
+          enum: ["begin", "progress", "waiting", "blocked", "completed"],
+          description: `The state change being reported.`,
+        },
+        evidence: {
+          type: "object",
+          additionalProperties: false,
+          description:
+            `Evidence for the report. progress and completed need summary + reference; waiting needs ` +
+            `waitKind + waitFor + reason + reference; blocked needs reason.`,
+          properties: {
+            summary: { type: "string" },
+            reference: { type: "string" },
+            waitKind: { type: "string", enum: ["human", "peer", "permission", "form", "child", "other"] },
+            waitFor: { type: "string" },
+            reason: { type: "string" },
+          },
+        },
+      },
+      required: ["operation"],
+    },
   },
   required: ["action"],
 } as const
@@ -114,6 +191,10 @@ export interface PeersToolDeps {
   readonly warn: (message: string) => void
   /** What a handover needs from the host: the session's own model, version control, the sender's directory. */
   readonly handover: HandoverSupport
+  /** The watchdog application; absent exactly when the plugin is disabled. */
+  readonly watch?: WatchApplication
+  /** The directory this instance serves; watch enrollment is limited to it. */
+  readonly directory: string
 }
 
 export function peersTool(deps: PeersToolDeps): ToolSpec {
@@ -144,6 +225,8 @@ export function peersTool(deps: PeersToolDeps): ToolSpec {
           return handoverAction(deps, call, input)
         case "status":
           return statusAction(deps, call)
+        case "watch":
+          return watchAction(deps, call, input)
         default:
           throw new Error(`Unknown peers action: ${action}`)
       }

@@ -10,6 +10,7 @@
 import type { Plugin } from "@opencode/plugin"
 
 import { commandRegistrar, type CommandRegistrar } from "./commands.ts"
+import { contextInjector, type ContextInjector } from "./context.ts"
 import type { EventSource } from "./events.ts"
 import { sessionGeneration, type Generation } from "./generation.ts"
 import { rpcRegistrar, type RpcRegistrar } from "./rpc.ts"
@@ -38,6 +39,8 @@ export interface Host {
   /** The one namespace every instance on the machine can meet in. */
   readonly storage: PluginStorage
   readonly events: EventSource
+  /** Appends watchdog text to a session's next normal model context; never prompts. */
+  readonly sessionContext: ContextInjector
   readonly tools: ToolRegistrar
   readonly commands: CommandRegistrar
   /** The model-facing text this plugin contributes; a skill the model may load. */
@@ -60,6 +63,7 @@ export function createHost(context: Plugin.Context): Host {
     events: {
       subscribe: (options) => context.event.subscribe({ signal: options.signal }),
     },
+    sessionContext: contextInjector(context.session),
     tools: toolRegistrar(context.tool),
     commands: commandRegistrar(context.command),
     skills: skillRegistrar(context.skill),

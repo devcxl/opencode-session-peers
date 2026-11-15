@@ -11,16 +11,22 @@
  * it returns; this file is wiring, not behaviour.
  */
 
+import { randomUUID } from "node:crypto"
+
 import type { Plugin } from "@opencode/plugin"
 
+import { watchCommand } from "./actions/watch-command.ts"
+import { watchRpc } from "./actions/watch-rpc.ts"
 import { parseConfig } from "./config.ts"
 import { describeError } from "./domain/errors.ts"
 import { createHost } from "./host/index.ts"
+import { watchLedgerPath } from "./host/watch.ts"
 import { startRoster } from "./peers/roster.ts"
 import { SESSION_PEERS_RPC } from "./rpc.ts"
 import { PEERS_SKILL, SUPERVISOR_SKILL } from "./skill.ts"
 import { rosterPayload } from "./surface.ts"
 import { peersTool } from "./tool.ts"
+import { createWatchApplication } from "./watch/service.ts"
 
 export const PLUGIN_ID = "session-peers"
 
@@ -34,6 +40,18 @@ export default {
     const warn = (message: string) => console.warn(`[${PLUGIN_ID}] ${message}`)
     const { config, warnings } = parseConfig(host.options)
     for (const warning of warnings) warn(warning)
+
+    // The watchdog is opened lazily on the first watch operation or context
+    // hook. Enrolling records this activation as the owner; a reload gets a new
+    // activation and therefore observes the old task without adopting it.
+    let announceWatch: (() => void) | undefined
+    const watch = config.enabled
+      ? createWatchApplication({
+          ledgerPath: watchLedgerPath(),
+          activationID: randomUUID(),
+          onChanged: () => announceWatch?.(),
+        })
+      : undefined
 
     // A disabled plugin publishes nothing: peers must not see a session that is
     // not listening, and its own session is told why nothing happens.
@@ -50,6 +68,16 @@ export default {
       const scope = input.trim()
       if (scope === "") throw new Error("usage: /peers-scope <scope>")
       await setScope(sessionID, scope)
+    })
+
+    // The server-side entry is a control path, not a visible panel: no branch
+    // prompts a model or generates text. The TUI registers the visible command.
+    await host.commands.registerWatch(async (sessionID, input) => {
+      await watchCommand(
+        { watch, sessions: host.sessions, directory: host.location.directory },
+        sessionID,
+        input,
+      )
     })
 
     // The RPC surface is registered either way, because a disabled location
@@ -74,7 +102,27 @@ export default {
         }
         return setScope(sessionID, scope)
       },
+      watch: (input) =>
+        watchRpc(
+          { enabled: config.enabled, watch, sessions: host.sessions, directory: host.location.directory },
+          input,
+        ),
     })
+
+    // Mutations nudge the panel after the ledger commit; the event carries no
+    // task value, so a reader that starts late still takes a snapshot.
+    announceWatch = () => {
+      void surface
+        .emit("watchChanged", { at: Date.now() })
+        .catch((error) => warn(`could not announce a watch change: ${describeError(error)}`))
+    }
+
+    // The executing session meets its task in the next normal model request.
+    // This hook only appends system text; it never starts a turn.
+    const contextInjection =
+      watch === undefined
+        ? undefined
+        : await host.sessionContext.register((sessionID) => watch.notificationFor(sessionID))
 
     await host.tools.register(
       peersTool({
@@ -88,6 +136,8 @@ export default {
           versionControl: host.versionControl,
           senderDirectory: host.location.directory,
         },
+        watch,
+        directory: host.location.directory,
       }),
     )
 
@@ -114,8 +164,11 @@ export default {
     await host.skills.register(SUPERVISOR_SKILL)
 
     // The host calls this when the location shuts down or the plugin reloads.
+    // Closing the ledger is a clean close, not a handover of watch ownership.
     return async () => {
       await surface.dispose()
+      await contextInjection?.dispose()
+      watch?.dispose()
       await roster.dispose()
     }
   },
