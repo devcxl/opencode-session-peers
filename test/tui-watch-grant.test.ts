@@ -153,7 +153,7 @@ describe("controlled correction grant", () => {
       deployment: "single-host-same-location",
     })
     expect(fake.toasts).toContainEqual({
-      message: "Correction grant recorded. No correction was sent.",
+      message: "Grant recorded; authorization is not delivery. Check attempt status.",
       variant: "success",
     })
     expect(panelText(panel)).toContain("limited correction")
@@ -192,7 +192,7 @@ describe("controlled correction grant", () => {
     expect(fake.grantCalls).toHaveLength(1)
     expect(fake.toasts).toHaveLength(1)
     expect(fake.toasts[0]?.variant).toBe("error")
-    expect(fake.toasts[0]?.message).toContain("the task version changed")
+    expect(fake.toasts[0]?.message).toContain("E_WATCH_STALE")
     expect(panelText(panel)).not.toContain("Challenge prepared")
     dispose()
     panel.renderer.destroy()
@@ -230,7 +230,7 @@ describe("controlled correction grant", () => {
 
     expect(fake.grantCalls.map((call) => call.operation)).toEqual(["prepare", "confirm"])
     expect(fake.toasts[0]?.variant).toBe("error")
-    expect(fake.toasts[0]?.message).toContain("the challenge expired")
+    expect(fake.toasts[0]?.message).toContain("E_WATCH_STALE")
     dispose()
     panel.renderer.destroy()
   })
@@ -470,3 +470,80 @@ function panelPayloadFor(sessionID: string): WatchPayload {
     }),
   })
 }
+
+describe("grant challenge redaction", () => {
+  test("a rejected confirm error containing the nonce is not echoed to toast or screen", async () => {
+    const nonce = "secret-challenge-once"
+    const fake = fakePort({
+      read: async () => grantableView(),
+      grant: async (request) => {
+        if (request.operation === "prepare") {
+          return grantPayload({ challenge: grantChallenge({ challenge: nonce }) })
+        }
+        throw new Error(`RPC rejected request ${nonce}`)
+      },
+    })
+    const dispose = installWatch(fake.port, { now: () => 1_000 })
+    commandOf(fake).run()
+    await tick(0)
+
+    const panel = await mountPanel(fake)
+    panel.mockInput.pressKey("c")
+    panel.mockInput.pressKey("g")
+    panel.mockInput.pressKey("y")
+    await panel.flush()
+    panel.mockInput.pressKey("y")
+    await panel.flush()
+    await tick(0)
+    await panel.flush()
+
+    expect(fake.grantCalls.map((call) => call.operation)).toEqual(["prepare", "confirm"])
+    expect(fake.reads.length).toBeGreaterThan(1)
+    expect(fake.toasts).toHaveLength(1)
+    expect(fake.toasts[0]?.variant).toBe("error")
+    expect(fake.toasts[0]?.message).not.toContain(nonce)
+    expect(panelText(panel)).not.toContain(nonce)
+    dispose()
+    panel.renderer.destroy()
+  })
+
+  test("a response failure reason containing the nonce renders only the safe code", async () => {
+    const nonce = "secret-challenge-once"
+    const fake = fakePort({
+      read: async () => grantableView(),
+      grant: async (request) =>
+        request.operation === "prepare"
+          ? grantPayload({ challenge: grantChallenge({ challenge: nonce }) })
+          : grantPayload({
+              ok: false,
+              challenge: null,
+              failure: {
+                code: "E_WATCH_STALE",
+                reason: `the challenge ${nonce} expired`,
+                detail: null,
+              },
+            }),
+    })
+    const dispose = installWatch(fake.port, { now: () => 1_000 })
+    commandOf(fake).run()
+    await tick(0)
+
+    const panel = await mountPanel(fake)
+    panel.mockInput.pressKey("c")
+    panel.mockInput.pressKey("g")
+    panel.mockInput.pressKey("y")
+    await panel.flush()
+    panel.mockInput.pressKey("y")
+    await panel.flush()
+    await tick(0)
+    await panel.flush()
+
+    expect(fake.grantCalls.map((call) => call.operation)).toEqual(["prepare", "confirm"])
+    expect(fake.toasts).toHaveLength(1)
+    expect(fake.toasts[0]?.message).toContain("E_WATCH_STALE")
+    expect(fake.toasts[0]?.message).not.toContain(nonce)
+    expect(panelText(panel)).not.toContain(nonce)
+    dispose()
+    panel.renderer.destroy()
+  })
+})

@@ -13,7 +13,6 @@ import {
   readWatchGrantPayload,
   type WatchGrantChallengeView,
 } from "../rpc.ts"
-import { failureText } from "./feed.ts"
 import type { WatchFeed } from "./watch-feed.ts"
 
 export interface GrantFlowDeps {
@@ -84,9 +83,12 @@ export function createGrantFlow(deps: GrantFlowDeps): GrantFlow {
         expectedVersion,
         deployment: "single-host-same-location",
       })
-    } catch (error) {
+    } catch {
       if (!stillCurrent(sessionID, startedEpoch) || !currentTask()) return undefined
-      port.toast(`Could not prepare the correction grant: ${failureText(error)}`, "error")
+      port.toast(
+        "Could not prepare the correction grant: the request failed; re-read the task before trying again.",
+        "error",
+      )
       feed.refresh()
       return undefined
     }
@@ -103,7 +105,7 @@ export function createGrantFlow(deps: GrantFlowDeps): GrantFlow {
     }
     if (!payload.ok || payload.failure !== null || payload.challenge === null) {
       port.toast(
-        `Could not prepare the correction grant: ${payload.failure?.reason ?? "no challenge was issued"}`,
+        `Could not prepare the correction grant: ${payload.failure?.code ?? "no challenge was issued"}.`,
         "error",
       )
       pending = undefined
@@ -162,10 +164,13 @@ export function createGrantFlow(deps: GrantFlowDeps): GrantFlow {
         termsDigest: challenge.termsDigest,
         deployment: challenge.deployment,
       })
-    } catch (error) {
+    } catch {
       if (!stillCurrent(sessionID, startedEpoch)) return
       pending = undefined
-      port.toast(`Could not confirm the correction grant: ${failureText(error)}`, "error")
+      port.toast(
+        "Could not confirm the correction grant: the confirmation request failed; the panel will re-read. No retry was attempted.",
+        "error",
+      )
       feed.refresh()
       return
     }
@@ -182,14 +187,14 @@ export function createGrantFlow(deps: GrantFlowDeps): GrantFlow {
     }
     if (!payload.ok || payload.failure !== null) {
       port.toast(
-        `Could not confirm the correction grant: ${payload.failure?.reason ?? "the grant was not recorded"}`,
+        `Could not confirm the correction grant: ${payload.failure?.code ?? "the grant was not recorded"}.`,
         "error",
       )
       feed.refresh()
       return
     }
     feed.refresh()
-    port.toast("Correction grant recorded. No correction was sent.", "success")
+    port.toast("Grant recorded; authorization is not delivery. Check attempt status.", "success")
   }
 
   const downgrade = async (): Promise<void> => {
@@ -214,9 +219,12 @@ export function createGrantFlow(deps: GrantFlowDeps): GrantFlow {
         taskID: task.taskID,
         expectedVersion: task.version,
       })
-    } catch (error) {
+    } catch {
       if (!stillCurrent(sessionID, startedEpoch)) return
-      port.toast(`Could not downgrade the correction grant: ${failureText(error)}`, "error")
+      port.toast(
+        "Could not downgrade the correction grant: the request failed; re-read the task.",
+        "error",
+      )
       feed.refresh()
       return
     }
@@ -233,7 +241,7 @@ export function createGrantFlow(deps: GrantFlowDeps): GrantFlow {
     }
     if (!payload.ok || payload.failure !== null) {
       port.toast(
-        `Could not downgrade the correction grant: ${payload.failure?.reason ?? "the grant was not downgraded"}`,
+        `Could not downgrade the correction grant: ${payload.failure?.code ?? "the grant was not downgraded"}.`,
         "error",
       )
       feed.refresh()

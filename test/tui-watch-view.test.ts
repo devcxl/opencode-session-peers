@@ -190,7 +190,7 @@ describe("a watched task", () => {
     const blocks = content(state({ task: task() }))
     expect(valueOf(blocks, "Task state")).toBe("in progress")
     expect(valueOf(blocks, "Supervision")).toBe("active")
-    expect(valueOf(blocks, "Authorization")).toBe("alert-only (the only mode this build offers)")
+    expect(valueOf(blocks, "Authorization")).toBe("alert-only")
     expect(valueOf(blocks, "Actual capability")).toBe(
       "observer alerts; partial automatic detection",
     )

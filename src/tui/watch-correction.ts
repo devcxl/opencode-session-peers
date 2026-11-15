@@ -17,7 +17,7 @@ type Attempt = Correction["history"][number]
 type Gate = Correction["gates"][number]
 
 export const GRANT_TERMS =
-  "Correction grant terms: at most 3 permanent attempts in total; this build may automatically send only the first attempt; automatic sends require one OpenCode service, the same OS user and location; this deployment declaration is not proof that no other service is running; the controlled panel confirmation channel is not same-OS-user authentication; any unsupported or uncertain condition stays alert-only; a safety pause or downgrade does not stop business work or reset used attempts."
+  "Correction grant terms: at most 3 permanent attempts in total; this build may automatically send only the first attempt; automatic sends require one OpenCode service, the same OS user and location; by choosing the declaration step you declare this task runs in one service at this host/location, but that declaration is not proof that no other service is running; the controlled panel confirmation channel is not same-OS-user authentication; any unsupported or uncertain condition stays alert-only; a safety pause or downgrade does not stop business work or reset used attempts."
 
 export interface CorrectionOptions {
   readonly gatePage?: number
@@ -90,7 +90,7 @@ export function correctionRows(
     notes.push(`Grant active; actual send remains unavailable — ${correction.actualReason}`)
   }
   if (authorization.state === "pending-confirmation") {
-    notes.push("A grant is prepared but not confirmed; no correction has been sent.")
+    notes.push("A grant is prepared but not confirmed; existing attempt history is unchanged.")
   }
   notes.push("A receipt or continue permit is not recovery and is not business completion.")
   if (correction.stop !== null) {

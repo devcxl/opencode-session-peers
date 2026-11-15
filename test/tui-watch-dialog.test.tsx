@@ -8,9 +8,11 @@ import {
   SELF,
   alert,
   alertsView,
+  attempt,
   control,
   controls,
   correction,
+  gate,
   observation,
   palette,
   payload,
@@ -784,5 +786,71 @@ describe("the correction pane on a short terminal", () => {
     expect(text()).toContain("Authorization")
     expect(text()).toContain("Actual capability")
     expect(text()).toContain("c: task")
+  })
+})
+
+describe("the focused grant review on a short terminal", () => {
+  test("keeps all terms, the declaration and y/n visible above real histories and gates", async () => {
+    const attempts = Array.from({ length: 3 }, (_, index) =>
+      attempt({
+        attemptID: `attempt_${index + 1}`,
+        ordinal: index + 1,
+        phase: index === 2 ? "recovered" : "rejected",
+      }),
+    )
+    const gates = Array.from({ length: 15 }, (_, index) =>
+      gate({
+        gate: index === 0 ? "executor" : "observation",
+        ok: false,
+        reason: `gate ${index + 1} is closed`,
+      }),
+    )
+    const longSummary = `Reviewed terms. ${"This summary is deliberately long. ".repeat(12)}`
+    const { setup, text } = await rendered(
+      {
+        kind: "payload",
+        payload: payload({
+          task: task({
+            correction: correction({
+              attempts: { used: 3, limit: 3 },
+              phase: "recovered",
+              history: attempts,
+              last: attempts[2],
+              gates,
+              controls: { grant: control(), downgrade: control(false, "no grant") },
+            }),
+          }),
+        }),
+      },
+      {
+        height: 40,
+        onGrantPrepare: async () => ({ reviewSummary: longSummary, expiresAt: 10_000 }),
+      },
+    )
+    setup.mockInput.pressKey("c")
+    setup.mockInput.pressKey("g")
+    await setup.flush()
+
+    const review = text()
+    expect(review).toContain("Session watch — grant review")
+    expect(review).toContain("3 permanent attempts")
+    expect(review).toContain("only the first attempt")
+    expect(review).toContain("same OS user and location")
+    expect(review).toContain("controlled panel confirmation channel")
+    expect(review).toContain("not proof that no other service is running")
+    expect(review).toContain("does not stop business work or reset used attempts")
+    expect(review).toContain("y: declare + prepare challenge")
+    expect(review).toContain("n: cancel")
+    // The focused review must not be buried under the normal correction table.
+    expect(review).not.toContain("Gate executor")
+    expect(review).not.toContain("Attempt 1")
+
+    setup.mockInput.pressKey("y")
+    await setup.flush()
+    const confirmation = text()
+    expect(confirmation).toContain("Session watch — grant confirmation")
+    expect(confirmation).toContain("Challenge prepared")
+    expect(confirmation).toContain("y: grant")
+    expect(confirmation).toContain("n: cancel")
   })
 })
