@@ -113,6 +113,31 @@ function expectNoAgentCalls(host: FakeHost): void {
 }
 
 describeWatch("trusted idle and running observation", () => {
+  test("show exposes the correction contract as alert-only and unavailable", async () => {
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      const at = host.now()
+      settle(host, at)
+      await enroll(host)
+      const payload = await show(host)
+      expect(payload.task?.correction).toMatchObject({
+        authorization: { mode: "alert-only", state: "not-granted", version: 1 },
+        actual: "unavailable",
+        attempts: { used: 0, limit: 3 },
+        phase: "idle",
+        pending: null,
+        last: null,
+        history: [],
+        businessCompleted: false,
+        controls: { grant: { enabled: false }, downgrade: { enabled: false } },
+      })
+      expect(JSON.stringify(payload)).not.toContain("challenge")
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
   test("an existing session without a created event is unknown even after a fresh terminal", async () => {
     const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
     try {

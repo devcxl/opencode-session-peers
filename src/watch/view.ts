@@ -17,6 +17,7 @@ import {
   type WatchAlertRecord,
   type WatchAlertView,
   type WatchCapability,
+  type WatchCorrectionView,
   type WatchControl,
   type WatchControls,
   type WatchReportRecord,
@@ -39,6 +40,7 @@ export function watchTaskView(task: WatchTaskRecord, activationID: string): Watc
     ownership: task.ownerActivation === activationID ? "this-instance" : "another-activation",
     participation: task.lastReport === undefined ? "not-seen" : "seen",
     attempts: { used: task.attemptsUsed, limit: WATCH_CORRECTION_LIMIT },
+    correction: watchCorrectionView(task.attemptsUsed, task.taskState),
     pause:
       task.watchState === "paused"
         ? { kind: "manual", reason: "paused by the user; business execution is untouched" }
@@ -48,6 +50,47 @@ export function watchTaskView(task: WatchTaskRecord, activationID: string): Watc
     updatedAt: task.updatedAt,
     completedAt: task.completedAt ?? null,
     endedAt: task.endedAt ?? null,
+  }
+}
+
+/**
+ * The pass-1 correction pane contract: the grant is separate from what this
+ * build can actually do. No controlled grant surface or executor exists here,
+ * so even a granted task stays `actual: "unavailable"` until pass 2.
+ */
+export function watchCorrectionView(used: number, taskState: WatchTaskRecord["taskState"]): WatchCorrectionView {
+  const businessCompleted = taskState === "completed"
+  return {
+    authorization: {
+      mode: "alert-only",
+      state: "not-granted",
+      version: 1,
+      reviewSummary: null,
+      grantedAt: null,
+    },
+    actual: "unavailable",
+    actualReason: CORRECTION_UNAVAILABLE_REASON,
+    attempts: { used, limit: WATCH_CORRECTION_LIMIT },
+    phase: "idle",
+    pending: null,
+    last: null,
+    history: [],
+    stop: {
+      reason: "grant-missing",
+      missingEvidence: "The initiator has not granted correction from a controlled user surface; automatic sending is not open in this build.",
+    },
+    gates: [
+      { gate: "grant", ok: false, reason: "no controlled correction grant has been confirmed" },
+      { gate: "attempts", ok: used < WATCH_CORRECTION_LIMIT, reason: used < WATCH_CORRECTION_LIMIT ? null : "the three permanent attempts are spent" },
+      { gate: "pending-attempt", ok: true, reason: null },
+      { gate: "business-unfinished", ok: !businessCompleted, reason: businessCompleted ? "the business task is completed" : null },
+      { gate: "executor", ok: false, reason: "the controlled executor path is not open in this build" },
+    ],
+    businessCompleted,
+    controls: {
+      grant: disabled(CORRECTION_UNAVAILABLE_REASON),
+      downgrade: disabled("no correction grant exists to downgrade"),
+    },
   }
 }
 

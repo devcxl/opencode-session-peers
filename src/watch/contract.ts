@@ -15,6 +15,15 @@ import type {
   WatchCapability,
   WatchControl,
   WatchControls,
+  WatchCorrectionAttemptPhase,
+  WatchCorrectionAttemptView,
+  WatchCorrectionGateView,
+  WatchCorrectionGrantMode,
+  WatchCorrectionGrantState,
+  WatchCorrectionGrantView,
+  WatchCorrectionRecoveryView,
+  WatchCorrectionStopReason,
+  WatchCorrectionView,
   WatchEvidence,
   WatchFailureCode,
   WatchObservationView,
@@ -107,6 +116,174 @@ const reportViewSchema = {
   required: ["reportID", "kind", "evidence", "at", "version"],
 } as const
 
+const correctionControlSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    enabled: { type: "boolean" },
+    reason: { type: ["string", "null"] },
+  },
+  required: ["enabled", "reason"],
+} as const
+
+const correctionGrantSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    mode: { type: "string", enum: ["alert-only", "single-attempt"] },
+    state: { type: "string", enum: ["not-granted", "pending-confirmation", "granted", "revoked"] },
+    version: { type: "number" },
+    reviewSummary: { type: ["string", "null"] },
+    grantedAt: { type: ["number", "null"] },
+  },
+  required: ["mode", "state", "version", "reviewSummary", "grantedAt"],
+} as const
+
+const correctionReceiptSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    receiptID: { type: "string" },
+    at: { type: "number" },
+  },
+  required: ["receiptID", "at"],
+} as const
+
+const correctionRecoverySchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    progressReportID: { type: "string" },
+    resultReference: { type: "string" },
+    at: { type: "number" },
+  },
+  required: ["progressReportID", "resultReference", "at"],
+} as const
+
+const correctionAttemptSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    attemptID: { type: "string" },
+    ordinal: { type: "number" },
+    phase: { type: "string", enum: ["reserved", "sending", "accepted", "rejected", "unknown", "receipted", "recovered"] },
+    reservedAt: { type: "number" },
+    claimedAt: { type: ["number", "null"] },
+    acceptedAt: { type: ["number", "null"] },
+    rejectedAt: { type: ["number", "null"] },
+    unknownAt: { type: ["number", "null"] },
+    receipt: { ...correctionReceiptSchema, type: ["object", "null"] },
+    recovery: { ...correctionRecoverySchema, type: ["object", "null"] },
+    stopReason: {
+      type: ["string", "null"],
+      enum: [
+        "grant-missing",
+        "grant-pending",
+        "grant-expired",
+        "attempt-limit",
+        "session-unresolved",
+        "reservation-pending",
+        "sending-unaccounted",
+        "accepted-without-receipt",
+        "unknown-result",
+        "receipted-awaiting-recovery",
+        "rejected",
+        "recovered",
+        "runtime-unsupported",
+        "single-host-unconfirmed",
+        "cross-location",
+        "protocol-unseen",
+        "task-paused",
+        "task-ended",
+        "task-completed",
+        "observation-untrusted",
+        "normal-wait",
+        "observation-gap",
+        "executor-unavailable",
+        null,
+      ],
+    },
+  },
+  required: [
+    "attemptID",
+    "ordinal",
+    "phase",
+    "reservedAt",
+    "claimedAt",
+    "acceptedAt",
+    "rejectedAt",
+    "unknownAt",
+    "receipt",
+    "recovery",
+    "stopReason",
+  ],
+} as const
+
+const correctionGateSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    gate: { type: "string", enum: ["grant", "attempts", "pending-attempt", "business-unfinished", "executor"] },
+    ok: { type: "boolean" },
+    reason: { type: ["string", "null"] },
+  },
+  required: ["gate", "ok", "reason"],
+} as const
+
+const correctionStopSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    reason: { type: "string" },
+    missingEvidence: { type: ["string", "null"] },
+  },
+  required: ["reason", "missingEvidence"],
+} as const
+
+const correctionSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    authorization: correctionGrantSchema,
+    actual: { type: "string", enum: ["unavailable", "ready"] },
+    actualReason: { type: "string" },
+    attempts: attemptsSchema,
+    phase: {
+      type: "string",
+      enum: ["idle", "reserved", "sending", "accepted", "rejected", "unknown", "receipted", "recovered"],
+    },
+    pending: { ...correctionAttemptSchema, type: ["object", "null"] },
+    last: { ...correctionAttemptSchema, type: ["object", "null"] },
+    history: { type: "array", items: correctionAttemptSchema },
+    stop: { ...correctionStopSchema, type: ["object", "null"] },
+    gates: { type: "array", items: correctionGateSchema },
+    businessCompleted: { type: "boolean" },
+    controls: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        grant: correctionControlSchema,
+        downgrade: correctionControlSchema,
+      },
+      required: ["grant", "downgrade"],
+    },
+  },
+  required: [
+    "authorization",
+    "actual",
+    "actualReason",
+    "attempts",
+    "phase",
+    "pending",
+    "last",
+    "history",
+    "stop",
+    "gates",
+    "businessCompleted",
+    "controls",
+  ],
+} as const
+
 export const watchTaskSchema = {
   type: "object",
   additionalProperties: false,
@@ -123,6 +300,7 @@ export const watchTaskSchema = {
     ownership: { type: "string", enum: ["this-instance", "another-activation"] },
     participation: { type: "string", enum: ["not-seen", "seen"] },
     attempts: attemptsSchema,
+    correction: correctionSchema,
     pause: { ...pauseSchema, type: ["object", "null"] },
     lastReport: { ...reportViewSchema, type: ["object", "null"] },
     createdAt: { type: "number" },
@@ -143,6 +321,7 @@ export const watchTaskSchema = {
     "ownership",
     "participation",
     "attempts",
+    "correction",
     "pause",
     "lastReport",
     "createdAt",
@@ -680,6 +859,7 @@ function readTask(value: unknown): WatchTaskView | undefined {
   const ownership = record["ownership"]
   const participation = record["participation"]
   const attempts = readAttempts(record["attempts"])
+  const correction = readCorrection(record["correction"])
   const pause = record["pause"] === null ? null : readPause(record["pause"])
   const createdAt = record["createdAt"]
   const updatedAt = record["updatedAt"]
@@ -698,6 +878,7 @@ function readTask(value: unknown): WatchTaskView | undefined {
     (ownership !== "this-instance" && ownership !== "another-activation") ||
     (participation !== "not-seen" && participation !== "seen") ||
     attempts === undefined ||
+    correction === undefined ||
     pause === undefined ||
     typeof createdAt !== "number" ||
     typeof updatedAt !== "number" ||
@@ -721,6 +902,7 @@ function readTask(value: unknown): WatchTaskView | undefined {
     ownership,
     participation,
     attempts,
+    correction,
     pause,
     lastReport,
     createdAt,
@@ -728,6 +910,236 @@ function readTask(value: unknown): WatchTaskView | undefined {
     completedAt,
     endedAt,
   }
+}
+
+function readCorrection(value: unknown): WatchCorrectionView | undefined {
+  const record = asRecord(value)
+  if (record === undefined) return undefined
+  const authorization = readCorrectionGrant(record["authorization"])
+  const actual = record["actual"]
+  const actualReason = record["actualReason"]
+  const attempts = readAttempts(record["attempts"])
+  const phase = record["phase"]
+  const pending = record["pending"] === null ? null : readCorrectionAttempt(record["pending"])
+  const last = record["last"] === null ? null : readCorrectionAttempt(record["last"])
+  const historyValue = record["history"]
+  const stop = record["stop"] === null ? null : readCorrectionStop(record["stop"])
+  const gatesValue = record["gates"]
+  const businessCompleted = record["businessCompleted"]
+  const controls = readCorrectionControls(record["controls"])
+  if (authorization === undefined || attempts === undefined) return undefined
+  if (actual !== "unavailable" && actual !== "ready") return undefined
+  if (typeof actualReason !== "string") return undefined
+  if (!isCorrectionPhase(phase) || phase === undefined) return undefined
+  if (pending === undefined || last === undefined || stop === undefined) return undefined
+  if (typeof businessCompleted !== "boolean" || controls === undefined) return undefined
+  if (!Array.isArray(historyValue) || !Array.isArray(gatesValue)) return undefined
+  const history: WatchCorrectionAttemptView[] = []
+  for (const item of historyValue) {
+    const attempt = readCorrectionAttempt(item)
+    if (attempt === undefined) return undefined
+    history.push(attempt)
+  }
+  const gates: WatchCorrectionGateView[] = []
+  for (const item of gatesValue) {
+    const gate = readCorrectionGate(item)
+    if (gate === undefined) return undefined
+    gates.push(gate)
+  }
+  return {
+    authorization,
+    actual,
+    actualReason,
+    attempts,
+    phase,
+    pending,
+    last,
+    history,
+    stop,
+    gates,
+    businessCompleted,
+    controls,
+  }
+}
+
+function readCorrectionGrant(value: unknown): WatchCorrectionGrantView | undefined {
+  const record = asRecord(value)
+  if (record === undefined) return undefined
+  const mode = record["mode"]
+  const state = record["state"]
+  const version = record["version"]
+  const reviewSummary = record["reviewSummary"]
+  const grantedAt = record["grantedAt"]
+  if (!isCorrectionGrantMode(mode) || !isCorrectionGrantState(state)) return undefined
+  if (typeof version !== "number") return undefined
+  if (!isStringOrNull(reviewSummary) || !isNumberOrNull(grantedAt)) return undefined
+  return { mode, state, version, reviewSummary, grantedAt }
+}
+
+function readCorrectionAttempt(value: unknown): WatchCorrectionAttemptView | undefined {
+  const record = asRecord(value)
+  if (record === undefined) return undefined
+  const attemptID = record["attemptID"]
+  const ordinal = record["ordinal"]
+  const phase = record["phase"]
+  const reservedAt = record["reservedAt"]
+  const claimedAt = record["claimedAt"]
+  const acceptedAt = record["acceptedAt"]
+  const rejectedAt = record["rejectedAt"]
+  const unknownAt = record["unknownAt"]
+  const receipt = record["receipt"] === null ? null : readCorrectionReceipt(record["receipt"])
+  const recovery = record["recovery"] === null ? null : readCorrectionRecovery(record["recovery"])
+  const stopReason = record["stopReason"] === null ? null : record["stopReason"]
+  if (typeof attemptID !== "string" || typeof ordinal !== "number") return undefined
+  if (!isCorrectionAttemptPhase(phase) || phase === undefined) return undefined
+  if (typeof reservedAt !== "number") return undefined
+  if (!isNumberOrNull(claimedAt) || !isNumberOrNull(acceptedAt) || !isNumberOrNull(rejectedAt)) return undefined
+  if (!isNumberOrNull(unknownAt) || receipt === undefined || recovery === undefined) return undefined
+  if (stopReason !== null && !isCorrectionStopReason(stopReason)) return undefined
+  return {
+    attemptID,
+    ordinal,
+    phase,
+    reservedAt,
+    claimedAt,
+    acceptedAt,
+    rejectedAt,
+    unknownAt,
+    receipt,
+    recovery,
+    stopReason,
+  }
+}
+
+function readCorrectionReceipt(value: unknown): { readonly receiptID: string; readonly at: number } | undefined {
+  const record = asRecord(value)
+  if (record === undefined) return undefined
+  const receiptID = record["receiptID"]
+  const at = record["at"]
+  if (typeof receiptID !== "string" || typeof at !== "number") return undefined
+  return { receiptID, at }
+}
+
+function readCorrectionRecovery(value: unknown): WatchCorrectionRecoveryView | undefined {
+  const record = asRecord(value)
+  if (record === undefined) return undefined
+  const progressReportID = record["progressReportID"]
+  const resultReference = record["resultReference"]
+  const at = record["at"]
+  if (typeof progressReportID !== "string" || typeof resultReference !== "string" || typeof at !== "number") {
+    return undefined
+  }
+  return { progressReportID, resultReference, at }
+}
+
+function readCorrectionStop(
+  value: unknown,
+): { readonly reason: WatchCorrectionStopReason; readonly missingEvidence: string | null } | undefined {
+  const record = asRecord(value)
+  if (record === undefined) return undefined
+  const reason = record["reason"]
+  const missingEvidence = record["missingEvidence"]
+  if (!isCorrectionStopReason(reason) || !isStringOrNull(missingEvidence)) return undefined
+  return { reason, missingEvidence }
+}
+
+function readCorrectionGate(value: unknown): WatchCorrectionGateView | undefined {
+  const record = asRecord(value)
+  if (record === undefined) return undefined
+  const gate = record["gate"]
+  const ok = record["ok"]
+  const reason = record["reason"]
+  if (
+    (gate !== "grant" &&
+      gate !== "attempts" &&
+      gate !== "pending-attempt" &&
+      gate !== "business-unfinished" &&
+      gate !== "executor") ||
+    typeof ok !== "boolean" ||
+    !isStringOrNull(reason)
+  ) {
+    return undefined
+  }
+  return { gate, ok, reason }
+}
+
+function readCorrectionControls(value: unknown): { readonly grant: WatchControl; readonly downgrade: WatchControl } | undefined {
+  const record = asRecord(value)
+  if (record === undefined) return undefined
+  const grant = readCorrectionControl(record["grant"])
+  const downgrade = readCorrectionControl(record["downgrade"])
+  if (grant === undefined || downgrade === undefined) return undefined
+  return { grant, downgrade }
+}
+
+function readCorrectionControl(value: unknown): WatchControl | undefined {
+  const record = asRecord(value)
+  if (record === undefined) return undefined
+  const enabled = record["enabled"]
+  const reason = record["reason"]
+  if (typeof enabled !== "boolean" || !isStringOrNull(reason)) return undefined
+  return { enabled, reason }
+}
+
+function isCorrectionPhase(value: unknown): value is WatchCorrectionAttemptPhase | "idle" {
+  return (
+    value === "idle" ||
+    value === "reserved" ||
+    value === "sending" ||
+    value === "accepted" ||
+    value === "rejected" ||
+    value === "unknown" ||
+    value === "receipted" ||
+    value === "recovered"
+  )
+}
+
+function isCorrectionAttemptPhase(value: unknown): value is WatchCorrectionAttemptPhase {
+  return (
+    value === "reserved" ||
+    value === "sending" ||
+    value === "accepted" ||
+    value === "rejected" ||
+    value === "unknown" ||
+    value === "receipted" ||
+    value === "recovered"
+  )
+}
+
+function isCorrectionGrantMode(value: unknown): value is WatchCorrectionGrantMode {
+  return value === "alert-only" || value === "single-attempt"
+}
+
+function isCorrectionGrantState(value: unknown): value is WatchCorrectionGrantState {
+  return value === "not-granted" || value === "pending-confirmation" || value === "granted" || value === "revoked"
+}
+
+function isCorrectionStopReason(value: unknown): value is WatchCorrectionStopReason {
+  return (
+    value === "grant-missing" ||
+    value === "grant-pending" ||
+    value === "grant-expired" ||
+    value === "attempt-limit" ||
+    value === "session-unresolved" ||
+    value === "reservation-pending" ||
+    value === "sending-unaccounted" ||
+    value === "accepted-without-receipt" ||
+    value === "unknown-result" ||
+    value === "receipted-awaiting-recovery" ||
+    value === "rejected" ||
+    value === "recovered" ||
+    value === "runtime-unsupported" ||
+    value === "single-host-unconfirmed" ||
+    value === "cross-location" ||
+    value === "protocol-unseen" ||
+    value === "task-paused" ||
+    value === "task-ended" ||
+    value === "task-completed" ||
+    value === "observation-untrusted" ||
+    value === "normal-wait" ||
+    value === "observation-gap" ||
+    value === "executor-unavailable"
+  )
 }
 
 function readAttempts(value: unknown): { readonly used: number; readonly limit: number } | undefined {
