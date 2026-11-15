@@ -74,7 +74,7 @@ interface Seeded {
   readonly correlation: string
 }
 
-function seed(state: string, downgrade = false): Seeded {
+function seed(state: string, downgrade = false, pause = false): Seeded {
   const clock = { value: 1_000 }
   const opened = openWatchLedger({
     path: join(state, "watch-ledger.sqlite3"),
@@ -156,6 +156,17 @@ function seed(state: string, downgrade = false): Seeded {
         at: clock.value,
       })
       if (!downgraded.ok) throw new Error(`${downgraded.code}: ${downgraded.detail}`)
+    }
+    if (pause) {
+      const shown = ledger.show({ taskID, sessionID: CALLER_SESSION_ID })
+      if (!shown.ok || shown.value === null) throw new Error("task missing")
+      const paused = ledger.control({
+        taskId: taskID,
+        callerSessionId: CALLER_SESSION_ID,
+        expectedVersion: shown.value.version,
+        operation: "pause",
+      })
+      if (!paused.ok) throw new Error(`${paused.code}: ${paused.detail}`)
     }
     return { taskID, attemptID: "receipt-attempt", correlation: claimed.value.correlation }
   } finally {
@@ -461,6 +472,20 @@ describeReceipt("correction receipt surface", () => {
       }
     } finally {
       await unload().catch(() => undefined)
+    }
+  })
+
+  test("a task paused under another activation shows a safety pause", async () => {
+    const state = stateDirectory()
+    seed(state, false, true)
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } }, state)
+    try {
+      const payload = await show(host)
+      expect(payload.task?.pause).toMatchObject({ kind: "safety" })
+      expect(payload.task?.pause?.reason).toContain("another activation")
+      expect(host.prompts).toEqual([])
+    } finally {
+      await unload()
     }
   })
 
