@@ -36,12 +36,20 @@ Optional: `WATCH61_OPENCODE_BIN=/path/to/opencode` and
   the literal `stub` key; no developer credential is copied or printed.
 - `startInstance` picks a free `127.0.0.1` port and passes the explicit URL to
   its client; it never reads the live `service.json` URL for requests.
+- The probe creates one explicit session in `layout.projectA` (no prompt) so
+  the project-scoped probe plugin actually loads. The recorded directory must
+  be that scratch project.
 - The live `service.json` md5 and pid/url are read only as isolation evidence.
   The probe never writes it, never restarts the live service and never sends a
   request to the live URL.
 - The child runs detached in its own process group; `stop()` closes the port
   and kills that group with a bounded grace period. Failure paths stop the
   child before reporting.
+- Success requires all of: a runtime record, the scratch project directory,
+  the scratch probe database, the child pid, `stopped === true`,
+  `portClosed === true`, and an unchanged live `service.json` digest. A
+  scratch directory is removed only after a clean stop; otherwise it is kept
+  for diagnosis without secrets.
 
 ## Decision after the probe
 

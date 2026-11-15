@@ -104,16 +104,19 @@ function grant(
     ownerActivation: owner,
     expectedVersion: currentVersion,
     reviewSummary: "Grant one bounded correction attempt.",
+    deployment: "single-host-same-location",
     at: clock.value,
   })
   if (!prepared.ok) throw new Error(`${prepared.code}: ${prepared.detail}`)
   const confirmed = ledger.confirmCorrectionGrant({
     challenge: prepared.value.challenge,
     taskId: taskID,
+    callerSessionId: caller,
     ownerActivation: owner,
     expectedVersion: prepared.value.expectedVersion,
     generation: prepared.value.generation,
     termsDigest: prepared.value.termsDigest,
+    deployment: "single-host-same-location",
     at: clock.value,
   })
   if (!confirmed.ok) throw new Error(`${confirmed.code}: ${confirmed.detail}`)

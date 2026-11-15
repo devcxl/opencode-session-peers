@@ -106,6 +106,7 @@ export interface WatchApplication {
     readonly callerSessionID: string
     readonly taskID: string
     readonly expectedVersion: number
+    readonly deployment: "single-host-same-location"
   }): WatchGrantOutcome
   confirmGrant(input: {
     readonly callerSessionID: string
@@ -114,6 +115,7 @@ export interface WatchApplication {
     readonly generation: number
     readonly termsDigest: string
     readonly challenge: string
+    readonly deployment: "single-host-same-location"
   }): WatchGrantOutcome
   downgradeGrant(input: {
     readonly callerSessionID: string
@@ -210,7 +212,17 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
   ): { readonly view: WatchTaskView } | { readonly failure: WatchFailure } => {
     const snapshot = ledger.correction(record.taskID)
     if (!snapshot.ok) return { failure: mapLedgerFailure(snapshot.code, snapshot.detail) }
-    return { view: watchTaskView(record, options.activationID, snapshot.value) }
+    return {
+      view: watchTaskView(record, options.activationID, snapshot.value, {
+        appVersion: options.runtime?.appVersion ?? null,
+        platform: options.runtime?.platform ?? null,
+        arch: options.runtime?.arch ?? null,
+        sqliteVersion: ledger.sqliteVersion,
+        journalMode: ledger.journalMode,
+        synchronous: ledger.synchronous,
+        busyTimeoutMs: ledger.busyTimeoutMs,
+      }),
+    }
   }
 
   const view = (sessionID: string, taskID?: string): { outcome: WatchOutcome; ledger?: WatchLedger } => {
@@ -463,7 +475,8 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
         ownerActivation: options.activationID,
         expectedVersion: input.expectedVersion,
         reviewSummary:
-          "Limited correction: three permanent attempts, but this build may use only the first automatic attempt; one host and location; a safety pause does not stop business; spent attempts never reset.",
+          "Limited correction: three permanent attempts, but this build may use only the first automatic attempt; the deployment statement is single host and location, a declaration rather than proof of uniqueness; the controlled RPC is not same-user human authentication; a safety pause does not stop business; spent attempts never reset.",
+        deployment: input.deployment,
         at: options.now?.() ?? Date.now(),
       })
       if (!prepared.ok) return grantFailure(mapLedgerFailure(prepared.code, prepared.detail))
@@ -498,13 +511,16 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
       const confirmed = current.ledger.confirmCorrectionGrant({
         challenge: challenge.value,
         taskId: taskID.value,
+        callerSessionId: caller.value,
         ownerActivation: options.activationID,
         expectedVersion: input.expectedVersion,
         generation: input.generation,
         termsDigest: termsDigest.value,
+        deployment: input.deployment,
         at: options.now?.() ?? Date.now(),
       })
       if (!confirmed.ok) return grantFailure(mapLedgerFailure(confirmed.code, confirmed.detail))
+      notify()
       const built = taskView(confirmed.value.task, current.ledger)
       if ("failure" in built) return grantFailure(built.failure)
       return {
@@ -534,6 +550,7 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
         at: options.now?.() ?? Date.now(),
       })
       if (!downgraded.ok) return grantFailure(mapLedgerFailure(downgraded.code, downgraded.detail))
+      notify()
       const built = taskView(downgraded.value.task, current.ledger)
       if ("failure" in built) return grantFailure(built.failure)
       return {

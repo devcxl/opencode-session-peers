@@ -41,6 +41,7 @@ const snapshot: WatchCorrectionSnapshot = {
     generation: 1,
     scopeTargetSessionID: "ses_a",
     reviewSummary: "reviewed",
+    deployment: "single-host-same-location",
     termsDigest: "digest",
     confirmationID: "confirmation",
     grantedAt: 1_000,
@@ -94,6 +95,83 @@ describe("correction gate", () => {
       required: expect.stringContaining("verified app tuple"),
     })
     expect(result.gates.filter((gate) => gate.gate !== "runtime" && gate.gate !== "executor").every((gate) => gate.ok)).toBe(true)
+  })
+
+  test("rejects paused tasks, unresolved session history and a mismatched grant", () => {
+    const paused = correctionGate({
+      task: { ...task, watchState: "paused" },
+      snapshot,
+      observation,
+      runtime,
+      ownerActivation: "activation-a",
+      sameLocation: true,
+      singleHostDeclared: true,
+      closing: false,
+      executorReady: true,
+    })
+    expect(paused.eligible).toBe(false)
+    expect(paused.stopReason).toBe("task-paused")
+    expect(paused.gates.find((gate) => gate.gate === "task-active")).toMatchObject({ ok: false })
+
+    const unresolved = correctionGate({
+      task,
+      snapshot: { ...snapshot, sessionUnresolved: true },
+      observation,
+      runtime,
+      ownerActivation: "activation-a",
+      sameLocation: true,
+      singleHostDeclared: true,
+      closing: false,
+      executorReady: true,
+    })
+    expect(unresolved.eligible).toBe(false)
+    expect(unresolved.gates.find((gate) => gate.gate === "session-unresolved")).toMatchObject({ ok: false })
+
+    const wrongMode = correctionGate({
+      task: { ...task, mode: "alert" },
+      snapshot,
+      observation,
+      runtime,
+      ownerActivation: "activation-a",
+      sameLocation: true,
+      singleHostDeclared: true,
+      closing: false,
+      executorReady: true,
+    })
+    expect(wrongMode.eligible).toBe(false)
+    expect(wrongMode.gates.find((gate) => gate.gate === "grant")).toMatchObject({ ok: false })
+  })
+
+  test("cleared wait history does not keep the waits gate closed", () => {
+    const result = correctionGate({
+      task,
+      snapshot,
+      observation: {
+        ...observation,
+        waits: [
+          {
+            waitID: "form:old",
+            source: "form",
+            object: "form",
+            reason: "answered",
+            reference: "old",
+            startedAt: 1_000,
+            deadline: null,
+            status: "cleared",
+            clearEvidence: "answered",
+            denyEvidence: null,
+          },
+        ],
+      },
+      runtime,
+      ownerActivation: "activation-a",
+      sameLocation: true,
+      singleHostDeclared: true,
+      closing: false,
+      executorReady: true,
+    })
+    expect(result.gates.find((gate) => gate.gate === "waits")).toMatchObject({ ok: true })
+    expect(result.gates.find((gate) => gate.gate === "observation")).toMatchObject({ ok: true })
   })
 
   test("reports observation and wait gaps without turning them into a grant decision", () => {

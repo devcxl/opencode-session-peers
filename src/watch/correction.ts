@@ -62,7 +62,6 @@ export function correctionGate(input: CorrectionGateInput): CorrectionGateResult
       attempt.phase === "unknown",
   )
   const used = snapshot.attempts.length
-  const completed = task.taskState === "completed"
   const runtimeTuple = `${runtime.appVersion ?? "?"}/${runtime.platform ?? "?"}/${runtime.arch ?? "?"}`
   const runtimeOk =
     runtime.platform === "linux" &&
@@ -74,7 +73,19 @@ export function correctionGate(input: CorrectionGateInput): CorrectionGateResult
     runtime.synchronous === 2 &&
     (runtime.busyTimeoutMs ?? 0) > 0 &&
     runtime.filesystem === "local"
-  const grantOk = snapshot.grant?.state === "granted"
+  const grantOk =
+    snapshot.grant?.state === "granted" &&
+    task.mode === "limited-correction" &&
+    snapshot.grant.generation === task.generation &&
+    snapshot.grant.scopeTargetSessionID === task.targetSessionID
+  const taskActive = task.watchState === "active"
+  const sessionClear = !snapshot.sessionUnresolved
+  const businessOk = task.taskState !== "completed" && task.taskState !== "blocked"
+  const singleHost = input.singleHostDeclared && snapshot.grant?.deployment === "single-host-same-location"
+  const currentWaits = observation?.waits.filter(
+    (wait) => wait.status === "active" || wait.status === "overdue" || wait.status === "unknown",
+  ) ?? []
+  const denied = observation?.waits.some((wait) => wait.status === "denied") ?? false
   const observationOk =
     observation !== null &&
     observation.trusted &&
@@ -90,14 +101,21 @@ export function correctionGate(input: CorrectionGateInput): CorrectionGateResult
     gate("grant", grantOk, snapshot.grant === null ? "not-granted" : `${snapshot.grant.state} version ${snapshot.grant.version}`, "an active limited-correction grant"),
     gate("attempts", used < 3, `${used}/3 permanent attempts`, "fewer than three permanent attempts"),
     gate("pending-attempt", open === undefined, open === undefined ? "none" : `attempt ${open.ordinal} ${open.phase}`, "no unresolved attempt"),
-    gate("business-unfinished", !completed, task.taskState, "not completed"),
+    gate("business-unfinished", businessOk, task.taskState, "not completed or explicitly blocked"),
+    gate("task-active", taskActive, task.watchState, "an active watch"),
+    gate("session-unresolved", sessionClear, sessionClear ? "none" : "an older task is unresolved", "no unresolved older attempt for this session"),
     gate(
       "runtime",
       runtimeOk,
       `${runtimeTuple}; sqlite=${runtime.sqliteVersion ?? "unknown"}; journal=${runtime.journalMode ?? "unknown"}; synchronous=${runtime.synchronous ?? "unknown"}; busy=${runtime.busyTimeoutMs ?? "unknown"}; fs=${runtime.filesystem}`,
       "Linux x64, a verified app tuple, embedded SQLite >= 3.51.3, WAL, FULL, bounded busy_timeout and local filesystem",
     ),
-    gate("single-host", input.singleHostDeclared, input.singleHostDeclared ? "declared" : "not declared", "an explicit single-host, same-location deployment statement"),
+    gate(
+      "single-host",
+      singleHost,
+      snapshot.grant?.deployment ?? "unknown",
+      "an explicit single-host, same-location deployment statement",
+    ),
     gate("location", input.sameLocation, input.sameLocation ? "same location" : "unknown", "same host and location"),
     gate("owner-generation", ownerOk, ownerOk ? "this activation" : "another activation", "the recorded owner activation and generation"),
     gate("protocol", protocolSeen, protocolSeen ? "reported" : "no report", "the target has participated in the protocol"),
@@ -107,7 +125,14 @@ export function correctionGate(input: CorrectionGateInput): CorrectionGateResult
       observation === null ? "no sample" : `${observation.state}; trusted=${String(observation.trusted)}; partial=${String(observation.waitsPartial)}`,
       "a trusted idle-candidate with complete wait evidence",
     ),
-    gate("waits", observationOk && observation !== null && observation.waits.length === 0, observation === null ? "no snapshot" : `${observation.waits.length} wait(s)`, "no active, overdue or unknown wait"),
+    gate(
+      "waits",
+      observation !== null && currentWaits.length === 0 && !denied && observation.waitsPartial === false,
+      observation === null
+        ? "no snapshot"
+        : `${currentWaits.length} current wait(s); denied=${String(denied)}; partial=${String(observation.waitsPartial)}`,
+      "no active, overdue, unknown or denied wait and a complete snapshot",
+    ),
     gate("closing", !input.closing, input.closing ? "closing" : "open", "not closing"),
     gate("executor", input.executorReady, input.executorReady ? "ready" : "closed", "a controlled first-attempt executor"),
   ]
@@ -115,11 +140,11 @@ export function correctionGate(input: CorrectionGateInput): CorrectionGateResult
     if (item.ok || item.gate === "executor") continue
     return result(gates, stopForGate(item.gate, task, open, used, observation))
   }
-  if (!input.executorReady) {
-    return result(gates, { reason: "executor-unavailable", missingEvidence: "the controlled executor path is not open in this build" })
-  }
   if (used >= 1) {
     return result(gates, { reason: "first-attempt-policy", missingEvidence: "this build's automatic executor may use only the first attempt" })
+  }
+  if (!input.executorReady) {
+    return result(gates, { reason: "executor-unavailable", missingEvidence: "the controlled executor path is not open in this build" })
   }
   return { eligible: true, stopReason: null, missingEvidence: null, gates }
 }
@@ -169,9 +194,14 @@ function stopForGate(
       if (open.phase === "accepted") return { reason: "accepted-without-receipt", missingEvidence: "the target has not submitted a receipt" }
       return { reason: "unknown-result", missingEvidence: "the delivery outcome is unknown" }
     case "business-unfinished":
-      return task.taskState === "completed"
-        ? { reason: "task-completed", missingEvidence: "the business task is completed" }
-        : { reason: "executor-unavailable", missingEvidence: "the business task is not finished" }
+      if (task.taskState === "completed") return { reason: "task-completed", missingEvidence: "the business task is completed" }
+      return { reason: "observation-untrusted", missingEvidence: "the business task is explicitly blocked" }
+    case "task-active":
+      return task.watchState === "paused"
+        ? { reason: "task-paused", missingEvidence: "the watch is paused" }
+        : { reason: "task-ended", missingEvidence: "the watch has ended" }
+    case "session-unresolved":
+      return { reason: "session-unresolved", missingEvidence: "an older task still has an unresolved attempt" }
     case "observation":
       return observation?.state === "normal-waiting"
         ? { reason: "normal-wait", missingEvidence: "a normal wait is present" }

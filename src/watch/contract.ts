@@ -141,11 +141,12 @@ const correctionGrantSchema = {
   properties: {
     mode: { type: "string", enum: ["alert", "limited-correction"] },
     state: { type: "string", enum: ["not-granted", "pending-confirmation", "granted", "revoked"] },
+    deployment: { type: "string", enum: ["single-host-same-location", "unknown"] },
     version: { type: "integer", minimum: 1 },
     reviewSummary: { type: ["string", "null"] },
     grantedAt: { type: ["number", "null"] },
   },
-  required: ["mode", "state", "version", "reviewSummary", "grantedAt"],
+  required: ["mode", "state", "deployment", "version", "reviewSummary", "grantedAt"],
 } as const
 
 const correctionReceiptSchema = {
@@ -256,6 +257,8 @@ const correctionGateSchema = {
         "attempts",
         "pending-attempt",
         "business-unfinished",
+        "task-active",
+        "session-unresolved",
         "runtime",
         "single-host",
         "location",
@@ -302,7 +305,7 @@ const correctionSchema = {
     last: { ...correctionAttemptSchema, type: ["object", "null"] },
     history: { type: "array", maxItems: 3, items: correctionAttemptSchema },
     stop: { ...correctionStopSchema, type: ["object", "null"] },
-    gates: { type: "array", maxItems: 13, items: correctionGateSchema },
+    gates: { type: "array", maxItems: 15, items: correctionGateSchema },
     businessCompleted: { type: "boolean" },
     controls: {
       type: "object",
@@ -655,6 +658,7 @@ export interface WatchGrantChallengeView {
   readonly generation: number
   readonly termsDigest: string
   readonly reviewSummary: string
+  readonly deployment: "single-host-same-location"
   readonly expiresAt: number
 }
 
@@ -678,9 +682,19 @@ const grantChallengeSchema = {
     generation: { type: "integer", minimum: 1 },
     termsDigest: { type: "string", minLength: 1 },
     reviewSummary: { type: "string" },
+    deployment: { type: "string", enum: ["single-host-same-location"] },
     expiresAt: { type: "integer", minimum: 0 },
   },
-  required: ["challenge", "taskID", "expectedVersion", "generation", "termsDigest", "reviewSummary", "expiresAt"],
+  required: [
+    "challenge",
+    "taskID",
+    "expectedVersion",
+    "generation",
+    "termsDigest",
+    "reviewSummary",
+    "deployment",
+    "expiresAt",
+  ],
 } as const
 
 export const watchGrantRpcMethod = {
@@ -695,6 +709,7 @@ export const watchGrantRpcMethod = {
       challenge: { type: "string", minLength: 1 },
       generation: { type: "integer", minimum: 1 },
       termsDigest: { type: "string", minLength: 1 },
+      deployment: { type: "string", enum: ["single-host-same-location"] },
     },
     required: ["operation", "sessionID", "taskID", "expectedVersion"],
   },
@@ -736,13 +751,15 @@ function readGrantChallenge(value: unknown): WatchGrantChallengeView | undefined
   const generation = record["generation"]
   const termsDigest = record["termsDigest"]
   const reviewSummary = record["reviewSummary"]
+  const deployment = record["deployment"]
   const expiresAt = record["expiresAt"]
   if (typeof challenge !== "string" || typeof taskID !== "string") return undefined
   if (!isPositiveInteger(expectedVersion) || !isPositiveInteger(generation)) return undefined
+  if (deployment !== "single-host-same-location") return undefined
   if (typeof termsDigest !== "string" || typeof reviewSummary !== "string" || !isTimestamp(expiresAt)) {
     return undefined
   }
-  return { challenge, taskID, expectedVersion, generation, termsDigest, reviewSummary, expiresAt }
+  return { challenge, taskID, expectedVersion, generation, termsDigest, reviewSummary, deployment, expiresAt }
 }
 
 export const watchChangedEvent = {
@@ -1118,7 +1135,7 @@ function readCorrection(value: unknown): WatchCorrectionView | undefined {
   if (pending === undefined || last === undefined || stop === undefined) return undefined
   if (typeof businessCompleted !== "boolean" || controls === undefined) return undefined
   if (!Array.isArray(historyValue) || historyValue.length > 3) return undefined
-  if (!Array.isArray(gatesValue) || gatesValue.length > 13) return undefined
+  if (!Array.isArray(gatesValue) || gatesValue.length > 15) return undefined
   const history: WatchCorrectionAttemptView[] = []
   for (const item of historyValue) {
     const attempt = readCorrectionAttempt(item)
@@ -1153,13 +1170,15 @@ function readCorrectionGrant(value: unknown): WatchCorrectionGrantView | undefin
   if (record === undefined) return undefined
   const mode = record["mode"]
   const state = record["state"]
+  const deployment = record["deployment"]
   const version = record["version"]
   const reviewSummary = record["reviewSummary"]
   const grantedAt = record["grantedAt"]
   if (!isWatchMode(mode) || !isCorrectionGrantState(state)) return undefined
+  if (deployment !== "single-host-same-location" && deployment !== "unknown") return undefined
   if (!isPositiveInteger(version)) return undefined
   if (!isStringOrNull(reviewSummary) || !isNumberOrNull(grantedAt)) return undefined
-  return { mode, state, version, reviewSummary, grantedAt }
+  return { mode, state, deployment, version, reviewSummary, grantedAt }
 }
 
 function readCorrectionAttempt(value: unknown): WatchCorrectionAttemptView | undefined {
@@ -1316,6 +1335,8 @@ function isCorrectionGate(value: unknown): value is WatchCorrectionGate {
     value === "attempts" ||
     value === "pending-attempt" ||
     value === "business-unfinished" ||
+    value === "task-active" ||
+    value === "session-unresolved" ||
     value === "runtime" ||
     value === "single-host" ||
     value === "location" ||

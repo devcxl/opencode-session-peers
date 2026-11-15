@@ -31,21 +31,27 @@ export async function watchGrantRpc(deps: WatchGrantRpcDeps, input: unknown): Pr
   }
   const watch = deps.watch
   switch (request.value.operation) {
-    case "prepare":
+    case "prepare": {
+      if (request.value.deployment === undefined) {
+        return failure(deps, "E_WATCH_INVALID", "prepare needs the explicit single-host-same-location deployment declaration")
+      }
       return payload(
         watch.prepareGrant({
           callerSessionID: request.value.sessionID,
           taskID: request.value.taskID,
           expectedVersion: request.value.expectedVersion,
+          deployment: request.value.deployment,
         }),
       )
+    }
     case "confirm": {
       if (
         request.value.challenge === undefined ||
         request.value.generation === undefined ||
-        request.value.termsDigest === undefined
+        request.value.termsDigest === undefined ||
+        request.value.deployment === undefined
       ) {
-        return failure(deps, "E_WATCH_INVALID", "confirm needs challenge, generation and termsDigest")
+        return failure(deps, "E_WATCH_INVALID", "confirm needs challenge, generation, termsDigest and the deployment declaration")
       }
       return payload(
         watch.confirmGrant({
@@ -55,6 +61,7 @@ export async function watchGrantRpc(deps: WatchGrantRpcDeps, input: unknown): Pr
           generation: request.value.generation,
           termsDigest: request.value.termsDigest,
           challenge: request.value.challenge,
+          deployment: request.value.deployment,
         }),
       )
     }
@@ -77,6 +84,7 @@ interface Request {
   readonly challenge?: string
   readonly generation?: number
   readonly termsDigest?: string
+  readonly deployment?: "single-host-same-location"
 }
 
 type Parsed = { readonly ok: true; readonly value: Request } | { readonly ok: false; readonly reason: string }
@@ -90,6 +98,24 @@ function readRequest(input: unknown): Parsed {
   if (operation !== "prepare" && operation !== "confirm" && operation !== "downgrade") {
     return { ok: false, reason: "operation must be prepare, confirm or downgrade" }
   }
+  const allowed =
+    operation === "prepare"
+      ? new Set(["operation", "sessionID", "taskID", "expectedVersion", "deployment"])
+      : operation === "confirm"
+        ? new Set([
+            "operation",
+            "sessionID",
+            "taskID",
+            "expectedVersion",
+            "challenge",
+            "generation",
+            "termsDigest",
+            "deployment",
+          ])
+        : new Set(["operation", "sessionID", "taskID", "expectedVersion"])
+  for (const key of Object.keys(record)) {
+    if (!allowed.has(key)) return { ok: false, reason: `watchGrant.${key} is not valid for ${operation}` }
+  }
   const sessionID = readString(record["sessionID"])
   const taskID = readString(record["taskID"])
   const expectedVersion = record["expectedVersion"]
@@ -101,12 +127,21 @@ function readRequest(input: unknown): Parsed {
   }
   const challenge = readString(record["challenge"])
   const termsDigest = readString(record["termsDigest"])
+  const deployment = record["deployment"]
   const generation = record["generation"]
   if (
     generation !== undefined &&
     (typeof generation !== "number" || !Number.isSafeInteger(generation) || generation < 1)
   ) {
     return { ok: false, reason: "generation must be a positive integer" }
+  }
+  if (deployment !== undefined && deployment !== "single-host-same-location") {
+    return { ok: false, reason: "deployment must be single-host-same-location" }
+  }
+  if (operation === "prepare" || operation === "confirm") {
+    if (deployment !== "single-host-same-location") {
+      return { ok: false, reason: `${operation} needs the explicit single-host-same-location deployment declaration` }
+    }
   }
   if (operation === "confirm" && (challenge === undefined || termsDigest === undefined || generation === undefined)) {
     return { ok: false, reason: "confirm needs challenge, generation and termsDigest" }
@@ -121,6 +156,7 @@ function readRequest(input: unknown): Parsed {
       ...(challenge === undefined ? {} : { challenge }),
       ...(generation === undefined ? {} : { generation }),
       ...(termsDigest === undefined ? {} : { termsDigest }),
+      ...(deployment === undefined ? {} : { deployment }),
     },
   }
 }

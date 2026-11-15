@@ -31,10 +31,21 @@ import {
   type WatchTaskView,
 } from "../domain/watch.ts"
 
+export interface WatchRuntimeFactsView {
+  readonly appVersion: string | null
+  readonly platform: string | null
+  readonly arch: string | null
+  readonly sqliteVersion: string | null
+  readonly journalMode: string | null
+  readonly synchronous: number | null
+  readonly busyTimeoutMs: number | null
+}
+
 export function watchTaskView(
   task: WatchTaskRecord,
   activationID: string,
   correction: WatchCorrectionSnapshot,
+  runtime?: WatchRuntimeFactsView,
 ): WatchTaskView {
   return {
     taskID: task.taskID,
@@ -49,7 +60,7 @@ export function watchTaskView(
     ownership: task.ownerActivation === activationID ? "this-instance" : "another-activation",
     participation: task.lastReport === undefined ? "not-seen" : "seen",
     attempts: { used: task.attemptsUsed, limit: WATCH_CORRECTION_LIMIT },
-    correction: watchCorrectionView(task, correction, activationID),
+    correction: watchCorrectionView(task, correction, activationID, runtime),
     pause:
       task.watchState === "paused"
         ? { kind: "manual", reason: "paused by the user; business execution is untouched" }
@@ -71,6 +82,7 @@ export function watchCorrectionView(
   task: WatchTaskRecord,
   snapshot: WatchCorrectionSnapshot,
   activationID: string,
+  runtime?: WatchRuntimeFactsView,
 ): WatchCorrectionView {
   const grant = snapshot.grant
   const attempts = snapshot.attempts
@@ -84,6 +96,11 @@ export function watchCorrectionView(
   const last = attempts.length === 0 ? null : (attempts[attempts.length - 1] ?? null)
   const used = attempts.length
   const businessCompleted = task.taskState === "completed"
+  const grantOk =
+    grant?.state === "granted" &&
+    task.mode === "limited-correction" &&
+    grant.generation === task.generation &&
+    grant.scopeTargetSessionID === task.targetSessionID
   const stop = correctionStop(task, grant, open, used, snapshot.sessionUnresolved)
   const history = attempts.map(correctionAttemptView)
   const pending = open === undefined ? null : correctionAttemptView(open)
@@ -91,6 +108,7 @@ export function watchCorrectionView(
     authorization: {
       mode: task.mode,
       state: grant === null ? "not-granted" : grant.state,
+      deployment: grant?.deployment ?? "unknown",
       version: grant?.version ?? 1,
       reviewSummary: grant?.reviewSummary ?? null,
       grantedAt: grant?.grantedAt ?? null,
@@ -107,10 +125,13 @@ export function watchCorrectionView(
     gates: [
       {
         gate: "grant",
-        ok: grant?.state === "granted",
-        reason: grant?.state === "granted" ? null : "no active correction grant",
-        observed: grant === null ? "not-granted" : `${grant.state} version ${grant.version}`,
-        required: "an active limited-correction grant",
+        ok: grantOk,
+        reason: grantOk ? null : "no active correction grant matches the task mode, generation and scope",
+        observed:
+          grant === null
+            ? "not-granted"
+            : `${grant.state} version ${grant.version}; generation ${grant.generation}; scope ${grant.scopeTargetSessionID}`,
+        required: "an active limited-correction grant for this generation and target",
       },
       {
         gate: "attempts",
@@ -128,23 +149,43 @@ export function watchCorrectionView(
       },
       {
         gate: "business-unfinished",
-        ok: !businessCompleted,
-        reason: businessCompleted ? "the business task is completed" : null,
+        ok: !businessCompleted && task.taskState !== "blocked",
+        reason: businessCompleted ? "the business task is completed" : task.taskState === "blocked" ? "the business task is explicitly blocked" : null,
         observed: task.taskState,
-        required: "not completed",
+        required: "not completed or explicitly blocked",
+      },
+      {
+        gate: "task-active",
+        ok: task.watchState === "active",
+        reason: task.watchState === "active" ? null : `the watch is ${task.watchState}`,
+        observed: task.watchState,
+        required: "an active watch",
+      },
+      {
+        gate: "session-unresolved",
+        ok: !snapshot.sessionUnresolved,
+        reason: snapshot.sessionUnresolved ? "an older task for this session is unresolved" : null,
+        observed: snapshot.sessionUnresolved ? "unresolved older attempt" : "none",
+        required: "no unresolved older attempt for this session",
       },
       {
         gate: "runtime",
         ok: false,
-        reason: "the real embedded runtime capability is not collected in this checkpoint",
-        observed: "not collected",
+        reason: "the runtime tuple is not verified for automatic sending",
+        observed:
+          runtime === undefined
+            ? "not collected"
+            : `${runtime.appVersion ?? "?"}/${runtime.platform ?? "?"}/${runtime.arch ?? "?"}; sqlite=${runtime.sqliteVersion ?? "unknown"}; journal=${runtime.journalMode ?? "unknown"}; synchronous=${runtime.synchronous ?? "unknown"}; busy=${runtime.busyTimeoutMs ?? "unknown"}`,
         required: "Linux x64, a verified app tuple, embedded SQLite >= 3.51.3 with WAL, FULL, bounded busy_timeout and local filesystem",
       },
       {
         gate: "single-host",
-        ok: false,
-        reason: "no explicit single-host deployment statement is recorded",
-        observed: "not declared",
+        ok: grant?.deployment === "single-host-same-location",
+        reason:
+          grant?.deployment === "single-host-same-location"
+            ? null
+            : "no explicit single-host deployment statement is recorded",
+        observed: grant?.deployment ?? "unknown",
         required: "an explicit single-host, same-location deployment statement (a declaration, not proof of uniqueness)",
       },
       {
@@ -199,14 +240,32 @@ export function watchCorrectionView(
     ],
     businessCompleted,
     controls: {
-      grant: disabled(CORRECTION_UNAVAILABLE_REASON),
-      downgrade: disabled(
-        grant?.state === "granted"
-          ? "the controlled downgrade surface is not open in this build"
-          : "no correction grant exists to downgrade",
-      ),
+      grant: correctionGrantControl(task, activationID, grant?.state === "granted"),
+      downgrade: correctionDowngradeControl(task, activationID, grant?.state === "granted"),
     },
   }
+}
+
+function correctionGrantControl(
+  task: WatchTaskRecord,
+  activationID: string,
+  granted: boolean,
+): WatchControl {
+  if (task.ownerActivation !== activationID) return disabled("another activation owns this task's correction authority")
+  if (task.watchState === "ended") return disabled("the watch has ended; a new grant needs a new task")
+  if (task.taskState === "completed") return disabled("the business task is completed")
+  if (granted) return disabled("a correction grant is already active; downgrade it before preparing another")
+  return enabled()
+}
+
+function correctionDowngradeControl(
+  task: WatchTaskRecord,
+  activationID: string,
+  granted: boolean,
+): WatchControl {
+  if (task.ownerActivation !== activationID) return disabled("another activation owns this task's correction authority")
+  if (!granted) return disabled("no active correction grant exists to downgrade")
+  return enabled()
 }
 
 function correctionAttemptView(attempt: WatchCorrectionAttemptRecord): WatchCorrectionAttemptView {
