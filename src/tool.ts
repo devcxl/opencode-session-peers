@@ -42,8 +42,8 @@ const PEERS_TOOL_DESCRIPTION =
   `"handover" — summarize this session with this session's own model and send the summary ` +
   `to one peer, which continues the work; ` +
   `"status" — this session's id, its scope, and whether the host is answering; ` +
-  `"watch" — enroll or inspect an explicitly watched task, report its state, or pause/end supervision. ` +
-  `Watch is alert-only: it never prompts, generates, corrects or interrupts.`
+  `"watch" — enroll or inspect an explicitly watched task, report its state, pause/end supervision, ` +
+  `or acknowledge one persistent alert. Watch is alert-only: it never prompts, generates, corrects or interrupts.`
 
 const PEERS_TOOL_INPUT = {
   type: "object",
@@ -129,7 +129,7 @@ const PEERS_TOOL_INPUT = {
           ],
           description:
             `"show" a task, "enroll" the calling session, "report" begin/progress/waiting/blocked/completed, ` +
-            `"pause" or "end" supervision. The remaining operations are explicit unavailable refusals in this build.`,
+            `"pause" or "end" supervision, "ack" read one alert. The remaining operations are explicit unavailable refusals in this build.`,
         },
         taskID: { type: "string", description: `The watched task id for show, report, pause or end.` },
         alertID: { type: "string", description: `The persistent alert id for ack; it only marks the alert read.` },
@@ -166,7 +166,8 @@ const PEERS_TOOL_INPUT = {
           additionalProperties: false,
           description:
             `Evidence for the report. progress and completed need summary + reference; waiting needs ` +
-            `waitKind + waitFor + reason + reference; blocked needs reason.`,
+            `waitKind + waitFor + reason + reference and may add waitID/waitUntil; a matching clear needs ` +
+            `clearsWaitID + clearEvidence.`,
           properties: {
             summary: { type: "string" },
             reference: { type: "string" },

@@ -414,6 +414,7 @@ function protocolNotice(task: { readonly taskID: string; readonly version: numbe
     "If the task is still yours, report only a real state change or new result:",
     `peers({ action: "watch", watch: { operation: "report", taskID: ${JSON.stringify(task.taskID)}, expectedVersion: ${task.version}, reportId: "<new id>", kind: "begin|progress|waiting|blocked|completed", evidence: { ... } } })`,
     "begin needs no evidence; progress and completed need evidence.summary and evidence.reference; waiting needs evidence.waitKind, evidence.waitFor, evidence.reason and evidence.reference; blocked needs evidence.reason.",
+    "A waiting report may carry evidence.waitID and evidence.waitUntil; a later progress/blocked report clears only the matching wait with evidence.clearsWaitID plus evidence.clearEvidence.",
     "Reporting completion ends supervision because the task is done. Do not repeat completed side effects to report.",
   ].join("\n")
 }
@@ -460,6 +461,10 @@ export function mapLedgerFailure(code: WatchLedgerErrorCode, detail: string): Wa
       )
     case "unknown_task":
       return make("E_WATCH_NOT_FOUND", `No watched task matches "${detail}".`)
+    case "unknown_wait":
+      return make("E_WATCH_NOT_FOUND", `No active reported wait matches "${detail}".`)
+    case "wait_limit":
+      return make("E_WATCH_INVALID_TRANSITION", "Too many active reported waits; clear one before adding another.")
     case "caller_mismatch":
       return make("E_WATCH_CALLER_MISMATCH", `This session is not allowed to perform that watch operation. (${detail})`)
     case "stale_version":

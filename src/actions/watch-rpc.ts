@@ -8,6 +8,7 @@
  * current capability and controls even when a version is stale.
  */
 
+import type { WatchConfig } from "../config.ts"
 import { DELEGATION_UNAVAILABLE_REASON, type WatchFailure } from "../domain/watch.ts"
 import type { SessionLookup } from "../host/session.ts"
 import { sessionAtLocation } from "../watch/access.ts"
@@ -23,6 +24,7 @@ export interface WatchRpcDeps {
   readonly observe?: WatchObservationSource
   readonly sessions: SessionLookup
   readonly directory: string
+  readonly watchConfig: WatchConfig
 }
 
 export async function watchRpc(deps: WatchRpcDeps, input: unknown): Promise<WatchPayload> {
@@ -173,10 +175,7 @@ function payload(deps: WatchRpcDeps, outcome: WatchOutcome): WatchPayload {
     task: outcome.task,
     capability: outcome.capability,
     controls: outcome.controls,
-    observation:
-      taskID === undefined || outcome.task?.watchState === "ended" || outcome.task?.taskState === "completed"
-        ? null
-        : deps.observe?.observationFor(taskID) ?? null,
+    observation: observationFor(outcome, deps),
     activity:
       taskID === undefined || outcome.task?.watchState === "ended" || outcome.task?.taskState === "completed"
         ? null
@@ -199,6 +198,36 @@ function failurePayload(deps: WatchRpcDeps, failure: WatchFailure): WatchPayload
     alerts: emptyWatchAlerts(status.available, status.reason),
     failure: failureView(failure),
   }
+}
+
+function observationFor(outcome: WatchOutcome, deps: WatchRpcDeps) {
+  const task = outcome.task
+  if (task === null || task.watchState === "ended" || task.taskState === "completed") return null
+  const snapshot = deps.observe?.observationFor(task.taskID) ?? null
+  if (task.watchState === "paused") {
+    return {
+      ...(snapshot ?? {
+        state: "unavailable" as const,
+        reason: null,
+        observedAt: null,
+        baselineAt: null,
+        idleSince: null,
+        trusted: false,
+        waits: [],
+        waitsPartial: false,
+        waitsTruncated: false,
+        effective: {
+          idleMs: deps.watchConfig.idleMs,
+          runningSilentMs: deps.watchConfig.runningSilentMs,
+          waitOverdueMs: deps.watchConfig.waitOverdueMs,
+        },
+      }),
+      state: "unavailable" as const,
+      reason: "supervision is paused",
+      trusted: false,
+    }
+  }
+  return snapshot
 }
 
 function ledgerStatus(deps: WatchRpcDeps): { available: boolean; reason: string | null } {

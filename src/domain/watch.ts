@@ -49,6 +49,8 @@ export interface WatchReportedWait {
   readonly reference: string
   readonly waitUntil?: number
   readonly at: number
+  readonly clearedAt?: number
+  readonly clearEvidence?: string
 }
 
 export interface WatchReportRecord {
@@ -74,8 +76,8 @@ export interface WatchTaskRecord {
   readonly attemptsUsed: number
   /** The activation that enrolled the task; a later activation only observes it. */
   readonly ownerActivation: string
-  /** The one reported wait still in force; host waits are separate observation facts. */
-  readonly reportedWait?: WatchReportedWait
+  /** Bounded reported waits, including recently cleared ones; host waits are separate facts. */
+  readonly reportedWaits: readonly WatchReportedWait[]
   readonly lastReport?: WatchReportRecord
   readonly createdAt: number
   readonly updatedAt: number
@@ -397,9 +399,9 @@ export function readEvidence(kind: WatchReportKind, value: unknown): Checked<Wat
   if (!waitFor.ok) return waitFor
   const reason = optionalText(record["reason"], "reason", WATCH_LIMITS.reason)
   if (!reason.ok) return reason
-  const waitID = optionalText(record["waitID"], "waitID", WATCH_LIMITS.id)
+  const waitID = optionalIdentifier(record["waitID"], "waitID")
   if (!waitID.ok) return waitID
-  const clearsWaitID = optionalText(record["clearsWaitID"], "clearsWaitID", WATCH_LIMITS.id)
+  const clearsWaitID = optionalIdentifier(record["clearsWaitID"], "clearsWaitID")
   if (!clearsWaitID.ok) return clearsWaitID
   const clearEvidence = optionalText(record["clearEvidence"], "clearEvidence", WATCH_LIMITS.reason)
   if (!clearEvidence.ok) return clearEvidence
@@ -424,6 +426,10 @@ export function readEvidence(kind: WatchReportKind, value: unknown): Checked<Wat
     ...(waitUntil.value === undefined ? {} : { waitUntil: waitUntil.value }),
     ...(clearsWaitID.value === undefined ? {} : { clearsWaitID: clearsWaitID.value }),
     ...(clearEvidence.value === undefined ? {} : { clearEvidence: clearEvidence.value }),
+  }
+
+  if (evidence.clearsWaitID !== undefined && evidence.clearEvidence === undefined) {
+    return { ok: false, reason: "clearsWaitID needs a non-empty clearEvidence" }
   }
 
   switch (kind) {
@@ -458,6 +464,13 @@ export function readEvidence(kind: WatchReportKind, value: unknown): Checked<Wat
       }
       return { ok: true, value: evidence }
   }
+}
+
+function optionalIdentifier(value: unknown, field: string): Checked<string | undefined> {
+  if (value === undefined || value === null) return { ok: true, value: undefined }
+  const checked = readIdentifier(value, field)
+  if (!checked.ok) return checked
+  return { ok: true, value: checked.value }
 }
 
 function optionalInteger(value: unknown, field: string): Checked<number | undefined> {

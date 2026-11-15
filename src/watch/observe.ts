@@ -34,6 +34,7 @@ import type { WatchApplication, WatchObservationSource } from "./service.ts"
 
 const MAX_WAITS = 12
 const MAX_CLEARED_WAITS = 6
+const MAX_FACT_SESSIONS = 100
 
 type ActivityKind = NonNullable<WatchActivityView["kind"]>
 
@@ -42,6 +43,7 @@ interface SessionFacts {
   executionAt: number | null
   startedAt: number | null
   settledAt: number | null
+  terminalFailure: "failed" | "interrupted" | null
   lastActivityAt: number | null
   lastActivityKind: ActivityKind | null
   invalidatedAt: number | null
@@ -86,21 +88,31 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
   const facts = new Map<SessionID, SessionFacts>()
   const observations = new Map<string, TaskObservation>()
   const observedWaitKeys = new Map<string, Set<string>>()
+  const taskVersions = new Map<string, number>()
   const startedAt = deps.scheduler.now()
   let lastTickAt: number | null = null
   let gap: string | null = null
   let disposed = false
+  let epoch = 0
+  let ticking = false
+  let queued = false
+  let runningTick: Promise<void> | undefined
   const controller = new AbortController()
   let registration: { dispose(): void } | undefined
 
   const fact = (sessionID: SessionID): SessionFacts => {
     const existing = facts.get(sessionID)
     if (existing !== undefined) return existing
+    if (facts.size >= MAX_FACT_SESSIONS) {
+      const oldest = facts.keys().next().value
+      if (oldest !== undefined) facts.delete(oldest)
+    }
     const created: SessionFacts = {
       execution: "unknown",
       executionAt: null,
       startedAt: null,
       settledAt: null,
+      terminalFailure: null,
       lastActivityAt: null,
       lastActivityKind: null,
       invalidatedAt: null,
@@ -125,6 +137,7 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
       value.executionAt = null
       value.startedAt = null
       value.settledAt = null
+      value.terminalFailure = null
       value.lastActivityAt = null
       value.lastActivityKind = null
       value.invalidatedAt = null
@@ -143,16 +156,27 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
   }
 
   const onEvent = (event: HostEvent) => {
+    const eventLocation = (event as { readonly location?: { readonly directory?: unknown } }).location?.directory
+    if (typeof eventLocation === "string" && eventLocation !== deps.directory) return
     const sessionID = sessionOf(event)
     if (sessionID === undefined) return
     const at = eventAt(event)
+    if (at === undefined) {
+      gap = "event has no trusted timestamp"
+      epoch += 1
+      resetFacts(deps.scheduler.now())
+      return
+    }
     const current = fact(sessionID)
+    if (at < current.observedFrom) return
     switch (event.type) {
       case "session.execution.started":
+        if (current.executionAt !== null && at < current.executionAt) return
         current.execution = "running"
         current.executionAt = at
         current.startedAt = at
         current.settledAt = null
+        current.terminalFailure = null
         current.idleSeenAt = null
         current.idleTicks = 0
         current.unknownSince = null
@@ -163,10 +187,17 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
       case "session.execution.succeeded":
       case "session.execution.failed":
       case "session.execution.interrupted":
+        if (current.executionAt !== null && at < current.executionAt) return
         current.execution = "settled"
         current.executionAt = at
         current.settledAt = at
         current.startedAt = null
+        current.terminalFailure =
+          event.type === "session.execution.failed"
+            ? "failed"
+            : event.type === "session.execution.interrupted"
+              ? "interrupted"
+              : null
         current.idleSeenAt = null
         current.idleTicks = 0
         current.unknownSince = null
@@ -294,6 +325,7 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
       const delta = now - lastTickAt
       if (delta < 0 || delta > Math.max(deps.config.tickMs * 4, 60_000)) {
         gap = "clock or scheduling gap"
+        epoch += 1
         resetFacts(now)
       }
     }
@@ -308,6 +340,7 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
       if (!seen.has(taskID)) {
         observations.delete(taskID)
         observedWaitKeys.delete(taskID)
+        taskVersions.delete(taskID)
       }
     }
     if (gap !== null) {
@@ -323,17 +356,24 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
     waitOverdueMs: deps.config.waitOverdueMs,
   })
 
-  const sample = async (task: WatchTaskRecord, now: number) => {
+  const sample = async (taskInput: WatchTaskRecord, now: number) => {
+    let task = taskInput
+    const sampleEpoch = epoch
     const current = fact(task.targetSessionID)
+    if (taskVersions.get(task.taskID) !== task.version) {
+      current.idleSeenAt = null
+      current.idleTicks = 0
+      taskVersions.set(task.taskID, task.version)
+    }
     current.lastObservedAt = now
-    const waits = await collectWaits(task, current, now)
     const local = await sessionAtLocation(deps.sessions, task.targetSessionID, deps.directory)
     if (!local) {
-      const observation = unknownObservation(now, "the session is not served by this location", waits.items, waits.partial, thresholdsOf())
-      observations.set(task.taskID, { observation, activity: activityOf(current) })
-      resolveConditionAlerts(task.taskID, ["idle", "running-silent"], now)
+      // Never sample, resolve or retain another location's task snapshot.
+      observations.delete(task.taskID)
+      observedWaitKeys.delete(task.taskID)
       return
     }
+    const waits = await collectWaits(task, current, now)
 
     let session
     try {
@@ -359,6 +399,10 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
     }
     mergeFormWaits(current, waits, now)
     mergeRetryWait(current, waits, now)
+    if (disposed || sampleEpoch !== epoch) return
+    const fresh = deps.store.liveTasks().find((candidate) => candidate.taskID === task.taskID)
+    if (fresh === undefined || fresh.watchState !== "active" || fresh.version !== task.version) return
+    task = fresh
 
     const previousWaitKeys = observedWaitKeys.get(task.taskID) ?? new Set<string>()
     const currentWaitKeys = new Set(waits.items.map((wait) => wait.waitID))
@@ -366,9 +410,20 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
       if (!currentWaitKeys.has(key)) resolveConditionAlerts(task.taskID, [`wait:${key}`], now)
     }
     observedWaitKeys.set(task.taskID, currentWaitKeys)
+    waits.items.sort((left, right) => waitPriority(left) - waitPriority(right))
     const waitsTruncated = waits.items.length > MAX_WAITS
+    if (waitsTruncated) waits.partial = true
     const visibleWaits = waits.items.slice(0, MAX_WAITS)
-    const observed = observe(task, current, session.idleAt, waits.partial, visibleWaits, waitsTruncated, now)
+    const observed = observe(
+      task,
+      current,
+      session.idleAt,
+      session.busyAt,
+      waits.partial,
+      visibleWaits,
+      waitsTruncated,
+      now,
+    )
     observations.set(task.taskID, observed)
     if (task.watchState !== "active") {
       // Pausing stops new alerts but leaves the old ones queryable/ackable.
@@ -410,6 +465,19 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
       )
     } else {
       resolveConditionAlerts(task.taskID, ["running-silent"], now)
+    }
+
+    if (observed.observation.state === "blocked") {
+      upsert(
+        task.taskID,
+        "observation-unknown",
+        "execution-blocked",
+        "The task is blocked by a failed execution or a rejected wait; it is not a quiet idle task.",
+        "Inspect the executing session and the blocked evidence; this build does not resume or correct it.",
+        now,
+      )
+    } else {
+      resolveConditionAlerts(task.taskID, ["execution-blocked"], now)
     }
 
     if (observed.observation.state === "unknown" || observed.observation.state === "unavailable") {
@@ -454,6 +522,7 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
     task: WatchTaskRecord,
     current: SessionFacts,
     idleAt: number | undefined,
+    busyAt: number | undefined,
     waitsPartial: boolean,
     waits: readonly WatchWaitView[],
     waitsTruncated: boolean,
@@ -482,12 +551,11 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
         activity,
       }
     }
-    // Event-only sources are complete from the observation baseline onward. A
-    // task enrolled after that baseline is covered; a reloaded task is covered
-    // again once a fresh terminal execution is observed.
-    const eventHistoryComplete =
-      task.createdAt >= current.observedFrom ||
-      (current.settledAt !== null && current.settledAt >= current.observedFrom)
+    // Event-only sources are complete only from this observer's baseline. A
+    // task enrolled after that baseline is covered; a reloaded task is not
+    // retroactively covered by a fresh terminal, because a form/retry event may
+    // have been missed before the terminal.
+    const eventHistoryComplete = task.createdAt >= current.observedFrom
     const effectivePartial = waitsPartial || !eventHistoryComplete
     if (task.taskState === "blocked") {
       return {
@@ -523,6 +591,23 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
         activity,
       }
     }
+    if (waits.some((wait) => wait.status === "denied")) {
+      return {
+        observation: {
+          state: "blocked",
+          reason: "an approval was rejected; the task is blocked",
+          observedAt: now,
+          baselineAt: null,
+          idleSince: null,
+          trusted: false,
+          waits,
+          waitsPartial,
+          waitsTruncated,
+          effective: thresholds,
+        },
+        activity,
+      }
+    }
     if (waits.some((wait) => wait.status === "unknown")) {
       return {
         observation: unknownObservation(
@@ -541,23 +626,6 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
         observation: {
           state: "normal-waiting",
           reason: waitsPartial ? "wait sources are incomplete; absence of other waits is not proof" : null,
-          observedAt: now,
-          baselineAt: null,
-          idleSince: null,
-          trusted: false,
-          waits,
-          waitsPartial,
-          waitsTruncated,
-          effective: thresholds,
-        },
-        activity,
-      }
-    }
-    if (waits.some((wait) => wait.status === "denied")) {
-      return {
-        observation: {
-          state: "blocked",
-          reason: "an approval was rejected; the task is blocked",
           observedAt: now,
           baselineAt: null,
           idleSince: null,
@@ -611,9 +679,59 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
         activity,
       }
     }
-    if (idleAt === undefined) {
+    if (current.terminalFailure !== null) {
       return {
-        observation: unknownObservation(now, "the host did not report a terminal idle time", waits, waitsPartial, thresholds, waitsTruncated),
+        observation: {
+          state: "blocked",
+          reason: `the last execution ${current.terminalFailure}; it is not a quiet idle task`,
+          observedAt: now,
+          baselineAt: null,
+          idleSince: null,
+          trusted: false,
+          waits,
+          waitsPartial,
+          waitsTruncated,
+          effective: thresholds,
+        },
+        activity,
+      }
+    }
+    if (idleAt === undefined || busyAt === undefined) {
+      return {
+        observation: unknownObservation(
+          now,
+          "the host did not report both busy and idle times",
+          waits,
+          waitsPartial,
+          thresholds,
+          waitsTruncated,
+        ),
+        activity,
+      }
+    }
+    if (!Number.isFinite(idleAt) || !Number.isFinite(busyAt) || idleAt > now || busyAt > now) {
+      return {
+        observation: unknownObservation(
+          now,
+          "the host execution times are future/invalid",
+          waits,
+          waitsPartial,
+          thresholds,
+          waitsTruncated,
+        ),
+        activity,
+      }
+    }
+    if (busyAt > idleAt) {
+      return {
+        observation: unknownObservation(
+          now,
+          "the host busy time is newer than idle; the last execution is not settled",
+          waits,
+          waitsPartial,
+          thresholds,
+          waitsTruncated,
+        ),
         activity,
       }
     }
@@ -683,7 +801,7 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
       if (!seen.has(id)) {
         const started = current.permissionFirstSeen.get(id) ?? now
         current.permissionFirstSeen.delete(id)
-        addCleared(current, {
+        const missingWait: WatchWaitView = {
           waitID: `permission:${id}`,
           source: "permission",
           object: "permission",
@@ -691,10 +809,12 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
           reference: id,
           startedAt: started,
           deadline: null,
-          status: "cleared",
-          clearEvidence: "same-location permission snapshot no longer lists it",
+          status: "unknown",
+          clearEvidence: null,
           denyEvidence: null,
-        })
+        }
+        addCleared(current, missingWait)
+        waits.items.push(missingWait)
       }
     }
   }
@@ -707,7 +827,7 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
         waitID: `form:${id}`,
         source: "form",
         object: "form",
-        reason: `form "${form.title}" is awaiting input`,
+        reason: "a form is awaiting input",
         reference: id,
         startedAt: started,
         deadline: null,
@@ -745,7 +865,7 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
       if (ask.targetSessionID === undefined) continue
       const reply = await deps.replies.read(ask.askID)
       if (reply !== undefined) {
-        addCleared(current, {
+        const cleared: WatchWaitView = {
           waitID: `ask:${ask.askID}`,
           source: "ask",
           object: "peer ask",
@@ -756,7 +876,9 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
           status: "cleared",
           clearEvidence: "reply stored for this ask",
           denyEvidence: null,
-        })
+        }
+        addCleared(current, cleared)
+        waits.items.push(cleared)
         continue
       }
       const started = ask.createdAt
@@ -782,8 +904,22 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
     now: number,
   ): Promise<{ items: WatchWaitView[]; partial: boolean }> => {
     const waits: { items: WatchWaitView[]; partial: boolean } = { items: [], partial: false }
-    if (task.reportedWait !== undefined) {
-      const wait = task.reportedWait
+    for (const wait of task.reportedWaits) {
+      if (wait.clearedAt !== undefined) {
+        waits.items.push({
+          waitID: wait.waitID,
+          source: "reported",
+          object: wait.waitFor,
+          reason: wait.reason,
+          reference: wait.reference,
+          startedAt: wait.at,
+          deadline: wait.waitUntil ?? null,
+          status: "cleared",
+          clearEvidence: wait.clearEvidence ?? "reported wait cleared",
+          denyEvidence: null,
+        })
+        continue
+      }
       waits.items.push({
         waitID: wait.waitID,
         source: "reported",
@@ -826,7 +962,7 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
       const records = await deps.asks.list()
       return {
         ok: true as const,
-        records: records.filter((record) => record.value.targetSessionID === sessionID),
+        records: records.filter((record) => record.value.askerSessionID === sessionID),
       }
     } catch {
       return { ok: false as const, records: [] as const }
@@ -872,6 +1008,27 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
     }
   }
 
+  const requestTick = (): Promise<void> => {
+    if (disposed) return Promise.resolve()
+    if (ticking) {
+      queued = true
+      return runningTick ?? Promise.resolve()
+    }
+    ticking = true
+    const run = (async () => {
+      do {
+        queued = false
+        await tick()
+      } while (queued && !disposed)
+    })()
+      .finally(() => {
+        ticking = false
+        runningTick = undefined
+      })
+    runningTick = run
+    return run
+  }
+
   return {
     start() {
       if (disposed) return
@@ -883,6 +1040,7 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
         } catch (error) {
           if (!disposed) {
             gap = `event stream ended: ${describeError(error)}`
+            epoch += 1
             resetFacts(deps.scheduler.now())
             deps.warn(gap)
           }
@@ -891,10 +1049,11 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
           // A clean end is an observation gap just as an error is: the next
           // sample must not treat the missing interval as continuous silence.
           gap = "event stream ended"
+          epoch += 1
           resetFacts(deps.scheduler.now())
         }
       })()
-      registration = deps.scheduler.every(deps.config.tickMs, tick)
+      registration = deps.scheduler.every(deps.config.tickMs, requestTick)
     },
 
     observationFor(taskID) {
@@ -907,11 +1066,13 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
 
     dispose() {
       disposed = true
+      epoch += 1
       controller.abort()
       registration?.dispose()
       registration = undefined
       observations.clear()
       observedWaitKeys.clear()
+      taskVersions.clear()
       facts.clear()
     },
   }
@@ -939,6 +1100,12 @@ function unknownObservation(
   }
 }
 
+function waitPriority(wait: WatchWaitView): number {
+  if (wait.status === "denied" || wait.status === "unknown") return 0
+  if (wait.status === "active" || wait.status === "overdue") return 1
+  return 2
+}
+
 function activityOf(facts: SessionFacts): WatchActivityView {
   return {
     lastAt: facts.lastActivityAt,
@@ -948,16 +1115,20 @@ function activityOf(facts: SessionFacts): WatchActivityView {
 }
 
 function markActivity(facts: SessionFacts, at: number, kind: ActivityKind) {
+  if (facts.lastActivityAt !== null && at < facts.lastActivityAt) return
   facts.lastActivityAt = at
   facts.lastActivityKind = kind
   facts.idleSeenAt = null
   facts.idleTicks = 0
   facts.unknownSince = null
+  // A target step/text/tool after a retry is evidence that the retry wait ended;
+  // a retry-only observer has no snapshot, so this is the matching terminal fact.
+  facts.retry = null
 }
 
-function eventAt(event: HostEvent): number {
+function eventAt(event: HostEvent): number | undefined {
   const created = (event as { readonly created?: unknown }).created
-  return typeof created === "number" ? created : Date.now()
+  return typeof created === "number" && Number.isFinite(created) && created >= 0 ? created : undefined
 }
 
 function sessionOf(event: HostEvent): SessionID | undefined {

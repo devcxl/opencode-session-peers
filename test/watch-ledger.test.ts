@@ -265,6 +265,113 @@ describeSafe("the security ledger", () => {
     }
   })
 
+  test("persists one alert per problem, acknowledges read-only and keeps resolved history", () => {
+    const ledger = open()
+    try {
+      const enrolled = ledger.enroll(enrollInput())
+      if (!enrolled.ok) throw new Error("enrollment failed")
+      const taskId = enrolled.value.task.taskID
+      const created = ledger.upsertAlert({
+        taskId,
+        dedupeKey: "idle",
+        kind: "idle",
+        summary: "No activity",
+        reason: "idle window",
+        at: 1_000,
+      })
+      expect(created.ok).toBe(true)
+      if (!created.ok) return
+      expect(created.value.created).toBe(true)
+      expect(created.value.escalated).toBe(false)
+      expect(ledger.alerts(taskId)).toMatchObject({
+        ok: true,
+        value: { total: 1, unread: 1, active: 1, truncated: false },
+      })
+
+      const escalated = ledger.upsertAlert({
+        taskId,
+        dedupeKey: "idle",
+        kind: "idle",
+        summary: "No activity",
+        reason: "idle window",
+        at: 2_000,
+        escalate: true,
+      })
+      expect(escalated.ok).toBe(true)
+      if (escalated.ok) {
+        expect(escalated.value.created).toBe(false)
+        expect(escalated.value.escalated).toBe(true)
+        expect(escalated.value.alert.alertID).toBe(created.value.alert.alertID)
+        expect(escalated.value.alert.escalatedAt).toBe(2_000)
+      }
+
+      const acked = ledger.ackAlert({ alertID: created.value.alert.alertID, callerSessionId: "ses_alpha", at: 3_000 })
+      expect(acked.ok).toBe(true)
+      if (acked.ok) expect(acked.value.alert.state).toBe("read")
+
+      expect(ledger.resolveAlert({ taskId, dedupeKey: "idle", at: 4_000 })).toMatchObject({ ok: true, value: { changed: true } })
+      const history = ledger.alerts(taskId)
+      expect(history.ok).toBe(true)
+      if (history.ok) {
+        expect(history.value.active).toBe(0)
+        expect(history.value.total).toBe(1)
+        expect(history.value.alerts[0]?.resolvedAt).toBe(4_000)
+        expect(history.value.alerts[0]?.state).toBe("read")
+      }
+
+      const paused = ledger.control({
+        taskId,
+        callerSessionId: "ses_alpha",
+        expectedVersion: 1,
+        operation: "pause",
+      })
+      expect(paused.ok).toBe(true)
+      expect(
+        ledger.upsertAlert({
+          taskId,
+          dedupeKey: "running-silent",
+          kind: "running-silent",
+          summary: "Still running",
+          reason: "silent",
+          at: 5_000,
+        }),
+      ).toMatchObject({ ok: false, code: "not_active" })
+    } finally {
+      ledger.close()
+    }
+  })
+
+  test("bounds an alert list and reports truncation honestly", () => {
+    const ledger = open()
+    try {
+      const enrolled = ledger.enroll(enrollInput())
+      if (!enrolled.ok) throw new Error("enrollment failed")
+      const taskId = enrolled.value.task.taskID
+      for (let index = 0; index < 21; index += 1) {
+        expect(
+          ledger.upsertAlert({
+            taskId,
+            dedupeKey: `problem-${index}`,
+            kind: "observation-unknown",
+            summary: "Unknown observation",
+            reason: "reason",
+            at: 1_000 + index,
+          }).ok,
+        ).toBe(true)
+      }
+      const listed = ledger.alerts(taskId)
+      expect(listed.ok).toBe(true)
+      if (listed.ok) {
+        expect(listed.value.total).toBe(21)
+        expect(listed.value.active).toBe(21)
+        expect(listed.value.truncated).toBe(true)
+        expect(listed.value.alerts).toHaveLength(20)
+      }
+    } finally {
+      ledger.close()
+    }
+  })
+
   test("records evidence in order and makes a repeated report idempotent", () => {
     const ledger = open()
     try {

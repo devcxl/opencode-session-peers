@@ -77,6 +77,7 @@ async function show(host: FakeHost): Promise<WatchPayload> {
 function settle(host: FakeHost, at: number) {
   host.emit("session.execution.started", { sessionID: CALLER_SESSION_ID }, at)
   host.emit("session.execution.succeeded", { sessionID: CALLER_SESSION_ID }, at)
+  host.setBusy(CALLER_SESSION_ID, at)
   host.setIdle(CALLER_SESSION_ID, at)
 }
 
@@ -163,6 +164,24 @@ describe("trusted idle and running observation", () => {
     }
   })
 
+  test("target text is activity and restarts the idle baseline", async () => {
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      const at = host.now()
+      settle(host, at)
+      await enroll(host)
+      await host.advance(1_000)
+      host.emit("session.text.started", { sessionID: CALLER_SESSION_ID }, host.now())
+      await host.advance(1_000)
+      expect((await show(host)).observation?.state).toBe("active")
+      await host.advance(1_000)
+      expect((await show(host)).observation?.state).toBe("idle-candidate")
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
   test("title and inbox admission do not refresh the activity clock", async () => {
     const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
     try {
@@ -216,12 +235,71 @@ describe("normal waits", () => {
     }
   })
 
+  test("a truncated wait list stays partial and never becomes an idle claim", async () => {
+    const permissions = Object.fromEntries([
+      [
+        CALLER_SESSION_ID,
+        Array.from({ length: 15 }, (_, index) => ({
+          id: `perm-${index}`,
+          action: "bash",
+          resources: [`echo ${index}`],
+        })),
+      ],
+    ])
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS }, permissions })
+    try {
+      const at = host.now()
+      settle(host, at)
+      await enroll(host)
+      await host.advance(3_000)
+      const payload = await show(host)
+      expect(payload.observation?.state).toBe("normal-waiting")
+      expect(payload.observation?.waitsTruncated).toBe(true)
+      expect(payload.observation?.waitsPartial).toBe(true)
+      expect(payload.observation?.waits).toHaveLength(12)
+      expect(payload.alerts?.items.map((alert) => alert.kind)).not.toContain("idle")
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
+  test("a retry event is a normal wait and target activity is its matching termination", async () => {
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      const at = host.now()
+      host.emit("session.execution.started", { sessionID: CALLER_SESSION_ID }, at)
+      host.emit(
+        "session.retry.scheduled",
+        { sessionID: CALLER_SESSION_ID, attempt: 1, assistantMessageID: "msg-1", at },
+        at,
+      )
+      await enroll(host)
+      await host.advance(3_000)
+      let payload = await show(host)
+      expect(payload.observation?.state).toBe("normal-waiting")
+      expect(payload.observation?.waits.some((wait) => wait.source === "retry")).toBe(true)
+      expect(payload.alerts?.items.map((alert) => alert.kind)).not.toContain("idle")
+
+      host.emit("session.text.started", { sessionID: CALLER_SESSION_ID }, host.now())
+      await host.advance(1_000)
+      payload = await show(host)
+      expect(payload.observation?.waits.some((wait) => wait.source === "retry" && wait.status === "active")).toBe(
+        false,
+      )
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
   test("a form response clears only the matching form wait", async () => {
     const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
     try {
       const at = host.now()
       host.emit("session.execution.started", { sessionID: CALLER_SESSION_ID }, at)
       host.emit("session.execution.succeeded", { sessionID: CALLER_SESSION_ID }, at)
+      host.setBusy(CALLER_SESSION_ID, at)
       host.setIdle(CALLER_SESSION_ID, at)
       host.emit(
         "form.created",
@@ -255,6 +333,145 @@ describe("normal waits", () => {
 })
 
 describe("reported waits and control capability", () => {
+  test("different reported waits coexist and a clear needs its matching evidence", async () => {
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      const at = host.now()
+      settle(host, at)
+      const taskID = await enroll(host)
+      let payload = await show(host)
+      const begin = await host.call("peers", {
+        action: "watch",
+        watch: {
+          operation: "report",
+          taskID,
+          expectedVersion: payload.task?.version,
+          reportId: "multi-begin",
+          kind: "begin",
+          evidence: {},
+        },
+      })
+      const beginVersion = (begin.details as { watch: { task: { version: number } } }).watch.task.version
+      const waitOne = await host.call("peers", {
+        action: "watch",
+        watch: {
+          operation: "report",
+          taskID,
+          expectedVersion: beginVersion,
+          reportId: "multi-wait-a",
+          kind: "waiting",
+          evidence: {
+            waitKind: "human",
+            waitFor: "reviewer A",
+            reason: "A",
+            reference: "ask-a",
+            waitID: "wait-a",
+          },
+        },
+      })
+      const versionAfterA = (waitOne.details as { watch: { task: { version: number } } }).watch.task.version
+      const waitTwo = await host.call("peers", {
+        action: "watch",
+        watch: {
+          operation: "report",
+          taskID,
+          expectedVersion: versionAfterA,
+          reportId: "multi-wait-b",
+          kind: "waiting",
+          evidence: {
+            waitKind: "human",
+            waitFor: "reviewer B",
+            reason: "B",
+            reference: "ask-b",
+            waitID: "wait-b",
+          },
+        },
+      })
+      const versionAfterB = (waitTwo.details as { watch: { task: { version: number } } }).watch.task.version
+      await host.advance(1_000)
+      payload = await show(host)
+      expect(payload.observation?.waits.map((wait) => wait.waitID)).toEqual(
+        expect.arrayContaining(["wait-a", "wait-b"]),
+      )
+
+      const badWaitID = await host.call("peers", {
+        action: "watch",
+        watch: {
+          operation: "report",
+          taskID,
+          expectedVersion: versionAfterB,
+          reportId: "bad-wait-id",
+          kind: "waiting",
+          evidence: {
+            waitKind: "human",
+            waitFor: "x",
+            reason: "x",
+            reference: "x",
+            waitID: "bad id",
+          },
+        },
+      })
+      expect((badWaitID.details as { watch: { failure: { code: string } } }).watch.failure.code).toBe(
+        "E_WATCH_INVALID",
+      )
+
+      const missingEvidence = await host.call("peers", {
+        action: "watch",
+        watch: {
+          operation: "report",
+          taskID,
+          expectedVersion: versionAfterB,
+          reportId: "bad-clear",
+          kind: "progress",
+          evidence: { summary: "x", reference: "y", clearsWaitID: "wait-a" },
+        },
+      })
+      expect((missingEvidence.details as { watch: { failure: { code: string } } }).watch.failure.code).toBe(
+        "E_WATCH_INVALID",
+      )
+
+      const clearA = await host.call("peers", {
+        action: "watch",
+        watch: {
+          operation: "report",
+          taskID,
+          expectedVersion: versionAfterB,
+          reportId: "clear-a",
+          kind: "progress",
+          evidence: {
+            summary: "A answered",
+            reference: "reply-a",
+            clearsWaitID: "wait-a",
+            clearEvidence: "reply-a stored",
+          },
+        },
+      })
+      const versionAfterClear = (clearA.details as { watch: { task: { version: number } } }).watch.task.version
+      await host.advance(1_000)
+      payload = await show(host)
+      expect(payload.observation?.waits.find((wait) => wait.waitID === "wait-a")?.status).toBe("cleared")
+      expect(payload.observation?.waits.find((wait) => wait.waitID === "wait-b")?.status).toBe("active")
+
+      await host.call("peers", {
+        action: "watch",
+        watch: {
+          operation: "report",
+          taskID,
+          expectedVersion: versionAfterClear,
+          reportId: "unrelated-progress",
+          kind: "progress",
+          evidence: { summary: "unrelated", reference: "step" },
+        },
+      })
+      await host.advance(1_000)
+      payload = await show(host)
+      expect(payload.observation?.waits.find((wait) => wait.waitID === "wait-b")?.status).toBe("active")
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
   test("a reported wait has a deadline and only a matching clear entry removes it", async () => {
     const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
     try {
@@ -343,9 +560,11 @@ describe("reported waits and control capability", () => {
       })
       await host.advance(1_000)
       payload = await show(host)
-      expect(payload.observation?.waits.some((wait) => wait.waitID === "wait-1")).toBe(false)
+      expect(payload.observation?.waits.find((wait) => wait.waitID === "wait-1")?.status).toBe("cleared")
       const overdue = payload.alerts?.items.find((alert) => alert.kind === "wait-overdue")
       expect(overdue?.resolvedAt).toBeNumber()
+      expect(payload.alerts?.active).toBe(0)
+      expect(payload.alerts?.total).toBeGreaterThan(0)
       expectNoAgentCalls(host)
     } finally {
       await unload()
@@ -362,6 +581,46 @@ describe("unknown observation and reloads", () => {
       const payload = await show(host)
       expect(payload.observation).toMatchObject({ state: "unknown", trusted: false })
       expect(payload.observation?.reason).toContain("no local terminal")
+      expect(payload.alerts?.items.map((alert) => alert.kind)).not.toContain("idle")
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
+  test("a host busy time newer than idle is unknown, not a quiet idle", async () => {
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      const at = host.now()
+      host.emit("session.execution.started", { sessionID: CALLER_SESSION_ID }, at)
+      host.emit("session.execution.succeeded", { sessionID: CALLER_SESSION_ID }, at)
+      host.setBusy(CALLER_SESSION_ID, at + 1_000)
+      host.setIdle(CALLER_SESSION_ID, at)
+      await enroll(host)
+      await host.advance(3_000)
+      const payload = await show(host)
+      expect(payload.observation?.state).toBe("unknown")
+      expect(payload.observation?.reason).toContain("busy")
+      expect(payload.alerts?.items.map((alert) => alert.kind)).not.toContain("idle")
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
+  test("a failed terminal is blocked rather than an idle candidate", async () => {
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      const at = host.now()
+      host.emit("session.execution.started", { sessionID: CALLER_SESSION_ID }, at)
+      host.emit("session.execution.failed", { sessionID: CALLER_SESSION_ID }, at)
+      host.setBusy(CALLER_SESSION_ID, at)
+      host.setIdle(CALLER_SESSION_ID, at)
+      await enroll(host)
+      await host.advance(3_000)
+      const payload = await show(host)
+      expect(payload.observation?.state).toBe("blocked")
+      expect(payload.observation?.reason).toContain("failed")
       expect(payload.alerts?.items.map((alert) => alert.kind)).not.toContain("idle")
       expectNoAgentCalls(host)
     } finally {
@@ -459,6 +718,17 @@ describe("alert persistence and availability", () => {
       expect(after.task?.watchState).toBe("paused")
       expect(after.alerts?.items).toHaveLength(1)
       expect(after.observation?.state).toBe("unavailable")
+      expect(after.alerts?.items[0]?.escalatedAt).toBeNull()
+      const rpc = host.rpcs[0]
+      if (rpc === undefined) throw new Error("no RPC surface")
+      const acked = readWatchPayload(
+        await rpc.call("watch", {
+          operation: "ack",
+          sessionID: CALLER_SESSION_ID,
+          alertID: after.alerts?.items[0]?.alertID,
+        }),
+      )
+      expect(acked?.alerts?.items[0]).toMatchObject({ state: "read" })
       expectNoAgentCalls(host)
     } finally {
       await unload()
@@ -512,7 +782,7 @@ describe("alert persistence and availability", () => {
           }),
         ]),
       )
-      expect(payload.alerts?.items.map((alert) => alert.kind)).toEqual(["approval-rejected"])
+      expect(payload.alerts?.items.map((alert) => alert.kind)).toContain("approval-rejected")
       expect(payload.alerts?.items.map((alert) => alert.kind)).not.toContain("idle")
       expectNoAgentCalls(host)
     } finally {
@@ -526,10 +796,10 @@ describe("alert persistence and availability", () => {
       const at = host.now()
       const ask: AskRecord = {
         askID: "ask-1",
-        askerSessionID: "ses_asker",
-        askerInstanceID: "instance-asker",
-        askerTitle: "asker",
-        targetSessionID: CALLER_SESSION_ID,
+        askerSessionID: CALLER_SESSION_ID,
+        askerInstanceID: "instance-caller",
+        askerTitle: "caller",
+        targetSessionID: "ses_target",
         question: "Please approve",
         createdAt: at,
         expiresAt: at + 5_000,
@@ -558,6 +828,60 @@ describe("alert persistence and availability", () => {
       const payload = await show(host)
       expect(payload.alerts).toMatchObject({ available: false, items: [], reason: expect.any(String) })
       expect(payload.observation).toBeNull()
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
+  test("pausing while a slow sample is in flight cannot create a new alert", async () => {
+    const { host, unload } = await loaded({
+      options: { watch: WATCH_OPTIONS },
+      permissions: {
+        [CALLER_SESSION_ID]: [{ id: "perm-slow", action: "bash", resources: ["echo"] }],
+      },
+      permissionDelayMs: 30,
+    })
+    try {
+      const at = host.now()
+      settle(host, at)
+      const taskID = await enroll(host)
+      const before = await show(host)
+      const advance = host.advance(1_000)
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      await host.call("peers", {
+        action: "watch",
+        watch: { operation: "pause", taskID, expectedVersion: before.task?.version },
+      })
+      await advance
+      const after = await show(host)
+      expect(after.task?.watchState).toBe("paused")
+      expect(after.alerts?.items ?? []).toEqual([])
+      expect(after.observation?.state).toBe("unavailable")
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
+  test("a permission disappearing without a matching reply is unknown, not approved", async () => {
+    const { host, unload } = await loaded({
+      options: { watch: WATCH_OPTIONS },
+      permissions: {
+        [CALLER_SESSION_ID]: [{ id: "perm-vanish", action: "bash", resources: ["echo"] }],
+      },
+    })
+    try {
+      const at = host.now()
+      settle(host, at)
+      await enroll(host)
+      await host.advance(1_000)
+      host.setPermissions(CALLER_SESSION_ID, [])
+      await host.advance(1_000)
+      const payload = await show(host)
+      expect(payload.observation?.state).toBe("unknown")
+      expect(payload.observation?.waits.some((wait) => wait.status === "unknown")).toBe(true)
+      expect(payload.alerts?.items.map((alert) => alert.kind)).not.toContain("idle")
       expectNoAgentCalls(host)
     } finally {
       await unload()

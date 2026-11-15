@@ -58,6 +58,8 @@ export interface FakeSession {
   readonly directory?: string
   readonly parentID?: string
   readonly model?: string
+  /** Last execution-start time the host reports. */
+  readonly busyAt?: number
   /** Last terminal time the host reports; absent until a terminal execution. */
   readonly idleAt?: number
   /** Outcome of the last completed execution. */
@@ -130,6 +132,8 @@ export interface FakeHostOptions {
   readonly permissions?: Readonly<Record<string, readonly { readonly id: string; readonly action: string; readonly resources: readonly string[]; readonly message?: string }[]>>
   /** Make the permission snapshot fail, as a cross-location/unknown source would. */
   readonly permissionsError?: boolean
+  /** Delay the permission snapshot so a test can pause/end while a tick is in flight. */
+  readonly permissionDelayMs?: number
   /** Initial controlled clock. */
   readonly now?: number
 }
@@ -167,6 +171,8 @@ export interface FakeHost {
   advance(ms: number): Promise<void>
   /** End all live event subscriptions, as a host shutdown would. */
   endEvents(): void
+  /** Set the host's last execution-start time for a session. */
+  setBusy(sessionID: string, busyAt: number): void
   /** Set the host's last terminal time for a session. */
   setIdle(sessionID: string, idleAt: number): void
   /** Replace the pending permission snapshot for one session. */
@@ -218,6 +224,7 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
   const unreadable = new Set(options.contextRefuses ?? [])
   const subscriptions = new Set<FakeSubscription>()
   const idleOverrides = new Map<string, number>()
+  const busyOverrides = new Map<string, number>()
   const permissionOverrides = new Map<string, readonly { readonly id: string; readonly action: string; readonly resources: readonly string[]; readonly message?: string }[]>()
   const scheduler = new FakeScheduler(options.now ?? 1_000_000)
   let eventCounter = 0
@@ -261,6 +268,9 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
           time: {
             created: 0,
             updated: 0,
+            ...(busyOverrides.get(input.sessionID) === undefined && session.busyAt === undefined
+              ? {}
+              : { busy: busyOverrides.get(input.sessionID) ?? session.busyAt }),
             ...(idleOverrides.get(input.sessionID) === undefined && session.idleAt === undefined
               ? {}
               : { idle: idleOverrides.get(input.sessionID) ?? session.idleAt }),
@@ -339,6 +349,9 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
     storage,
     permission: {
       list: async (input: { readonly sessionID: string }) => {
+        if (options.permissionDelayMs !== undefined) {
+          await new Promise((resolve) => setTimeout(resolve, options.permissionDelayMs))
+        }
         if (options.permissionsError === true) throw new Error("Permission.Unavailable")
         return [...(permissionOverrides.get(input.sessionID) ?? options.permissions?.[input.sessionID] ?? [])].map((request) => ({
           id: request.id,
@@ -410,6 +423,9 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
     endEvents() {
       for (const subscription of [...subscriptions]) subscription.close()
       subscriptions.clear()
+    },
+    setBusy(sessionID, busyAt) {
+      busyOverrides.set(sessionID, busyAt)
     },
     setIdle(sessionID, idleAt) {
       idleOverrides.set(sessionID, idleAt)

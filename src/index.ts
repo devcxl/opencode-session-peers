@@ -115,6 +115,7 @@ export default {
             observe: observer,
             sessions: host.sessions,
             directory: host.location.directory,
+            watchConfig: config.watch,
           },
           input,
         ),
