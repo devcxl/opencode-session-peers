@@ -444,4 +444,33 @@ describe("a short terminal", () => {
     expect(text()).toContain("Session watch")
     expect(text()).toContain("v: alerts")
   })
+
+  test("keeps a trusted-false running-silence readable on a short terminal", async () => {
+    const { text } = await rendered(
+      {
+        kind: "payload",
+        payload: payload({
+          task: task(),
+          observation: {
+            ...requireObservation(),
+            state: "running-silence",
+            trusted: false,
+            waitsPartial: true,
+            reason: "a form wait may have been missed after a gap",
+          },
+        }),
+      },
+      { height: 40 },
+    )
+    expect(text()).toContain("Session watch")
+    expect(text()).toContain("running, no new activity")
+    expect(text()).toContain("not trusted")
+    expect(text()).toContain("absence is not proof")
+  })
+
+  function requireObservation() {
+    const view = payload().observation
+    if (view === null) throw new Error("fixture has no observation")
+    return view
+  }
 })
