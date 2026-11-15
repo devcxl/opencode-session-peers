@@ -43,6 +43,8 @@ export interface WatchViewInput {
   readonly selectedAlertID?: string
   readonly alertPage?: number
   readonly alertPageSize?: number
+  /** Keep the task pane within a short terminal by compressing legacy capability notes. */
+  readonly compact?: boolean
 }
 
 export interface WatchContent {
@@ -122,12 +124,12 @@ export function watchContent(input: WatchViewInput): WatchContent {
       }
       return pane === "alerts"
         ? alertsContent(payload, input.sessionID, input)
-        : taskContent(payload, input.sessionID)
+        : taskContent(payload, input.sessionID, input.compact ?? false)
     }
   }
 }
 
-function taskContent(payload: WatchPayload, sessionID: string): WatchContent {
+function taskContent(payload: WatchPayload, sessionID: string, compact: boolean): WatchContent {
   const task = payload.task
   if (task === null) {
     return {
@@ -144,14 +146,14 @@ function taskContent(payload: WatchPayload, sessionID: string): WatchContent {
       notes: [
         "No watched task is enrolled for this session.",
         `The target is this session; the mode is ${modeName(payload.capability.mode)}.`,
-        ...capabilityNotes(payload),
+        ...capabilityNotes(payload, compact),
         "enroll: /peers-watch enroll <goal> · esc: close",
       ],
       noteTone: "muted",
     }
   }
 
-  const observation = observationRows(payload)
+  const observation = observationRows(payload, compact)
   const notes: string[] = []
   if (task.participation === "not-seen") {
     notes.push("The executing session has not reported yet; enrollment is not readiness.")
@@ -175,7 +177,7 @@ function taskContent(payload: WatchPayload, sessionID: string): WatchContent {
     }
   }
   notes.push(...observation.notes)
-  notes.push(...capabilityNotes(payload))
+  notes.push(...capabilityNotes(payload, compact))
   const canViewAlerts = viewableAlerts(payload)
   const footer = footerFor(payload, task.watchState === "ended", canViewAlerts)
   if (footer !== undefined) notes.push(footer)
@@ -185,20 +187,7 @@ function taskContent(payload: WatchPayload, sessionID: string): WatchContent {
     title: TITLE,
     contextLines: taskContextLines(task, sessionID),
     columns: WATCH_COLUMNS,
-    rows: [
-      fact("Goal", goalText(task.goal)),
-      fact("Task state", taskStateText(task.taskState)),
-      fact("Supervision", supervisionText(task)),
-      ...observation.rows,
-      fact("Authorization", authorizationText(task.mode)),
-      fact("Actual capability", capabilityText(payload.capability)),
-      fact("Owner", ownerText(task.ownership, task.generation)),
-      fact("Attempts", attemptsText(task.attempts)),
-      fact("Protocol", protocolText(task.participation)),
-      fact("Last report", lastReportText(task.lastReport)),
-      fact("Result", resultText(task)),
-      fact("Alerts", alertsSummary(payload.alerts)),
-    ],
+    rows: taskRows(payload, task, observation.rows, compact),
     notes,
     noteTone: "muted",
   }
@@ -381,13 +370,21 @@ function capabilityText(capability: WatchPayload["capability"]): string {
   return `${monitoring}; ${automatic}`
 }
 
-function capabilityNotes(payload: WatchPayload): string[] {
+function capabilityNotes(payload: WatchPayload, compact: boolean): string[] {
   const notes: string[] = []
   const capability = payload.capability
   if (capability.automaticDetection === "partial") {
     notes.push(
-      `Automatic detection: partial — ${ensurePeriod(capability.automaticDetectionReason)}`,
+      compact
+        ? "Automatic detection: partial — local execution, activity and same-location waits only."
+        : `Automatic detection: partial — ${ensurePeriod(capability.automaticDetectionReason)}`,
     )
+  }
+  if (compact) {
+    notes.push(
+      "Correction, child-task enrollment, ownership transfer, recovery and safety pause are unavailable in this build.",
+    )
+    return notes
   }
   if (capability.correction === "unavailable") {
     notes.push(`Correction: unavailable — ${ensurePeriod(capability.correctionReason)}`)
@@ -427,4 +424,29 @@ function footerFor(payload: WatchPayload, ended: boolean, canViewAlerts: boolean
 
 function viewableAlerts(payload: WatchPayload): boolean {
   return payload.task !== null && payload.alerts.available && payload.alerts.total > 0
+}
+
+function taskRows(
+  payload: WatchPayload,
+  task: NonNullable<WatchPayload["task"]>,
+  observation: readonly (readonly TableCell[])[],
+  compact: boolean,
+): readonly (readonly TableCell[])[] {
+  const rows: (readonly TableCell[])[] = [
+    fact("Goal", goalText(task.goal)),
+    fact("Task state", taskStateText(task.taskState)),
+    fact("Supervision", supervisionText(task)),
+    ...observation,
+    fact("Authorization", authorizationText(task.mode)),
+    fact("Actual capability", capabilityText(payload.capability)),
+    fact("Owner", ownerText(task.ownership, task.generation)),
+    fact("Attempts", attemptsText(task.attempts)),
+    fact("Protocol", protocolText(task.participation)),
+    fact("Last report", lastReportText(task.lastReport)),
+    fact("Result", resultText(task)),
+  ]
+  if (!(compact && payload.alerts.available && payload.alerts.total === 0)) {
+    rows.push(fact("Alerts", alertsSummary(payload.alerts)))
+  }
+  return rows
 }

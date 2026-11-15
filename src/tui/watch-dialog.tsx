@@ -106,6 +106,7 @@ export function WatchDialog(props: WatchDialogProps) {
       selectedAlertID: selectedAlertID(),
       alertPage: alertPage(),
       alertPageSize: alertPageSize(),
+      compact: dimensions().height < 52,
     }),
   )
 
