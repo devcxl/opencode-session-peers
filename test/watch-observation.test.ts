@@ -585,6 +585,240 @@ describeWatch("reported waits and control capability", () => {
     }
   })
 
+  test("a waiting report can atomically clear one old wait and enter a new one", async () => {
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      const at = host.now()
+      settle(host, at)
+      const taskID = await enroll(host)
+      let version = (await show(host)).task?.version
+      const report = async (
+        requestId: string,
+        kind: "begin" | "progress" | "waiting" | "blocked" | "completed",
+        evidence: Record<string, unknown>,
+      ) => {
+        const result = await host.call("peers", {
+          action: "watch",
+          watch: {
+            operation: "report",
+            taskID,
+            expectedVersion: version,
+            reportId: requestId,
+            kind,
+            evidence,
+          },
+        })
+        const watch = (result.details as { watch: { ok: boolean; task?: { version: number }; failure?: unknown } }).watch
+        if (!watch.ok) throw new Error(JSON.stringify(watch.failure))
+        version = watch.task?.version
+        return result
+      }
+      await report("begin", "begin", {})
+      await report("wait-a", "waiting", {
+        waitKind: "human",
+        waitFor: "A",
+        reason: "A",
+        reference: "ref-a",
+        waitID: "wait-a",
+      })
+      await report("wait-b", "waiting", {
+        waitKind: "human",
+        waitFor: "B",
+        reason: "B",
+        reference: "ref-b",
+        waitID: "wait-b",
+        clearsWaitID: "wait-a",
+        clearEvidence: "A answered",
+      })
+      await host.advance(1_000)
+      let payload = await show(host)
+      expect(payload.observation?.waits.find((wait) => wait.waitID === "wait-a")?.status).toBe("cleared")
+      expect(payload.observation?.waits.find((wait) => wait.waitID === "wait-b")?.status).toBe("active")
+
+      const versionBefore = version
+      await host.advance(1_000)
+      const unknown = await host.call("peers", {
+        action: "watch",
+        watch: {
+          operation: "report",
+          taskID,
+          expectedVersion: version,
+          reportId: "unknown-clear",
+          kind: "waiting",
+          evidence: {
+            waitKind: "human",
+            waitFor: "C",
+            reason: "C",
+            reference: "ref-c",
+            waitID: "wait-c",
+            clearsWaitID: "missing-wait",
+            clearEvidence: "should not apply",
+          },
+        },
+      })
+      expect((unknown.details as { watch: { failure: { code: string } } }).watch.failure.code).toBe(
+        "E_WATCH_NOT_FOUND",
+      )
+      payload = await show(host)
+      expect(payload.task?.version).toBe(versionBefore)
+      expect(payload.observation?.waits.some((wait) => wait.waitID === "wait-c")).toBe(false)
+      expect(payload.observation?.waits.find((wait) => wait.waitID === "wait-b")?.status).toBe("active")
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
+  test("the eight-active cap counts reactivating a cleared wait and permits an atomic swap", async () => {
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      const at = host.now()
+      settle(host, at)
+      const taskID = await enroll(host)
+      let version = (await show(host)).task?.version
+      const report = async (requestId: string, kind: "begin" | "progress" | "waiting", evidence: Record<string, unknown>) => {
+        const result = await host.call("peers", {
+          action: "watch",
+          watch: {
+            operation: "report",
+            taskID,
+            expectedVersion: version,
+            reportId: requestId,
+            kind,
+            evidence,
+          },
+        })
+        const watch = (result.details as { watch: { ok: boolean; task?: { version: number }; failure?: unknown } }).watch
+        if (!watch.ok) throw new Error(JSON.stringify(watch.failure))
+        version = watch.task?.version
+      }
+      await report("cap-begin", "begin", {})
+      for (let index = 0; index < 8; index += 1) {
+        await report(`cap-wait-${index}`, "waiting", {
+          waitKind: "human",
+          waitFor: `W${index}`,
+          reason: "wait",
+          reference: `ref-${index}`,
+          waitID: `cap-${index}`,
+        })
+      }
+      await report("cap-clear", "progress", {
+        summary: "cleared one",
+        reference: "ref",
+        clearsWaitID: "cap-0",
+        clearEvidence: "answer for cap-0",
+      })
+      await report("cap-wait-8", "waiting", {
+        waitKind: "human",
+        waitFor: "W8",
+        reason: "wait",
+        reference: "ref-8",
+        waitID: "cap-8",
+      })
+
+      const versionBeforeRevive = version
+      await host.advance(1_000)
+      const revive = await host.call("peers", {
+        action: "watch",
+        watch: {
+          operation: "report",
+          taskID,
+          expectedVersion: version,
+          reportId: "cap-revive",
+          kind: "waiting",
+          evidence: {
+            waitKind: "human",
+            waitFor: "revive",
+            reason: "wait",
+            reference: "ref",
+            waitID: "cap-0",
+          },
+        },
+      })
+      expect((revive.details as { watch: { failure: { code: string } } }).watch.failure.code).toBe(
+        "E_WATCH_INVALID_TRANSITION",
+      )
+      let payload = await show(host)
+      expect(payload.task?.version).toBe(versionBeforeRevive)
+      expect(payload.observation?.waits.some((wait) => wait.waitID === "cap-0" && wait.status === "active")).toBe(false)
+
+      await report("cap-swap", "waiting", {
+        waitKind: "human",
+        waitFor: "swap",
+        reason: "wait",
+        reference: "ref-swap",
+        waitID: "cap-9",
+        clearsWaitID: "cap-1",
+        clearEvidence: "answer for cap-1",
+      })
+      await host.advance(1_000)
+      payload = await show(host)
+      expect(payload.observation?.waits.find((wait) => wait.waitID === "cap-1")?.status).toBe("cleared")
+      expect(payload.observation?.waits.find((wait) => wait.waitID === "cap-9")?.status).toBe("active")
+      expect(payload.observation?.waits.filter((wait) => wait.status === "active")).toHaveLength(8)
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
+  test("host and reported waits with the same raw id keep separate alert identities", async () => {
+    const { host, unload } = await loaded({
+      options: { watch: WATCH_OPTIONS },
+      permissions: {
+        [CALLER_SESSION_ID]: [{ id: "p1", action: "bash", resources: ["echo"] }],
+      },
+    })
+    try {
+      const at = host.now()
+      settle(host, at)
+      const taskID = await enroll(host)
+      let version = (await show(host)).task?.version
+      const report = async (requestId: string, kind: "begin" | "progress" | "waiting", evidence: Record<string, unknown>) => {
+        const result = await host.call("peers", {
+          action: "watch",
+          watch: { operation: "report", taskID, expectedVersion: version, reportId: requestId, kind, evidence },
+        })
+        const watch = (result.details as { watch: { ok: boolean; task?: { version: number }; failure?: unknown } }).watch
+        if (!watch.ok) throw new Error(JSON.stringify(watch.failure))
+        version = watch.task?.version
+      }
+      await report("collision-begin", "begin", {})
+      await report("collision-wait", "waiting", {
+        waitKind: "human",
+        waitFor: "reported",
+        reason: "reason",
+        reference: "ref",
+        waitID: "permission:p1",
+        waitUntil: at + 1_000,
+      })
+      await host.advance(60_000)
+      await host.advance(1_000)
+      let payload = await show(host)
+      const activeOverdue = () =>
+        (payload.alerts?.items ?? []).filter((alert) => alert.kind === "wait-overdue" && alert.resolvedAt === null)
+      expect(activeOverdue()).toHaveLength(2)
+
+      await report("collision-clear", "progress", {
+        summary: "reported wait answered",
+        reference: "reply",
+        clearsWaitID: "permission:p1",
+        clearEvidence: "report matched its own wait",
+      })
+      await host.advance(1_000)
+      payload = await show(host)
+      expect(activeOverdue()).toHaveLength(1)
+      expect(
+        payload.observation?.waits.some(
+          (wait) => wait.source === "permission" && (wait.status === "active" || wait.status === "overdue"),
+        ),
+      ).toBe(true)
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
   test("a reported wait has a deadline and only a matching clear entry removes it", async () => {
     const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
     try {
@@ -792,6 +1026,7 @@ describeWatch("unknown observation and reloads", () => {
       const payload = await show(host)
       expect(payload.observation?.state).toBe("blocked")
       expect(payload.observation?.reason).toContain("failed")
+      expect(payload.alerts?.items.map((alert) => alert.kind)).toEqual(["blocked"])
       expect(payload.alerts?.items.map((alert) => alert.kind)).not.toContain("idle")
       expectNoAgentCalls(host)
     } finally {
@@ -965,6 +1200,33 @@ describeWatch("alert persistence and availability", () => {
     }
   })
 
+  test("acknowledging an unknown alert is not-found and leaves task history unchanged", async () => {
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      const at = host.now()
+      settle(host, at)
+      const taskID = await enroll(host)
+      const before = await show(host)
+      const rpc = host.rpcs[0]
+      if (rpc === undefined) throw new Error("no RPC surface")
+      const missing = readWatchPayload(
+        await rpc.call("watch", {
+          operation: "ack",
+          sessionID: CALLER_SESSION_ID,
+          alertID: "alert-does-not-exist",
+        }),
+      )
+      expect(missing).toMatchObject({ task: null, failure: { code: "E_WATCH_NOT_FOUND" } })
+      const after = await show(host)
+      expect(after.task).toMatchObject({ taskID, version: before.task?.version })
+      expect(after.ledger.available).toBe(true)
+      expect(after.alerts?.available).toBe(true)
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
   test("pausing stops new alerts but leaves the old alert queryable", async () => {
     const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
     try {
@@ -1048,7 +1310,7 @@ describeWatch("alert persistence and availability", () => {
           }),
         ]),
       )
-      expect(payload.alerts?.items.map((alert) => alert.kind)).toContain("approval-rejected")
+      expect(payload.alerts?.items.map((alert) => alert.kind)).toEqual(["approval-rejected"])
       expect(payload.alerts?.items.map((alert) => alert.kind)).not.toContain("idle")
       expectNoAgentCalls(host)
     } finally {
@@ -1215,6 +1477,35 @@ describeWatch("alert persistence and availability", () => {
     }
   })
 
+  test("a permission vanishing without a matching reply does not resolve its overdue alert", async () => {
+    const { host, unload } = await loaded({
+      options: { watch: WATCH_OPTIONS },
+      permissions: {
+        [CALLER_SESSION_ID]: [{ id: "perm-kept", action: "bash", resources: ["echo"] }],
+      },
+    })
+    try {
+      const at = host.now()
+      settle(host, at)
+      await enroll(host)
+      await host.advance(1_000)
+      await host.advance(60_000)
+      let payload = await show(host)
+      const overdue = payload.alerts?.items.find((alert) => alert.kind === "wait-overdue")
+      expect(overdue?.resolvedAt).toBeNull()
+
+      host.setPermissions(CALLER_SESSION_ID, [])
+      await host.advance(1_000)
+      payload = await show(host)
+      expect(payload.observation?.state).toBe("unknown")
+      const stillOpen = payload.alerts?.items.find((alert) => alert.alertID === overdue?.alertID)
+      expect(stillOpen?.resolvedAt).toBeNull()
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
   test("a permission disappearing without a matching reply is unknown, not approved", async () => {
     const { host, unload } = await loaded({
       options: { watch: WATCH_OPTIONS },
@@ -1233,6 +1524,63 @@ describeWatch("alert persistence and availability", () => {
       expect(payload.observation?.state).toBe("unknown")
       expect(payload.observation?.waits.some((wait) => wait.status === "unknown")).toBe(true)
       expect(payload.alerts?.items.map((alert) => alert.kind)).not.toContain("idle")
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
+  test("a reply-read failure makes only that task unknown and keeps sampling the other", async () => {
+    const { host, unload } = await loaded({
+      options: { watch: WATCH_OPTIONS },
+      sessions: [CALLER_SESSION_ID, "ses_b"],
+      storageReadFailure: (key) => key === "v1/replies/ask-a",
+    })
+    try {
+      const at = host.now()
+      const ask: AskRecord = {
+        askID: "ask-a",
+        askerSessionID: CALLER_SESSION_ID,
+        askerInstanceID: "instance-caller",
+        askerTitle: "caller",
+        targetSessionID: "ses_b",
+        question: "q",
+        createdAt: at,
+        expiresAt: at + 60_000,
+      }
+      await host.storage.set(askKey(ask.askID), ask)
+      settle(host, at)
+      host.emit("session.created", { sessionID: "ses_b" }, at)
+      host.emit("session.execution.started", { sessionID: "ses_b" }, at)
+      host.emit("session.execution.succeeded", { sessionID: "ses_b" }, at)
+      host.setBusy("ses_b", at)
+      host.setIdle("ses_b", at)
+      await enroll(host, "task-a")
+      const rpc = host.rpcs[0]
+      if (rpc === undefined) throw new Error("no RPC surface")
+      await rpc.call("watch", {
+        operation: "enroll",
+        sessionID: "ses_b",
+        requestId: "task-b",
+        goal: "B task",
+      })
+      await host.advance(1_000)
+      let a = await show(host)
+      expect(a.observation).toMatchObject({ state: "unknown", waitsPartial: true, trusted: false })
+      expect(a.alerts?.items.map((alert) => alert.kind)).not.toContain("idle")
+      let b = readWatchPayload(await rpc.call("watch", { operation: "show", sessionID: "ses_b" }))
+      expect(b?.observation).not.toBeNull()
+      expect(b?.observation?.trusted).toBe(true)
+
+      await host.advance(1_000)
+      b = readWatchPayload(await rpc.call("watch", { operation: "show", sessionID: "ses_b" }))
+      expect(b?.observation?.state).toBe("idle-candidate")
+
+      host.setStorageReadFailure(undefined)
+      await host.advance(1_000)
+      a = await show(host)
+      expect(a.observation?.state).toBe("normal-waiting")
+      expect(a.observation?.waits.some((wait) => wait.waitID === "ask:ask-a")).toBe(true)
       expectNoAgentCalls(host)
     } finally {
       await unload()

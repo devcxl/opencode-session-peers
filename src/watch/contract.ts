@@ -325,7 +325,7 @@ const alertSchema = {
     taskID: { type: "string" },
     kind: {
       type: "string",
-      enum: ["idle", "running-silent", "wait-overdue", "observation-unknown", "approval-rejected"],
+      enum: ["idle", "blocked", "running-silent", "wait-overdue", "observation-unknown", "approval-rejected"],
     },
     state: { type: "string", enum: ["unread", "read"] },
     summary: { type: "string" },
@@ -592,6 +592,7 @@ function readAlert(value: unknown): WatchAlertView | undefined {
   const state = record["state"]
   if (
     (kind !== "idle" &&
+      kind !== "blocked" &&
       kind !== "running-silent" &&
       kind !== "wait-overdue" &&
       kind !== "observation-unknown" &&

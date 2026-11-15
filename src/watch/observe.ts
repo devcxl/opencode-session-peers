@@ -89,7 +89,6 @@ export interface WatchObserverDeps {
 export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
   const facts = new Map<SessionID, SessionFacts>()
   const observations = new Map<string, TaskObservation>()
-  const observedWaitKeys = new Map<string, Set<string>>()
   const taskVersions = new Map<string, number>()
   const sessionRevisions = new Map<string, number>()
   const everSeenSessions = new Set<string>()
@@ -371,12 +370,15 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
     const seen = new Set<string>()
     for (const task of tasks) {
       seen.add(task.taskID)
-      await sample(task, now)
+      try {
+        await sample(task, now)
+      } catch {
+        deps.warn("watch sample failed; observation remains conservative")
+      }
     }
     for (const taskID of [...observations.keys()]) {
       if (!seen.has(taskID)) {
         observations.delete(taskID)
-        observedWaitKeys.delete(taskID)
         taskVersions.delete(taskID)
       }
     }
@@ -408,7 +410,6 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
     if (!local) {
       // Never sample, resolve or retain another location's task snapshot.
       observations.delete(task.taskID)
-      observedWaitKeys.delete(task.taskID)
       return
     }
     const waits = await collectWaits(task, current, now)
@@ -444,12 +445,6 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
     if (fresh === undefined || fresh.watchState !== "active" || fresh.version !== task.version) return
     task = fresh
 
-    const previousWaitKeys = observedWaitKeys.get(task.taskID) ?? new Set<string>()
-    const currentWaitKeys = new Set(waits.items.map((wait) => wait.waitID))
-    for (const key of previousWaitKeys) {
-      if (!currentWaitKeys.has(key)) resolveConditionAlerts(task.taskID, [`wait:${key}`], now)
-    }
-    observedWaitKeys.set(task.taskID, currentWaitKeys)
     waits.items.sort((left, right) => waitPriority(left) - waitPriority(right))
     const waitsTruncated = waits.items.length > MAX_WAITS
     if (waitsTruncated) waits.partial = true
@@ -471,9 +466,10 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
     }
 
     const hasWait = visibleWaits.some((wait) => wait.status === "active" || wait.status === "overdue")
-    const blocked = visibleWaits.some((wait) => wait.status === "denied")
-    if (blocked) {
+    const denied = visibleWaits.some((wait) => wait.status === "denied")
+    if (denied) {
       upsert(task.taskID, "approval-rejected", "approval", "An approval was rejected; the task is blocked.", "Review the rejected approval in the executing session; this build cannot approve or resume it.", now)
+      resolveConditionAlerts(task.taskID, ["blocked"], now)
     } else {
       resolveConditionAlerts(task.taskID, ["approval-rejected"], now)
     }
@@ -507,17 +503,17 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
       resolveConditionAlerts(task.taskID, ["running-silent"], now)
     }
 
-    if (observed.observation.state === "blocked") {
+    if (observed.observation.state === "blocked" && !denied) {
       upsert(
         task.taskID,
-        "observation-unknown",
-        "execution-blocked",
-        "The task is blocked by a failed execution or a rejected wait; it is not a quiet idle task.",
+        "blocked",
+        "blocked",
+        "The task is blocked; it is not a quiet idle task.",
         "Inspect the executing session and the blocked evidence; this build does not resume or correct it.",
         now,
       )
     } else {
-      resolveConditionAlerts(task.taskID, ["execution-blocked"], now)
+      resolveConditionAlerts(task.taskID, ["blocked"], now)
     }
 
     if (observed.observation.state === "unknown" || observed.observation.state === "unavailable") {
@@ -544,7 +540,7 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
         upsert(
           task.taskID,
           wait.source === "permission" ? "wait-overdue" : "wait-overdue",
-          `wait:${wait.waitID}`,
+          waitAlertDedupe(wait),
           "A normal wait is overdue; the initiator is notified, not the executing session.",
           `A ${wait.source} wait has passed its expected window. Do not answer it on the target's behalf.`,
           now,
@@ -552,9 +548,10 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
       }
     }
     for (const wait of visibleWaits) {
-      if (wait.status !== "active" && wait.status !== "overdue") {
-        resolveConditionAlerts(task.taskID, [`wait:${wait.waitID}`], now)
-      }
+      const matched =
+        (wait.status === "cleared" && wait.clearEvidence !== null) ||
+        (wait.status === "denied" && wait.denyEvidence !== null)
+      if (matched) resolveConditionAlerts(task.taskID, [waitAlertDedupe(wait)], now)
     }
   }
 
@@ -931,7 +928,36 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
     for (const record of records) {
       const ask = record.value
       if (ask.targetSessionID === undefined) continue
-      const reply = await deps.replies.read(ask.askID)
+      const clearID = `ask:${ask.askID}`
+      // A previous unknown from a failed read is not evidence; recompute this
+      // ask's current state before adding anything.
+      current.clearedWaits = current.clearedWaits.filter((wait) => wait.waitID !== clearID)
+      waits.items = waits.items.filter((wait) => wait.waitID !== clearID)
+      let reply
+      try {
+        reply = await deps.replies.read(ask.askID)
+      } catch {
+        waits.partial = true
+        current.invalidatedAt = now
+        current.idleSeenAt = null
+        current.idleTicks = 0
+        const unknownWait: WatchWaitView = {
+          waitID: clearID,
+          source: "ask",
+          object: "peer ask",
+          reason: "reply record could not be read; ask wait state is unknown",
+          reference: ask.askID,
+          startedAt: ask.createdAt,
+          deadline: ask.expiresAt,
+          status: "unknown",
+          clearEvidence: null,
+          denyEvidence: null,
+        }
+        addCleared(current, unknownWait)
+        waits.items.push(unknownWait)
+        deps.warn("could not read a peer reply record; ask wait is unknown")
+        continue
+      }
       if (reply !== undefined) {
         const cleared: WatchWaitView = {
           waitID: `ask:${ask.askID}`,
@@ -1105,6 +1131,9 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
         await tick()
       } while (queued && !disposed)
     })()
+      .catch(() => {
+        deps.warn("watch tick failed; the next tick will retry")
+      })
       .finally(() => {
         ticking = false
         runningTick = undefined
@@ -1157,7 +1186,6 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
       registration?.dispose()
       registration = undefined
       observations.clear()
-      observedWaitKeys.clear()
       taskVersions.clear()
       sessionRevisions.clear()
       facts.clear()
@@ -1207,6 +1235,10 @@ function revisionEvent(type: string): boolean {
     type === "form.cancelled" ||
     type === "session.deleted"
   )
+}
+
+function waitAlertDedupe(wait: WatchWaitView): string {
+  return `wait:${wait.source}:${wait.waitID}`
 }
 
 function waitPriority(wait: WatchWaitView): number {
