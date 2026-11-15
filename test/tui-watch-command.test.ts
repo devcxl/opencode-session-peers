@@ -40,11 +40,15 @@ function capability(): WatchPayload["capability"] {
     mode: "alert",
     monitoring: "participant-reports-only",
     automaticDetection: "unavailable",
+    automaticDetectionReason: "No supported execution signal is available in this build.",
     correction: "unavailable",
     correctionReason: "Finite correction is not implemented in this build.",
     delegation: "unavailable",
+    delegationReason: "Child-task delegation is not open in this build.",
     transfer: "unavailable",
+    transferReason: "Watch ownership transfer is not implemented in this build.",
     recovery: "unavailable",
+    recoveryReason: "Resume and recovery confirmation are not implemented in this build.",
   }
 }
 
@@ -72,6 +76,8 @@ function task(overrides: Partial<Task> = {}): Task {
     generation: 1,
     ownership: "this-instance",
     participation: "seen",
+    attempts: { used: 0, limit: 3 },
+    pause: null,
     lastReport: null,
     createdAt: Date.UTC(2026, 10, 16, 4, 0, 0),
     updatedAt: Date.UTC(2026, 10, 16, 4, 30, 0),
@@ -108,11 +114,15 @@ function fakePort(options: FakeOptions = {}) {
   let shown: Parameters<TuiPort["dialog"]["show"]>[0] | undefined
   let onClose: (() => void) | undefined
   let listener: (() => void) | undefined
+  let rosterReads = 0
 
   const port: TuiPort = {
     palette: () => palette,
     roster: {
-      read: async () => ({}),
+      read: async () => {
+        rosterReads += 1
+        return {}
+      },
       onChange: () => () => {},
     },
     watch: {
@@ -163,6 +173,7 @@ function fakePort(options: FakeOptions = {}) {
     commands,
     dialogSets,
     shown: () => shown,
+    rosterReads: () => rosterReads,
     close: () => onClose?.(),
     announce: () => listener?.(),
     subscribed: () => listener !== undefined,
@@ -190,6 +201,7 @@ describe("opening /peers-watch", () => {
 
     expect(fake.reads).toEqual([{ sessionID: SELF }])
     expect(fake.calls).toEqual([])
+    expect(fake.rosterReads()).toBe(0)
     expect(fake.toasts).toEqual([])
     expect(fake.shown()).toBeDefined()
     expect(fake.dialogSets).toEqual([{ size: "xlarge", centered: true }])
@@ -340,7 +352,13 @@ describe("the panel's own controls", () => {
     const fake = fakePort({
       read: async () => current,
       call: async () => {
-        current = payload({ task: task({ watchState: "paused", version: 4 }) })
+        current = payload({
+          task: task({
+            watchState: "paused",
+            version: 4,
+            pause: { kind: "manual", reason: "paused by the user" },
+          }),
+        })
         return current
       },
     })
@@ -376,7 +394,8 @@ describe("the panel's own controls", () => {
       variant: "success",
     })
     const text = setup.captureCharFrame().replace(/[│─┌┐└┘├┤┬┴┼]+/g, " ").replace(/\s+/g, " ")
-    expect(text).toContain("paused")
+    expect(text).toContain("paused (manual)")
+    expect(text).toContain("paused by the user")
     dispose()
     setup.renderer.destroy()
   })
@@ -415,6 +434,9 @@ describe("the panel's own controls", () => {
     expect(fake.reads).toHaveLength(2)
     expect(fake.toasts[0]?.variant).toBe("error")
     expect(fake.toasts[0]?.message).toContain("E_WATCH_STALE")
+    const text = setup.captureCharFrame().replace(/[│─┌┐└┘├┤┬┴┼]+/g, " ").replace(/\s+/g, " ")
+    expect(text).toContain("Task state")
+    expect(text).not.toContain("Session watch is unavailable")
     dispose()
     setup.renderer.destroy()
   })

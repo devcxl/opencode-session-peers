@@ -30,12 +30,16 @@ function capability(
     mode: "alert",
     monitoring: "participant-reports-only",
     automaticDetection: "unavailable",
+    automaticDetectionReason: "No supported execution signal is available in this build.",
     correction: "unavailable",
     correctionReason:
       "Finite correction is not implemented in this build; this watch can only record reports.",
     delegation: "unavailable",
+    delegationReason: "Child-task delegation is not open in this build; enroll the calling session itself.",
     transfer: "unavailable",
+    transferReason: "Watch ownership transfer is not implemented in this build.",
     recovery: "unavailable",
+    recoveryReason: "Resume and recovery confirmation are not implemented in this build.",
     ...overrides,
   }
 }
@@ -64,6 +68,8 @@ function task(overrides: Partial<Task> = {}): Task {
     generation: 1,
     ownership: "this-instance",
     participation: "seen",
+    attempts: { used: 0, limit: 3 },
+    pause: null,
     lastReport: {
       reportID: "report_1",
       kind: "progress",
@@ -132,9 +138,7 @@ describe("a watched task", () => {
       "participant reports only; no automatic stall detection",
     )
     expect(valueOf(blocks, "Owner")).toBe("this plugin instance · generation 1")
-    // This build's contract has no attempts field yet. Saying so is honest;
-    // inventing 0 of 3 would claim a counter the answer did not carry.
-    expect(valueOf(blocks, "Attempts")).toBe("not reported by this server")
+    expect(valueOf(blocks, "Attempts")).toBe("0 of 3 used")
     expect(valueOf(blocks, "Protocol")).toBe("seen — a report has been recorded")
     expect(blocks.rows.map((row) => row[0]?.text)).not.toContain("idle")
   })
@@ -220,7 +224,7 @@ describe("a watched task", () => {
       }),
     )
     expect(valueOf(blocks, "Task state")).toBe("completed")
-    expect(valueOf(blocks, "Supervision")).toBe("ended")
+    expect(valueOf(blocks, "Supervision")).toBe("ended (task completed)")
     expect(valueOf(blocks, "Result")).toBe(
       "migration finished · PR 65 · 2026-11-16 05:10:00Z",
     )
@@ -269,18 +273,26 @@ describe("a watched task", () => {
       }),
     )
     expect(valueOf(blocks, "Owner")).toBe("another activation · generation 2")
+    expect(blocks.notes.join("\n")).toContain(
+      "This plugin instance did not enroll this watch; it did not inherit automatic supervision.",
+    )
   })
 
   test("shows pause without pretending the business session paused", () => {
     const blocks = content(
       state({
-        task: task({ watchState: "paused" }),
+        task: task({
+          watchState: "paused",
+          pause: { kind: "manual", reason: "paused by the user" },
+        }),
         controls: controls({ pause: control(false, "the watch is already paused") }),
       }),
     )
-    expect(valueOf(blocks, "Supervision")).toBe("paused")
+    expect(valueOf(blocks, "Supervision")).toBe("paused (manual)")
     const notes = blocks.notes.join("\n")
-    expect(notes).toContain("Supervision is paused; the business session is not paused.")
+    expect(notes).toContain(
+      "Supervision is paused (manual): paused by the user. The business session is not paused; pausing stops new reminders.",
+    )
     expect(notes).toContain("Resume is unavailable:")
     expect(notes).not.toContain("not a business success")
   })
@@ -291,7 +303,10 @@ describe("a watched task", () => {
 
     const paused = content(
       state({
-        task: task({ watchState: "paused" }),
+        task: task({
+          watchState: "paused",
+          pause: { kind: "manual", reason: "paused by the user" },
+        }),
         controls: controls({ pause: control(false, "the watch is already paused") }),
       }),
     )
@@ -310,6 +325,44 @@ describe("a watched task", () => {
       }),
     )
     expect(ended.notes.join("\n")).toContain("this watch has ended · esc: close")
+  })
+
+  test("shows a safety pause with its reason, separate from a manual pause", () => {
+    const blocks = content(
+      state({
+        task: task({
+          watchState: "paused",
+          pause: { kind: "safety", reason: "the previous plugin activation stopped" },
+        }),
+      }),
+    )
+    expect(valueOf(blocks, "Supervision")).toBe("paused (safety pause)")
+    expect(blocks.notes.join("\n")).toContain(
+      "Supervision is paused (safety pause): the previous plugin activation stopped. The business session is not paused; pausing stops new reminders.",
+    )
+  })
+
+  test("shows the attempt count the answer carries, not a local constant", () => {
+    const blocks = content(
+      state({ task: task({ attempts: { used: 2, limit: 3 } }) }),
+    )
+    expect(valueOf(blocks, "Attempts")).toBe("2 of 3 used")
+  })
+
+  test("uses the capability reasons rather than one generic unavailable line", () => {
+    const notes = content(state({ task: task() })).notes.join("\n")
+    expect(notes).toContain(
+      "Automatic detection: unavailable — No supported execution signal is available in this build.",
+    )
+    expect(notes).toContain(
+      "Correction: unavailable — Finite correction is not implemented in this build; this watch can only record reports.",
+    )
+    expect(notes).toContain(
+      "Child-task enrollment: unavailable — Child-task delegation is not open in this build; enroll the calling session itself.",
+    )
+    expect(notes).toContain(
+      "Ownership transfer and recovery: unavailable — Watch ownership transfer is not implemented in this build. / Resume and recovery confirmation are not implemented in this build.",
+    )
   })
 
   test("shortens a long goal and says so", () => {
