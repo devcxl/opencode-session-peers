@@ -42,6 +42,34 @@ export interface RosterSource {
   onChange(listener: () => void): () => void
 }
 
+/** Which watched task to read: this session's task. */
+export interface WatchReadRequest {
+  readonly sessionID: string
+  readonly taskID?: string
+}
+
+/** The one mutation the watch panel may ask for. */
+export interface WatchCallRequest {
+  readonly operation: "enroll" | "pause" | "end"
+  readonly sessionID: string
+  readonly taskID?: string
+  readonly expectedVersion?: number
+  readonly requestId?: string
+  readonly goal?: string
+  readonly targetSessionID?: string
+  readonly mode?: "alert"
+}
+
+/** The watch state, as the plugin at this location answers for it. */
+export interface WatchSource {
+  /** One read-only snapshot. Resolves with the raw answer. */
+  read(request: WatchReadRequest): Promise<unknown>
+  /** One explicit enrollment, pause or end. Resolves with the raw answer. */
+  call(request: WatchCallRequest): Promise<unknown>
+  /** Called when the plugin says a fresh snapshot would say something else. */
+  onChange(listener: () => void): () => void
+}
+
 /** How much the toast's message stands out. */
 export type ToastVariant = "info" | "success" | "warning" | "error"
 
@@ -62,6 +90,8 @@ export interface TuiCommand {
 export interface TuiPort {
   readonly palette: () => TuiPalette
   readonly roster: RosterSource
+  /** The watched task at this TUI's own location. */
+  readonly watch: WatchSource
   /** Moves the session into a scope and reports the applied one. */
   setScope(sessionID: string, scope: string): Promise<unknown>
   /** A short message in the host's toast area, for a command with no dialog. */
@@ -113,6 +143,37 @@ export function createTuiPort(context: Plugin.Context): TuiPort {
     roster: {
       read: (request) => client.roster(request, call()),
       onChange: (listener) => client.events.on("changed", () => listener()),
+    },
+
+    watch: {
+      read: (request) =>
+        client.watch(
+          {
+            operation: "show",
+            sessionID: request.sessionID,
+            ...(request.taskID === undefined ? {} : { taskID: request.taskID }),
+          },
+          call(),
+        ),
+      call: (request) =>
+        client.watch(
+          {
+            operation: request.operation,
+            sessionID: request.sessionID,
+            ...(request.taskID === undefined ? {} : { taskID: request.taskID }),
+            ...(request.expectedVersion === undefined
+              ? {}
+              : { expectedVersion: request.expectedVersion }),
+            ...(request.requestId === undefined ? {} : { requestId: request.requestId }),
+            ...(request.goal === undefined ? {} : { goal: request.goal }),
+            ...(request.targetSessionID === undefined
+              ? {}
+              : { targetSessionID: request.targetSessionID }),
+            ...(request.mode === undefined ? {} : { mode: request.mode }),
+          },
+          call(),
+        ),
+      onChange: (listener) => client.events.on("watchChanged", () => listener()),
     },
 
     setScope: (sessionID, scope) => client.setScope({ sessionID, scope }, call()),

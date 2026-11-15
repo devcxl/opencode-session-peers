@@ -17,17 +17,12 @@
  */
 
 import { createMemo, createSignal } from "solid-js"
-import { extend, useKeyboard, useTerminalDimensions } from "@opentui/solid"
-import { fg, TextTableRenderable, type TextChunk, type TextTableContent, type TextTableOptions } from "@opentui/core"
+import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
 
 import type { TuiPalette } from "../host/tui.ts"
-import type { TableCell, Tone, Viewpoint } from "./view.ts"
+import type { Tone, Viewpoint } from "./view.ts"
 import { pageOf, pageSizeFor, viewContent, type RosterState } from "./view.ts"
-
-// The plugin's JSX is created in the TUI's own @opentui/solid (the loader
-// resolves the package to it), so this is the catalogue the dialog renders
-// from. Registered once at module load, not per dialog.
-extend({ text_table: TextTableRenderable })
+import { colourFor, tableStyle } from "./table.ts"
 
 export interface RosterDialogProps {
   /** The state as it stands now; re-read whenever the feed changes it. */
@@ -125,80 +120,4 @@ function pageStep(name: string): number | undefined {
   if (name === "left" || name === "pageup") return -1
   if (name === "right" || name === "pagedown") return 1
   return undefined
-}
-
-/** One table's look; both tables share it so their columns line up. */
-function tableStyle(
-  columns: readonly TableCell[],
-  rows: readonly (readonly TableCell[])[],
-  palette: TuiPalette,
-  measuredWith: readonly (readonly TableCell[])[],
-): TextTableOptions {
-  return {
-    content: tableContent(columns, rows, palette, measuredWith),
-    width: "100%",
-    columnWidthMode: "full",
-    columnFitter: "balanced",
-    wrapMode: "word",
-    showBorders: true,
-    border: true,
-    outerBorder: true,
-    cellPaddingX: 1,
-    columnGap: 2,
-    fg: palette.base,
-    borderColor: palette.muted,
-  }
-}
-
-/** The table's content: the header row first, then one row per peer. */
-function tableContent(
-  columns: readonly TableCell[],
-  rows: readonly (readonly TableCell[])[],
-  palette: TuiPalette,
-  measuredWith: readonly (readonly TableCell[])[],
-): TextTableContent {
-  // No rows means no table at all: a header floating over nothing would claim
-  // a section the roster does not have.
-  if (rows.length === 0) return []
-  // Both tables must lay their columns out the same way, or the two sections
-  // read as two unrelated tables. They are measured against the same cells, so
-  // every column's widest cell is the same in both.
-  const widths = sharedWidths(columns, rows, measuredWith)
-  return [columns, ...rows].map((row) =>
-    row.map((cell, index) => cellChunks(padCell(cell, widths[index] ?? 0), palette)),
-  )
-}
-
-/** The widest display width of every column, across both tables. */
-function sharedWidths(
-  columns: readonly TableCell[],
-  ...groups: readonly (readonly (readonly TableCell[])[])[]
-): readonly number[] {
-  return columns.map((column, index) => {
-    let width = displayWidth(column.text)
-    for (const group of groups) {
-      for (const row of group) width = Math.max(width, displayWidth(row[index]?.text ?? ""))
-    }
-    return width
-  })
-}
-
-function padCell(cell: TableCell, width: number): TableCell {
-  const pad = width - displayWidth(cell.text)
-  return pad <= 0 ? cell : { ...cell, text: cell.text + " ".repeat(pad) }
-}
-
-function displayWidth(text: string): number {
-  return Bun.stringWidth(text)
-}
-
-function cellChunks(cell: TableCell, palette: TuiPalette): TextChunk[] {
-  return [fg(colourFor(cell.tone, palette))(cell.text)]
-}
-
-/** The one place tone becomes colour. */
-function colourFor(tone: Tone, palette: TuiPalette): TuiPalette["base"] {
-  if (tone === "muted") return palette.muted
-  if (tone === "error") return palette.error
-  return palette.base
 }
