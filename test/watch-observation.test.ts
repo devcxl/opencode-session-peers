@@ -436,6 +436,129 @@ describeWatch("normal waits", () => {
     }
   })
 
+  test("an overdue retry alert resolves on matching target activity and leaves other waits open", async () => {
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      const at = host.now()
+      settle(host, at)
+      const taskID = await enroll(host)
+      let version = (await show(host)).task?.version
+      const begin = await host.call("peers", {
+        action: "watch",
+        watch: {
+          operation: "report",
+          taskID,
+          expectedVersion: version,
+          reportId: "reported-keep-begin",
+          kind: "begin",
+          evidence: {},
+        },
+      })
+      version = (begin.details as { watch: { task: { version: number } } }).watch.task.version
+      const reported = await host.call("peers", {
+        action: "watch",
+        watch: {
+          operation: "report",
+          taskID,
+          expectedVersion: version,
+          reportId: "reported-keep",
+          kind: "waiting",
+          evidence: {
+            waitKind: "human",
+            waitFor: "kept wait",
+            reason: "stays open",
+            reference: "ref-kept",
+            waitID: "reported-keep",
+            waitUntil: at + 1_500,
+          },
+        },
+      })
+      expect((reported.details as { watch: { ok: boolean } }).watch.ok).toBe(true)
+      host.emit(
+        "session.retry.scheduled",
+        { sessionID: CALLER_SESSION_ID, attempt: 1, assistantMessageID: "msg-retry" },
+        at,
+      )
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await host.advance(60_000)
+      await host.advance(1_000)
+      let payload = await show(host)
+      expect(payload.observation?.waits.find((wait) => wait.waitID === "retry:msg-retry")).toMatchObject({
+        source: "retry",
+        status: "overdue",
+      })
+      expect(
+        payload.observation?.waits.find((wait) => wait.waitID === "reported-keep" && wait.source === "reported")
+          ?.status,
+      ).toBe("overdue")
+      const beforeIDs = (payload.alerts?.items ?? [])
+        .filter((alert) => alert.kind === "wait-overdue")
+        .map((alert) => alert.alertID)
+      expect(beforeIDs).toHaveLength(2)
+
+      host.emit("session.text.started", { sessionID: CALLER_SESSION_ID }, host.now())
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await host.advance(1_000)
+      payload = await show(host)
+      expect(payload.observation?.waits.find((wait) => wait.waitID === "retry:msg-retry")).toMatchObject({
+        source: "retry",
+        status: "cleared",
+        clearEvidence: expect.stringContaining("target text activity"),
+      })
+      expect(
+        payload.observation?.waits.find((wait) => wait.waitID === "reported-keep" && wait.source === "reported")
+          ?.status,
+      ).toBe("overdue")
+      const history = (payload.alerts?.items ?? []).filter(
+        (alert) => alert.kind === "wait-overdue" && beforeIDs.includes(alert.alertID),
+      )
+      expect(history).toHaveLength(2)
+      expect(history.filter((alert) => alert.resolvedAt === null)).toHaveLength(1)
+      expect(history.filter((alert) => alert.resolvedAt !== null)).toHaveLength(1)
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
+  test("an overdue retry alert resolves on a matching execution terminal", async () => {
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      const at = host.now()
+      settle(host, at)
+      await enroll(host)
+      host.emit(
+        "session.retry.scheduled",
+        { sessionID: CALLER_SESSION_ID, attempt: 2, assistantMessageID: "msg-terminal" },
+        at,
+      )
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await host.advance(60_000)
+      await host.advance(1_000)
+      let payload = await show(host)
+      const alert = payload.alerts?.items.find((candidate) => candidate.kind === "wait-overdue")
+      expect(alert?.resolvedAt).toBeNull()
+      expect(payload.observation?.waits.find((wait) => wait.waitID === "retry:msg-terminal")?.status).toBe(
+        "overdue",
+      )
+
+      host.emit("session.execution.succeeded", { sessionID: CALLER_SESSION_ID }, host.now())
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await host.advance(1_000)
+      payload = await show(host)
+      expect(payload.observation?.waits.find((wait) => wait.waitID === "retry:msg-terminal")).toMatchObject({
+        source: "retry",
+        status: "cleared",
+        clearEvidence: expect.stringContaining("execution succeeded"),
+      })
+      expect(payload.alerts?.items.find((candidate) => candidate.alertID === alert?.alertID)?.resolvedAt).toBeNumber()
+      expect(payload.task?.completedAt).toBeNull()
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
   test("a form response clears only the matching form wait", async () => {
     const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
     try {
@@ -1714,7 +1837,7 @@ describeWatch("alert persistence and availability", () => {
         targetSessionID: "ses_b",
         question: "q",
         createdAt: at,
-        expiresAt: at + 60_000,
+        expiresAt: at + 3_600_000,
       }
       await host.storage.set(askKey(ask.askID), ask)
       settle(host, at)
@@ -1755,6 +1878,91 @@ describeWatch("alert persistence and availability", () => {
     }
   })
 
+  test("a replied ask keeps a reported wait with the same raw id visible and overdue", async () => {
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      const at = host.now()
+      const ask: AskRecord = {
+        askID: "ask-collision",
+        askerSessionID: CALLER_SESSION_ID,
+        askerInstanceID: "instance-caller",
+        askerTitle: "caller",
+        targetSessionID: "ses_target",
+        question: "q",
+        createdAt: at,
+        expiresAt: at + 3_600_000,
+      }
+      await host.storage.set(askKey(ask.askID), ask)
+      settle(host, at)
+      const taskID = await enroll(host)
+      let version = (await show(host)).task?.version
+      const begin = await host.call("peers", {
+        action: "watch",
+        watch: {
+          operation: "report",
+          taskID,
+          expectedVersion: version,
+          reportId: "reported-collision-begin",
+          kind: "begin",
+          evidence: {},
+        },
+      })
+      version = (begin.details as { watch: { task: { version: number } } }).watch.task.version
+      const reported = await host.call("peers", {
+        action: "watch",
+        watch: {
+          operation: "report",
+          taskID,
+          expectedVersion: version,
+          reportId: "reported-collision",
+          kind: "waiting",
+          evidence: {
+            waitKind: "human",
+            waitFor: "same raw id",
+            reason: "reported wait",
+            reference: "ref-collision",
+            waitID: "ask:ask-collision",
+            waitUntil: at + 1_500,
+          },
+        },
+      })
+      expect((reported.details as { watch: { ok: boolean } }).watch.ok).toBe(true)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await host.advance(60_000)
+      await host.advance(1_000)
+      let payload = await show(host)
+      const alertID = payload.alerts?.items.find((alert) => alert.kind === "wait-overdue")?.alertID
+      expect(alertID).toBeString()
+      expect(
+        payload.observation?.waits.find(
+          (wait) => wait.waitID === "ask:ask-collision" && wait.source === "reported",
+        )?.status,
+      ).toBe("overdue")
+
+      await host.storage.set("v1/replies/ask-collision", {
+        askID: "ask-collision",
+        fromSessionID: "ses_target",
+        fromTitle: "target",
+        text: "answer",
+      })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await host.advance(1_000)
+      payload = await show(host)
+      expect(
+        payload.observation?.waits.filter((wait) => wait.waitID === "ask:ask-collision"),
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ source: "ask", status: "cleared" }),
+          expect.objectContaining({ source: "reported", status: "overdue" }),
+        ]),
+      )
+      expect(payload.alerts?.items.find((alert) => alert.alertID === alertID)?.resolvedAt).toBeNull()
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
   test("a repeated reply for the same ask produces one cleared wait DTO", async () => {
     const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
     try {
@@ -1767,7 +1975,7 @@ describeWatch("alert persistence and availability", () => {
         targetSessionID: "ses_target",
         question: "q",
         createdAt: at,
-        expiresAt: at + 60_000,
+        expiresAt: at + 3_600_000,
       }
       await host.storage.set(askKey(ask.askID), ask)
       await host.storage.set("v1/replies/ask-repeat", {
