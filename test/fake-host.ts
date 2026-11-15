@@ -136,6 +136,8 @@ export interface FakeHostOptions {
   readonly permissionDelayMs?: number
   /** Make selected storage keys fail on read, for an observer wait-source failure. */
   readonly storageReadFailure?: (key: string) => boolean
+  /** App version the fake context reports. */
+  readonly appVersion?: string
   /** Initial controlled clock. */
   readonly now?: number
 }
@@ -260,6 +262,7 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
 
   const context = {
     options: options.options ?? {},
+    app: { name: "opencode", version: options.appVersion ?? "2.3.0", channel: "stable" },
     location: { directory: location, project: { id: "proj_fake" } },
     session: {
       get: async (input: { readonly sessionID: string }) => {

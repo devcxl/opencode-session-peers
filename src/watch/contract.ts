@@ -39,6 +39,13 @@ import type {
 export interface WatchLedgerView {
   readonly available: boolean
   readonly reason: string | null
+  readonly sqliteVersion: string | null
+  readonly journalMode: string | null
+  readonly synchronous: number | null
+  readonly busyTimeoutMs: number | null
+  readonly appVersion: string | null
+  readonly platform: string | null
+  readonly arch: string | null
 }
 
 export interface WatchFailureView {
@@ -176,6 +183,15 @@ const correctionAttemptSchema = {
     rejectedAt: { type: ["integer", "null"], minimum: 0 },
     unknownAt: { type: ["integer", "null"], minimum: 0 },
     abortedAt: { type: ["integer", "null"], minimum: 0 },
+    seen: {
+      type: ["object", "null"],
+      additionalProperties: false,
+      properties: {
+        at: { type: "integer", minimum: 0 },
+        reason: { type: ["string", "null"] },
+      },
+      required: ["at", "reason"],
+    },
     receipt: { ...correctionReceiptSchema, type: ["object", "null"] },
     recovery: { ...correctionRecoverySchema, type: ["object", "null"] },
     stopReason: {
@@ -198,6 +214,7 @@ const correctionAttemptSchema = {
         "recovered",
         "runtime-unsupported",
         "single-host-unconfirmed",
+        "owner-mismatch",
         "cross-location",
         "protocol-unseen",
         "task-paused",
@@ -221,6 +238,7 @@ const correctionAttemptSchema = {
     "rejectedAt",
     "unknownAt",
     "abortedAt",
+    "seen",
     "receipt",
     "recovery",
     "stopReason",
@@ -251,8 +269,10 @@ const correctionGateSchema = {
     },
     ok: { type: "boolean" },
     reason: { type: ["string", "null"] },
+    observed: { type: ["string", "null"] },
+    required: { type: ["string", "null"] },
   },
-  required: ["gate", "ok", "reason"],
+  required: ["gate", "ok", "reason", "observed", "required"],
 } as const
 
 const correctionStopSchema = {
@@ -425,8 +445,25 @@ const ledgerSchema = {
   properties: {
     available: { type: "boolean" },
     reason: { type: ["string", "null"] },
+    sqliteVersion: { type: ["string", "null"] },
+    journalMode: { type: ["string", "null"] },
+    synchronous: { type: ["integer", "null"] },
+    busyTimeoutMs: { type: ["integer", "null"] },
+    appVersion: { type: ["string", "null"] },
+    platform: { type: ["string", "null"] },
+    arch: { type: ["string", "null"] },
   },
-  required: ["available", "reason"],
+  required: [
+    "available",
+    "reason",
+    "sqliteVersion",
+    "journalMode",
+    "synchronous",
+    "busyTimeoutMs",
+    "appVersion",
+    "platform",
+    "arch",
+  ],
 } as const
 
 const failureSchema = {
@@ -610,6 +647,103 @@ export const watchRpcMethod = {
     required: ["enabled", "ledger", "task", "capability", "controls", "observation", "activity", "alerts", "failure"],
   },
 } as const
+
+export interface WatchGrantChallengeView {
+  readonly challenge: string
+  readonly taskID: string
+  readonly expectedVersion: number
+  readonly generation: number
+  readonly termsDigest: string
+  readonly reviewSummary: string
+  readonly expiresAt: number
+}
+
+export interface WatchGrantPayload {
+  readonly ok: boolean
+  /** Present only in the prepare response; never in the normal task snapshot. */
+  readonly challenge: WatchGrantChallengeView | null
+  readonly task: WatchTaskView | null
+  readonly capability: WatchCapability
+  readonly controls: WatchControls
+  readonly failure: WatchFailureView | null
+}
+
+const grantChallengeSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    challenge: { type: "string", minLength: 1 },
+    taskID: { type: "string", minLength: 1 },
+    expectedVersion: { type: "integer", minimum: 1 },
+    generation: { type: "integer", minimum: 1 },
+    termsDigest: { type: "string", minLength: 1 },
+    reviewSummary: { type: "string" },
+    expiresAt: { type: "integer", minimum: 0 },
+  },
+  required: ["challenge", "taskID", "expectedVersion", "generation", "termsDigest", "reviewSummary", "expiresAt"],
+} as const
+
+export const watchGrantRpcMethod = {
+  input: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      operation: { type: "string", enum: ["prepare", "confirm", "downgrade"] },
+      sessionID: { type: "string", minLength: 1 },
+      taskID: { type: "string", minLength: 1 },
+      expectedVersion: { type: "integer", minimum: 1 },
+      challenge: { type: "string", minLength: 1 },
+      generation: { type: "integer", minimum: 1 },
+      termsDigest: { type: "string", minLength: 1 },
+    },
+    required: ["operation", "sessionID", "taskID", "expectedVersion"],
+  },
+  output: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      ok: { type: "boolean" },
+      challenge: { ...grantChallengeSchema, type: ["object", "null"] },
+      task: { ...watchTaskSchema, type: ["object", "null"] },
+      capability: capabilitySchema,
+      controls: controlsSchema,
+      failure: { ...failureSchema, type: ["object", "null"] },
+    },
+    required: ["ok", "challenge", "task", "capability", "controls", "failure"],
+  },
+} as const
+
+export function readWatchGrantPayload(value: unknown): WatchGrantPayload | undefined {
+  const record = asRecord(value)
+  if (record === undefined) return undefined
+  const ok = record["ok"]
+  const challenge = record["challenge"] === null ? null : readGrantChallenge(record["challenge"])
+  const task = record["task"] === null ? null : readTask(record["task"])
+  const capability = readCapability(record["capability"])
+  const controls = readControls(record["controls"])
+  const failure = record["failure"] === null ? null : readFailure(record["failure"])
+  if (typeof ok !== "boolean" || challenge === undefined || task === undefined) return undefined
+  if (capability === undefined || controls === undefined || failure === undefined) return undefined
+  return { ok, challenge, task, capability, controls, failure }
+}
+
+function readGrantChallenge(value: unknown): WatchGrantChallengeView | undefined {
+  const record = asRecord(value)
+  if (record === undefined) return undefined
+  const challenge = record["challenge"]
+  const taskID = record["taskID"]
+  const expectedVersion = record["expectedVersion"]
+  const generation = record["generation"]
+  const termsDigest = record["termsDigest"]
+  const reviewSummary = record["reviewSummary"]
+  const expiresAt = record["expiresAt"]
+  if (typeof challenge !== "string" || typeof taskID !== "string") return undefined
+  if (!isPositiveInteger(expectedVersion) || !isPositiveInteger(generation)) return undefined
+  if (typeof termsDigest !== "string" || typeof reviewSummary !== "string" || !isTimestamp(expiresAt)) {
+    return undefined
+  }
+  return { challenge, taskID, expectedVersion, generation, termsDigest, reviewSummary, expiresAt }
+}
 
 export const watchChangedEvent = {
   schema: {
@@ -867,8 +1001,18 @@ function readLedger(value: unknown): WatchLedgerView | undefined {
   if (record === undefined) return undefined
   const available = record["available"]
   const reason = record["reason"]
+  const sqliteVersion = record["sqliteVersion"]
+  const journalMode = record["journalMode"]
+  const synchronous = record["synchronous"]
+  const busyTimeoutMs = record["busyTimeoutMs"]
+  const appVersion = record["appVersion"]
+  const platform = record["platform"]
+  const arch = record["arch"]
   if (typeof available !== "boolean" || !isStringOrNull(reason)) return undefined
-  return { available, reason }
+  if (!isStringOrNull(sqliteVersion) || !isStringOrNull(journalMode)) return undefined
+  if (!isNumberOrNull(synchronous) || !isNumberOrNull(busyTimeoutMs)) return undefined
+  if (!isStringOrNull(appVersion) || !isStringOrNull(platform) || !isStringOrNull(arch)) return undefined
+  return { available, reason, sqliteVersion, journalMode, synchronous, busyTimeoutMs, appVersion, platform, arch }
 }
 
 function readTask(value: unknown): WatchTaskView | undefined {
@@ -1030,6 +1174,7 @@ function readCorrectionAttempt(value: unknown): WatchCorrectionAttemptView | und
   const rejectedAt = record["rejectedAt"]
   const unknownAt = record["unknownAt"]
   const abortedAt = record["abortedAt"]
+  const seen = record["seen"] === null ? null : readCorrectionSeen(record["seen"])
   const receipt = record["receipt"] === null ? null : readCorrectionReceipt(record["receipt"])
   const recovery = record["recovery"] === null ? null : readCorrectionRecovery(record["recovery"])
   const stopReason = record["stopReason"] === null ? null : record["stopReason"]
@@ -1039,7 +1184,7 @@ function readCorrectionAttempt(value: unknown): WatchCorrectionAttemptView | und
   if (!isTimestamp(reservedAt)) return undefined
   if (!isTimestampOrNull(claimedAt) || !isTimestampOrNull(acceptedAt) || !isTimestampOrNull(rejectedAt)) return undefined
   if (!isTimestampOrNull(unknownAt) || !isTimestampOrNull(abortedAt)) return undefined
-  if (receipt === undefined || recovery === undefined) return undefined
+  if (seen === undefined || receipt === undefined || recovery === undefined) return undefined
   if (stopReason !== null && !isCorrectionStopReason(stopReason)) return undefined
   return {
     attemptID,
@@ -1051,10 +1196,22 @@ function readCorrectionAttempt(value: unknown): WatchCorrectionAttemptView | und
     rejectedAt,
     unknownAt,
     abortedAt,
+    seen,
     receipt,
     recovery,
     stopReason,
   }
+}
+
+function readCorrectionSeen(
+  value: unknown,
+): { readonly at: number; readonly reason: string | null } | undefined {
+  const record = asRecord(value)
+  if (record === undefined) return undefined
+  const at = record["at"]
+  const reason = record["reason"]
+  if (!isTimestamp(at) || !isStringOrNull(reason)) return undefined
+  return { at, reason }
 }
 
 function readCorrectionReceipt(value: unknown): WatchCorrectionReceiptView | undefined {
@@ -1097,8 +1254,11 @@ function readCorrectionGate(value: unknown): WatchCorrectionGateView | undefined
   const gate = record["gate"]
   const ok = record["ok"]
   const reason = record["reason"]
+  const observed = record["observed"]
+  const required = record["required"]
   if (!isCorrectionGate(gate) || typeof ok !== "boolean" || !isStringOrNull(reason)) return undefined
-  return { gate, ok, reason }
+  if (!isStringOrNull(observed) || !isStringOrNull(required)) return undefined
+  return { gate, ok, reason, observed, required }
 }
 
 function readCorrectionControls(value: unknown): { readonly grant: WatchControl; readonly downgrade: WatchControl } | undefined {
@@ -1203,6 +1363,7 @@ function isCorrectionStopReason(value: unknown): value is WatchCorrectionStopRea
     value === "recovered" ||
     value === "runtime-unsupported" ||
     value === "single-host-unconfirmed" ||
+    value === "owner-mismatch" ||
     value === "cross-location" ||
     value === "protocol-unseen" ||
     value === "task-paused" ||

@@ -160,6 +160,7 @@ async function worker(
   version: number,
   generation: number,
   reservationId: string,
+  at: number,
   killAfter?: "reserve" | "claim",
 ): Promise<WorkerResult> {
   const child = Bun.spawn({
@@ -174,6 +175,7 @@ async function worker(
       String(version),
       String(generation),
       reservationId,
+      String(at),
       ...(killAfter === undefined ? [] : [killAfter]),
     ],
     stdout: "pipe",
@@ -186,6 +188,27 @@ async function worker(
     return { ok: false, code: "worker_exit", detail: `exit ${exitCode}: ${error}` }
   }
   return JSON.parse(output) as WorkerResult
+}
+
+function claimCorrelation(
+  ledger: WatchLedger,
+  taskID: string,
+  reservationID: string,
+  version: number,
+  generation: number,
+  clock: Clock,
+  owner = "activation-a",
+): string {
+  const claimed = ledger.claimCorrection({
+    taskId: taskID,
+    reservationId: reservationID,
+    ownerActivation: owner,
+    expectedVersion: version,
+    generation,
+    at: clock.value,
+  })
+  if (!claimed.ok) throw new Error(`${claimed.code}: ${claimed.detail}`)
+  return claimed.value.correlation
 }
 
 function attemptOf(result: ReturnType<WatchLedger["correction"]>): readonly WatchCorrectionAttemptRecord[] {
@@ -309,6 +332,69 @@ describeCorrection("correction ledger", () => {
     }
   })
 
+  test("an old reservation cannot be revived by downgrade, regrant or a newer task version", () => {
+    const clock = { value: 1_000 }
+    const ledger = open(clock)
+    try {
+      let task = enroll(ledger)
+      task = grant(ledger, task.taskID, task.version, clock).task
+      const reserved = reserve(ledger, task.taskID, task.version, task.generation, "res-old-grant", clock)
+      if (!reserved.ok) return
+      const current = ledger.show({ taskID: task.taskID, sessionID: "ses_a" })
+      if (!current.ok || current.value === null) throw new Error("task missing")
+      const downgraded = ledger.downgradeCorrection({
+        taskId: task.taskID,
+        callerSessionId: "ses_a",
+        ownerActivation: "activation-a",
+        expectedVersion: current.value.version,
+        at: clock.value,
+      })
+      expect(downgraded.ok).toBe(true)
+      const latest = ledger.show({ taskID: task.taskID, sessionID: "ses_a" })
+      if (!latest.ok || latest.value === null) throw new Error("task missing")
+      const afterDowngrade = ledger.claimCorrection({
+        taskId: task.taskID,
+        reservationId: "res-old-grant",
+        ownerActivation: "activation-a",
+        expectedVersion: latest.value.version,
+        generation: task.generation,
+        at: clock.value,
+      })
+      expect(afterDowngrade).toMatchObject({ ok: false, code: "not_active" })
+
+      clock.value += 10
+      const regranted = grant(ledger, task.taskID, latest.value.version, clock)
+      task = regranted.task
+      const afterRegrant = ledger.claimCorrection({
+        taskId: task.taskID,
+        reservationId: "res-old-grant",
+        ownerActivation: "activation-a",
+        expectedVersion: task.version,
+        generation: task.generation,
+        at: clock.value,
+      })
+      expect(afterRegrant).toMatchObject({ ok: false })
+      expect(attemptOf(ledger.correction(task.taskID))).toHaveLength(1)
+      expect(attemptOf(ledger.correction(task.taskID))[0]).toMatchObject({ phase: "reserved" })
+    } finally {
+      ledger.close()
+    }
+  })
+
+  test("the runtime version seam can only tighten the embedded SQLite gate", () => {
+    const directory = mkdtempSync(join(tmpdir(), "session-peers-correction-sqlite-"))
+    scratch.push(directory)
+    const path = join(directory, "watch-ledger.sqlite3")
+    const higher = openWatchLedger({ path, sqliteVersion: "9.9.9" })
+    expect(higher.ok).toBe(true)
+    if (higher.ok) {
+      expect(higher.ledger.sqliteVersion).not.toBe("9.9.9")
+      higher.ledger.close()
+    }
+    const stricter = openWatchLedger({ path, sqliteVersion: "3.50.0" })
+    expect(stricter).toMatchObject({ ok: false, code: "unsafe_sqlite" })
+  })
+
   test("a first receipt issues one permit before acceptance and duplicates never issue another", () => {
     const clock = { value: 1_000 }
     const ledger = open(clock)
@@ -317,21 +403,13 @@ describeCorrection("correction ledger", () => {
       task = grant(ledger, task.taskID, task.version, clock).task
       const reserved = reserve(ledger, task.taskID, task.version, task.generation, "res-receipt", clock)
       if (!reserved.ok) throw new Error(reserved.code)
-      ledger.claimCorrection({
-        taskId: task.taskID,
-        reservationId: "res-receipt",
-        ownerActivation: "activation-a",
-        expectedVersion: reserved.value.task.version,
-        generation: task.generation,
-        at: clock.value,
-      })
+      const correlation = claimCorrelation(ledger, task.taskID, "res-receipt", reserved.value.task.version, task.generation, clock)
       clock.value += 10
       const receipt = ledger.recordCorrectionReceipt({
         taskId: task.taskID,
         reservationId: "res-receipt",
         callerSessionId: "ses_a",
-        receiptId: "receipt-1",
-        generation: task.generation,
+        correlation,
         at: clock.value,
       })
       expect(receipt).toMatchObject({
@@ -342,8 +420,7 @@ describeCorrection("correction ledger", () => {
         taskId: task.taskID,
         reservationId: "res-receipt",
         callerSessionId: "ses_a",
-        receiptId: "receipt-1",
-        generation: task.generation,
+        correlation,
         at: clock.value,
       })
       expect(duplicate).toMatchObject({ ok: true, value: { continuePermit: false, duplicate: true } })
@@ -351,8 +428,7 @@ describeCorrection("correction ledger", () => {
         taskId: task.taskID,
         reservationId: "res-receipt",
         callerSessionId: "ses_a",
-        receiptId: "receipt-2",
-        generation: task.generation,
+        correlation: "caller-chosen-token",
         at: clock.value,
       })
       expect(different).toMatchObject({ ok: false, code: "receipt_conflict" })
@@ -360,8 +436,7 @@ describeCorrection("correction ledger", () => {
         taskId: task.taskID,
         reservationId: "res-receipt",
         callerSessionId: "ses_elsewhere",
-        receiptId: "receipt-3",
-        generation: task.generation,
+        correlation,
         at: clock.value,
       })
       expect(wrongCaller).toMatchObject({ ok: false, code: "caller_mismatch" })
@@ -380,48 +455,86 @@ describeCorrection("correction ledger", () => {
     }
   })
 
-  test("a stale-generation receipt is recorded as seen without a continue permit", () => {
+  test("a downgraded grant records the seen receipt without a permit", () => {
     const clock = { value: 1_000 }
     const ledger = open(clock)
     try {
       let task = enroll(ledger)
       task = grant(ledger, task.taskID, task.version, clock).task
-      const reserved = reserve(ledger, task.taskID, task.version, task.generation, "res-stale-receipt", clock)
+      const reserved = reserve(ledger, task.taskID, task.version, task.generation, "res-downgraded", clock)
       if (!reserved.ok) return
-      ledger.claimCorrection({
+      const correlation = claimCorrelation(
+        ledger,
+        task.taskID,
+        "res-downgraded",
+        reserved.value.task.version,
+        task.generation,
+        clock,
+      )
+      const current = ledger.show({ taskID: task.taskID, sessionID: "ses_a" })
+      if (!current.ok || current.value === null) throw new Error("task missing")
+      const downgraded = ledger.downgradeCorrection({
         taskId: task.taskID,
-        reservationId: "res-stale-receipt",
+        callerSessionId: "ses_a",
         ownerActivation: "activation-a",
-        expectedVersion: reserved.value.task.version,
-        generation: task.generation,
+        expectedVersion: current.value.version,
         at: clock.value,
       })
-      const stale = ledger.recordCorrectionReceipt({
+      expect(downgraded.ok).toBe(true)
+      const receipt = ledger.recordCorrectionReceipt({
         taskId: task.taskID,
-        reservationId: "res-stale-receipt",
+        reservationId: "res-downgraded",
         callerSessionId: "ses_a",
-        receiptId: "receipt-stale",
-        generation: task.generation + 1,
+        correlation,
         at: clock.value,
       })
-      expect(stale).toMatchObject({
+      expect(receipt).toMatchObject({
         ok: true,
-        value: { continuePermit: false, duplicate: false, attempt: { phase: "receipted" } },
+        value: { continuePermit: false, duplicate: false, seen: true, refusalReason: "grant-changed" },
       })
-      if (stale.ok) {
-        expect(stale.value.attempt.receiptPermitAt).toBeUndefined()
-        expect(stale.value.attempt.receiptRefusalReason).toBe("stale-generation")
+      if (receipt.ok) {
+        expect(receipt.value.attempt.phase).toBe("receipted")
+        expect(receipt.value.attempt.receiptPermitAt).toBeUndefined()
+        expect(receipt.value.attempt.lastSeenReason).toBe("grant-changed")
       }
-      const recovery = ledger.recordCorrectionRecovery({
+    } finally {
+      ledger.close()
+    }
+  })
+
+  test("a caller-chosen receipt token cannot unlock the reservation", () => {
+    const clock = { value: 1_000 }
+    const ledger = open(clock)
+    try {
+      let task = enroll(ledger)
+      task = grant(ledger, task.taskID, task.version, clock).task
+      const reserved = reserve(ledger, task.taskID, task.version, task.generation, "res-token", clock)
+      if (!reserved.ok) return
+      const correlation = claimCorrelation(
+        ledger,
+        task.taskID,
+        "res-token",
+        reserved.value.task.version,
+        task.generation,
+        clock,
+      )
+      const forged = ledger.recordCorrectionReceipt({
         taskId: task.taskID,
-        reservationId: "res-stale-receipt",
+        reservationId: "res-token",
         callerSessionId: "ses_a",
-        progressReportId: "report-stale",
-        resultReference: "result-stale",
-        generation: task.generation,
+        correlation: "forged-token",
         at: clock.value,
       })
-      expect(recovery).toMatchObject({ ok: false, code: "recovery_evidence_missing" })
+      expect(forged).toMatchObject({ ok: false, code: "receipt_conflict" })
+      expect(attemptOf(ledger.correction(task.taskID))[0]).toMatchObject({ phase: "sending" })
+      const correct = ledger.recordCorrectionReceipt({
+        taskId: task.taskID,
+        reservationId: "res-token",
+        callerSessionId: "ses_a",
+        correlation,
+        at: clock.value,
+      })
+      expect(correct).toMatchObject({ ok: true, value: { continuePermit: true, duplicate: false } })
     } finally {
       ledger.close()
     }
@@ -489,14 +602,14 @@ describeCorrection("correction ledger", () => {
       task = grant(ledger, task.taskID, task.version, clock).task
       const reserved = reserve(ledger, task.taskID, task.version, task.generation, "res-recover", clock)
       if (!reserved.ok) return
-      ledger.claimCorrection({
-        taskId: task.taskID,
-        reservationId: "res-recover",
-        ownerActivation: "activation-a",
-        expectedVersion: reserved.value.task.version,
-        generation: task.generation,
-        at: clock.value,
-      })
+      const correlation = claimCorrelation(
+        ledger,
+        task.taskID,
+        "res-recover",
+        reserved.value.task.version,
+        task.generation,
+        clock,
+      )
       const noReceipt = ledger.recordCorrectionRecovery({
         taskId: task.taskID,
         reservationId: "res-recover",
@@ -513,8 +626,7 @@ describeCorrection("correction ledger", () => {
         taskId: task.taskID,
         reservationId: "res-recover",
         callerSessionId: "ses_a",
-        receiptId: "receipt-recover",
-        generation: task.generation,
+        correlation,
         at: clock.value,
       })
       clock.value += 10
@@ -544,6 +656,91 @@ describeCorrection("correction ledger", () => {
     }
   })
 
+  test("recovery rejects a result reference that was already reported", () => {
+    const clock = { value: 1_000 }
+    const ledger = open(clock)
+    try {
+      let task = enroll(ledger)
+      task = grant(ledger, task.taskID, task.version, clock).task
+      const reserved = reserve(ledger, task.taskID, task.version, task.generation, "res-old-result", clock)
+      if (!reserved.ok) return
+      const correlation = claimCorrelation(
+        ledger,
+        task.taskID,
+        "res-old-result",
+        reserved.value.task.version,
+        task.generation,
+        clock,
+      )
+      const versionNow = () => {
+        const shown = ledger.show({ taskID: task.taskID, sessionID: "ses_a" })
+        if (!shown.ok || shown.value === null) throw new Error("task missing")
+        return shown.value.version
+      }
+      clock.value += 1
+      const old = ledger.report({
+        taskId: task.taskID,
+        callerSessionId: "ses_a",
+        expectedVersion: versionNow(),
+        reportId: "old-result-report",
+        kind: "progress",
+        evidence: { summary: "old checkpoint", reference: "old-result" },
+      })
+      expect(old.ok).toBe(true)
+      clock.value += 1
+      const receipt = ledger.recordCorrectionReceipt({
+        taskId: task.taskID,
+        reservationId: "res-old-result",
+        callerSessionId: "ses_a",
+        correlation,
+        at: clock.value,
+      })
+      expect(receipt).toMatchObject({ ok: true, value: { continuePermit: true } })
+      clock.value += 1
+      const repeated = ledger.report({
+        taskId: task.taskID,
+        callerSessionId: "ses_a",
+        expectedVersion: versionNow(),
+        reportId: "repeated-old-result",
+        kind: "progress",
+        evidence: { summary: "same checkpoint again", reference: "old-result" },
+      })
+      expect(repeated.ok).toBe(true)
+      const rejected = ledger.recordCorrectionRecovery({
+        taskId: task.taskID,
+        reservationId: "res-old-result",
+        callerSessionId: "ses_a",
+        progressReportId: "repeated-old-result",
+        resultReference: "old-result",
+        generation: task.generation,
+        at: clock.value,
+      })
+      expect(rejected).toMatchObject({ ok: false, code: "recovery_evidence_missing" })
+      clock.value += 1
+      const fresh = ledger.report({
+        taskId: task.taskID,
+        callerSessionId: "ses_a",
+        expectedVersion: versionNow(),
+        reportId: "fresh-result-report",
+        kind: "progress",
+        evidence: { summary: "new checkpoint", reference: "new-result" },
+      })
+      expect(fresh.ok).toBe(true)
+      const recovered = ledger.recordCorrectionRecovery({
+        taskId: task.taskID,
+        reservationId: "res-old-result",
+        callerSessionId: "ses_a",
+        progressReportId: "fresh-result-report",
+        resultReference: "new-result",
+        generation: task.generation,
+        at: clock.value,
+      })
+      expect(recovered).toMatchObject({ ok: true, value: { recovered: true } })
+    } finally {
+      ledger.close()
+    }
+  })
+
   test("an unresolved old attempt blocks a replacement task for the same session", () => {
     const clock = { value: 1_000 }
     const ledger = open(clock)
@@ -552,14 +749,14 @@ describeCorrection("correction ledger", () => {
       first = grant(ledger, first.taskID, first.version, clock).task
       const reserved = reserve(ledger, first.taskID, first.version, first.generation, "res-old", clock)
       if (!reserved.ok) return
-      ledger.claimCorrection({
-        taskId: first.taskID,
-        reservationId: "res-old",
-        ownerActivation: "activation-a",
-        expectedVersion: reserved.value.task.version,
-        generation: first.generation,
-        at: clock.value,
-      })
+      const correlation = claimCorrelation(
+        ledger,
+        first.taskID,
+        "res-old",
+        reserved.value.task.version,
+        first.generation,
+        clock,
+      )
       ledger.recordCorrectionOutcome({
         taskId: first.taskID,
         reservationId: "res-old",
@@ -585,8 +782,7 @@ describeCorrection("correction ledger", () => {
         taskId: first.taskID,
         reservationId: "res-old",
         callerSessionId: "ses_a",
-        receiptId: "receipt-old",
-        generation: first.generation,
+        correlation,
         at: clock.value,
       })
       const allowed = reserve(ledger, second.taskID, second.version, second.generation, "res-new", clock)
@@ -616,6 +812,7 @@ describeCorrection("correction ledger", () => {
             task.version,
             task.generation,
             `race-${index}`,
+            clock.value,
           ),
         ),
       )
@@ -651,6 +848,7 @@ describeCorrection("correction ledger", () => {
               task.version,
               task.generation,
               `${prefix}-${index}`,
+              clock.value,
             ),
           ),
         )
@@ -692,6 +890,7 @@ describeCorrection("correction ledger", () => {
             task.version,
             task.generation,
             `limit-4-${index}`,
+            clock.value,
           ),
         ),
       )
@@ -723,6 +922,7 @@ describeCorrection("correction ledger", () => {
         reserved.value.task.version,
         task.generation,
         "res-kill",
+        clock.value,
         "claim",
       )
       expect(killed.ok).toBe(true)

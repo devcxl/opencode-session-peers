@@ -64,11 +64,11 @@ const BETA = { id: "ses_bbbb2222", title: "Docs site" }
 const SIBLING = { id: "ses_ssss1111", title: "Sibling work" }
 
 describe("the registered surface", () => {
-  test("is versioned, and answers one method", async () => {
+  test("is versioned, and answers its bounded methods", async () => {
     const { host, unload } = await loaded()
     expect(host.rpcs).toHaveLength(1)
     expect(host.rpcs[0]?.id).toBe(SESSION_PEERS_RPC_ID)
-    expect(host.rpcs[0]?.methods).toEqual(["roster", "setScope", "watch"])
+    expect(host.rpcs[0]?.methods).toEqual(["roster", "setScope", "watch", "watchGrant"])
     await unload()
   })
 

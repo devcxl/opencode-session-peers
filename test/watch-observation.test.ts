@@ -19,7 +19,7 @@ import { Database } from "bun:sqlite"
 import plugin from "../src/index.ts"
 import { WATCH_STATE_DIR_ENV } from "../src/host/watch.ts"
 import { openWatchLedger } from "../src/watch/ledger.ts"
-import { readWatchPayload, type WatchPayload } from "../src/rpc.ts"
+import { readWatchGrantPayload, readWatchPayload, type WatchPayload } from "../src/rpc.ts"
 import { CALLER_SESSION_ID, fakeHost, type FakeHost, type FakeHostOptions } from "./fake-host.ts"
 
 const runtimeVersion = (() => {
@@ -134,6 +134,16 @@ describeWatch("trusted idle and running observation", () => {
         businessCompleted: false,
         controls: { grant: { enabled: false }, downgrade: { enabled: false } },
       })
+      expect(payload.ledger).toMatchObject({
+        available: true,
+        journalMode: "wal",
+        synchronous: 2,
+        busyTimeoutMs: 500,
+        appVersion: "2.3.0",
+        platform: process.platform,
+        arch: process.arch,
+      })
+      expect(payload.ledger.sqliteVersion).toMatch(/^3\./)
       expect(JSON.stringify(payload)).not.toContain("challenge")
       expectNoAgentCalls(host)
     } finally {
@@ -377,6 +387,115 @@ describeWatch("trusted idle and running observation", () => {
       )
       const after = await show(host)
       expect(after.task?.version).toBe(before.task?.version)
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
+  test("the controlled RPC prepares, confirms once and downgrades a grant", async () => {
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      const at = host.now()
+      settle(host, at)
+      const taskID = await enroll(host)
+      const rpc = host.rpcs[0]
+      if (rpc === undefined) throw new Error("no RPC surface")
+      let payload = await show(host)
+      const begin = await host.call("peers", {
+        action: "watch",
+        watch: {
+          operation: "report",
+          taskID,
+          expectedVersion: payload.task?.version,
+          reportId: "grant-begin",
+          kind: "begin",
+          evidence: {},
+        },
+      })
+      expect((begin.details as { watch: { ok: boolean } }).watch.ok).toBe(true)
+      payload = await show(host)
+
+      const prepared = readWatchGrantPayload(
+        await rpc.call("watchGrant", {
+          operation: "prepare",
+          sessionID: CALLER_SESSION_ID,
+          taskID,
+          expectedVersion: payload.task?.version,
+        }),
+      )
+      expect(prepared?.ok).toBe(true)
+      expect(prepared?.challenge).toMatchObject({
+        taskID,
+        expectedVersion: payload.task?.version,
+        generation: payload.task?.generation,
+        reviewSummary: expect.stringContaining("three permanent attempts"),
+      })
+      expect(prepared?.challenge?.challenge).toBeString()
+      const challenge = prepared?.challenge
+      if (challenge === undefined || challenge === null) throw new Error("no challenge")
+
+      const wrongTerms = readWatchGrantPayload(
+        await rpc.call("watchGrant", {
+          operation: "confirm",
+          sessionID: CALLER_SESSION_ID,
+          taskID,
+          expectedVersion: challenge.expectedVersion,
+          generation: challenge.generation,
+          termsDigest: "wrong-terms",
+          challenge: challenge.challenge,
+        }),
+      )
+      expect(wrongTerms?.ok).toBe(false)
+      expect(wrongTerms?.failure?.code).toBe("E_WATCH_STALE")
+
+      const confirmed = readWatchGrantPayload(
+        await rpc.call("watchGrant", {
+          operation: "confirm",
+          sessionID: CALLER_SESSION_ID,
+          taskID,
+          expectedVersion: challenge.expectedVersion,
+          generation: challenge.generation,
+          termsDigest: challenge.termsDigest,
+          challenge: challenge.challenge,
+        }),
+      )
+      expect(confirmed?.ok).toBe(true)
+      expect(confirmed?.challenge).toBeNull()
+      expect(confirmed?.task?.mode).toBe("limited-correction")
+      expect(confirmed?.task?.correction.authorization).toMatchObject({
+        mode: "limited-correction",
+        state: "granted",
+        version: 1,
+      })
+      expect(JSON.stringify(await show(host))).not.toContain(challenge.challenge)
+
+      const repeated = readWatchGrantPayload(
+        await rpc.call("watchGrant", {
+          operation: "confirm",
+          sessionID: CALLER_SESSION_ID,
+          taskID,
+          expectedVersion: confirmed?.task?.version,
+          generation: challenge.generation,
+          termsDigest: challenge.termsDigest,
+          challenge: challenge.challenge,
+        }),
+      )
+      expect(repeated?.ok).toBe(false)
+      expect(repeated?.failure?.code).toBe("E_WATCH_STALE")
+
+      const downgraded = readWatchGrantPayload(
+        await rpc.call("watchGrant", {
+          operation: "downgrade",
+          sessionID: CALLER_SESSION_ID,
+          taskID,
+          expectedVersion: confirmed?.task?.version,
+        }),
+      )
+      expect(downgraded?.ok).toBe(true)
+      expect(downgraded?.task?.mode).toBe("alert")
+      expect(downgraded?.task?.correction.authorization.state).toBe("revoked")
+      expect(downgraded?.task?.attempts.used).toBe(0)
       expectNoAgentCalls(host)
     } finally {
       await unload()

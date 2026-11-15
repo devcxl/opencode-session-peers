@@ -14,6 +14,7 @@ import { contextInjector, type ContextInjector } from "./context.ts"
 import type { EventSource } from "./events.ts"
 import { sessionGeneration, type Generation } from "./generation.ts"
 import { permissionLookup, type PermissionLookup } from "./permission.ts"
+import { hostRuntime, type HostRuntime } from "./runtime.ts"
 import { rpcRegistrar, type RpcRegistrar } from "./rpc.ts"
 import { systemScheduler, type Scheduler } from "./scheduler.ts"
 import { sessionLookup, type SessionLookup } from "./session.ts"
@@ -32,6 +33,8 @@ export interface InstanceLocation {
 export interface Host {
   /** Raw plugin options, as configured. `parseConfig` validates them. */
   readonly options: unknown
+  /** The real service identity published by this host context. */
+  readonly runtime: HostRuntime
   readonly location: InstanceLocation
   readonly sessions: SessionLookup
   /** Same-location permission snapshots; a failure is unknown, not empty. */
@@ -58,6 +61,7 @@ export interface Host {
 export function createHost(context: Plugin.Context): Host {
   return {
     options: context.options,
+    runtime: hostRuntime(context),
     location: {
       directory: context.location.directory,
       projectID: context.location.project?.id,

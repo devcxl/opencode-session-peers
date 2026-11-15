@@ -8,7 +8,7 @@
 
 import { openWatchLedger } from "../../src/watch/ledger.ts"
 
-const [mode, path, taskId, caller, owner, version, generation, reservationId, killAfter] = process.argv.slice(2)
+const [mode, path, taskId, caller, owner, version, generation, reservationId, at, killAfter] = process.argv.slice(2)
 if (
   (mode !== "reserve" && mode !== "claim") ||
   path === undefined ||
@@ -17,9 +17,10 @@ if (
   owner === undefined ||
   version === undefined ||
   generation === undefined ||
-  reservationId === undefined
+  reservationId === undefined ||
+  at === undefined
 ) {
-  console.error("usage: watch-correction-worker.ts reserve|claim <path> <task> <caller> <owner> <version> <generation> <reservation> [reserve|claim]")
+  console.error("usage: watch-correction-worker.ts reserve|claim <path> <task> <caller> <owner> <version> <generation> <reservation> <at> [reserve|claim]")
   process.exit(2)
 }
 
@@ -39,7 +40,7 @@ try {
           expectedVersion: Number(version),
           generation: Number(generation),
           reservationId,
-          at: Date.now(),
+          at: Number(at),
         })
       : opened.ledger.claimCorrection({
           taskId,
@@ -47,7 +48,7 @@ try {
           ownerActivation: owner,
           expectedVersion: Number(version),
           generation: Number(generation),
-          at: Date.now(),
+          at: Number(at),
         })
   console.log(
     JSON.stringify(
