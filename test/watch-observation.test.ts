@@ -811,10 +811,28 @@ describeWatch("unknown observation and reloads", () => {
       await host.advance(1_000)
       host.jumpClock(61_000)
       await host.advance(1_000)
+
+      // A fresh terminal with a consistent snapshot is not enough to recover
+      // wait coverage for a session that predates continuous observation.
+      const freshAt = host.now()
+      host.emit("session.execution.started", { sessionID: CALLER_SESSION_ID }, freshAt)
+      host.emit("session.execution.succeeded", { sessionID: CALLER_SESSION_ID }, freshAt)
+      host.setBusy(CALLER_SESSION_ID, freshAt)
+      host.setIdle(CALLER_SESSION_ID, freshAt)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await host.advance(1_000)
+      await host.advance(1_000)
+      let oldPayload = await show(host)
+      expect(oldPayload.observation).toMatchObject({ state: "unknown", trusted: false, waitsPartial: true })
+      expect(oldPayload.alerts?.items.map((alert) => alert.kind)).not.toContain("idle")
+
+      // A duplicate/old session.created for the same identity also cannot
+      // restore coverage; only a genuinely new session ID can.
       host.emit("session.created", { sessionID: CALLER_SESSION_ID }, host.now())
       await new Promise((resolve) => setTimeout(resolve, 0))
       await host.advance(1_000)
-      expect((await show(host)).observation?.trusted).toBe(false)
+      oldPayload = await show(host)
+      expect(oldPayload.observation).toMatchObject({ state: "unknown", trusted: false, waitsPartial: true })
 
       const newAt = host.now()
       const rpc = host.rpcs[0]
@@ -1106,6 +1124,49 @@ describeWatch("alert persistence and availability", () => {
       expect(after.task?.watchState).toBe("paused")
       expect(after.alerts?.items ?? []).toEqual([])
       expect(after.observation?.state).toBe("unavailable")
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
+  test("overflowed unknown waits keep the observation conservative after visible waits are answered", async () => {
+    const permissions = {
+      [CALLER_SESSION_ID]: Array.from({ length: 7 }, (_, index) => ({
+        id: `perm-overflow-${index}`,
+        action: "bash",
+        resources: [`echo ${index}`],
+      })),
+    }
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS }, permissions })
+    try {
+      const at = host.now()
+      settle(host, at)
+      await enroll(host)
+      await host.advance(1_000)
+      host.setPermissions(CALLER_SESSION_ID, [])
+      await host.advance(1_000)
+      await host.advance(1_000)
+      const overflowed = await show(host)
+      expect(overflowed.observation?.state).toBe("unknown")
+      expect(overflowed.observation?.waitsPartial).toBe(true)
+      expect(overflowed.observation?.waits).toHaveLength(6)
+      const visibleIDs = (overflowed.observation?.waits ?? []).map((wait) => wait.waitID)
+      for (const waitID of visibleIDs) {
+        const requestID = waitID.replace("permission:", "")
+        host.emit(
+          "permission.replied",
+          { sessionID: CALLER_SESSION_ID, requestID, reply: "once" },
+          host.now(),
+        )
+      }
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await host.advance(1_000)
+      const afterReplies = await show(host)
+      expect(afterReplies.observation?.state).toBe("unknown")
+      expect(afterReplies.observation?.trusted).toBe(false)
+      expect(afterReplies.observation?.waitsPartial).toBe(true)
+      expect(afterReplies.alerts?.items.map((alert) => alert.kind)).not.toContain("idle")
       expectNoAgentCalls(host)
     } finally {
       await unload()
