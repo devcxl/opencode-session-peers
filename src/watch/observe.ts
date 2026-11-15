@@ -236,7 +236,7 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
         current.idleSeenAt = null
         current.idleTicks = 0
         current.unknownSince = null
-        current.retry = null
+        clearRetryEvidence(current, at, "execution started after the scheduled retry")
         current.lastActivityAt = at
         current.lastActivityKind = "execution"
         break
@@ -257,7 +257,11 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
         current.idleSeenAt = null
         current.idleTicks = 0
         current.unknownSince = null
-        current.retry = null
+        clearRetryEvidence(
+          current,
+          at,
+          `execution ${event.type.slice("session.execution.".length)} after the scheduled retry`,
+        )
         current.lastActivityAt = at
         current.lastActivityKind = "execution"
         break
@@ -927,18 +931,8 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
 
   const mergeRetryWait = (current: SessionFacts, waits: { items: WatchWaitView[]; partial: boolean }, now: number) => {
     if (current.retry === null) return
-    waits.items.push({
-      waitID: current.retry.id,
-      source: "retry",
-      object: "retry",
-      reason: `provider retry scheduled (attempt ${current.retry.attempt})`,
-      reference: current.retry.id,
-      startedAt: current.retry.at,
-      deadline: null,
-      status: now - current.retry.at >= deps.config.waitOverdueMs ? "overdue" : "active",
-      clearEvidence: null,
-      denyEvidence: null,
-    })
+    const status = now - current.retry.at >= deps.config.waitOverdueMs ? "overdue" : "active"
+    waits.items.push(retryWaitView(current.retry, status, null))
   }
 
   const mergeAskWaits = async (
@@ -953,8 +947,10 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
       const clearID = `ask:${ask.askID}`
       // A previous unknown from a failed read is not evidence; recompute this
       // ask's current state before adding anything.
-      current.clearedWaits = current.clearedWaits.filter((wait) => wait.waitID !== clearID)
-      waits.items = waits.items.filter((wait) => wait.waitID !== clearID)
+      current.clearedWaits = current.clearedWaits.filter(
+        (wait) => wait.source !== "ask" || wait.waitID !== clearID,
+      )
+      waits.items = waits.items.filter((wait) => wait.source !== "ask" || wait.waitID !== clearID)
       let reply
       try {
         reply = await deps.replies.read(ask.askID)
@@ -994,7 +990,9 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
           denyEvidence: null,
         }
         addCleared(current, cleared)
-        if (!waits.items.some((candidate) => candidate.waitID === cleared.waitID)) waits.items.push(cleared)
+        if (!waits.items.some((candidate) => candidate.source === "ask" && candidate.waitID === cleared.waitID)) {
+          waits.items.push(cleared)
+        }
         continue
       }
       const started = ask.createdAt
@@ -1061,24 +1059,6 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
     }
     for (const cleared of current.clearedWaits) waits.items.push(cleared)
     return waits
-  }
-
-  const addCleared = (current: SessionFacts, wait: WatchWaitView): void => {
-    const existing = current.clearedWaits.findIndex((candidate) => candidate.waitID === wait.waitID)
-    if (existing >= 0) {
-      current.clearedWaits[existing] = wait
-      return
-    }
-    current.clearedWaits.unshift(wait)
-    while (current.clearedWaits.length > MAX_CLEARED_WAITS) {
-      const cleared = current.clearedWaits.map((candidate) => candidate.status).lastIndexOf("cleared")
-      if (cleared >= 0) {
-        current.clearedWaits.splice(cleared, 1)
-      } else {
-        current.clearedOverflow = true
-        current.clearedWaits.pop()
-      }
-    }
   }
 
   const readPermissions = async (sessionID: SessionID) => {
@@ -1286,7 +1266,52 @@ function markActivity(facts: SessionFacts, at: number, kind: ActivityKind) {
   facts.unknownSince = null
   // A target step/text/tool after a retry is evidence that the retry wait ended;
   // a retry-only observer has no snapshot, so this is the matching terminal fact.
+  // Record it as clear evidence so the wait alert resolves only on real recovery.
+  clearRetryEvidence(facts, at, `target ${kind} activity after the scheduled retry`)
+}
+
+/** One retry wait as the observation DTO shows it; only clear evidence ends it. */
+function retryWaitView(
+  retry: NonNullable<SessionFacts["retry"]>,
+  status: "active" | "overdue" | "cleared",
+  clearEvidence: string | null,
+): WatchWaitView {
+  return {
+    waitID: retry.id,
+    source: "retry",
+    object: "retry",
+    reason: `provider retry scheduled (attempt ${retry.attempt})`,
+    reference: retry.id,
+    startedAt: retry.at,
+    deadline: null,
+    status,
+    clearEvidence,
+    denyEvidence: null,
+  }
+}
+
+function clearRetryEvidence(facts: SessionFacts, at: number, evidence: string): void {
+  if (facts.retry === null || at < facts.retry.at) return
+  addCleared(facts, retryWaitView(facts.retry, "cleared", evidence))
   facts.retry = null
+}
+
+function addCleared(facts: SessionFacts, wait: WatchWaitView): void {
+  const existing = facts.clearedWaits.findIndex((candidate) => candidate.waitID === wait.waitID)
+  if (existing >= 0) {
+    facts.clearedWaits[existing] = wait
+    return
+  }
+  facts.clearedWaits.unshift(wait)
+  while (facts.clearedWaits.length > MAX_CLEARED_WAITS) {
+    const cleared = facts.clearedWaits.map((candidate) => candidate.status).lastIndexOf("cleared")
+    if (cleared >= 0) {
+      facts.clearedWaits.splice(cleared, 1)
+    } else {
+      facts.clearedOverflow = true
+      facts.clearedWaits.pop()
+    }
+  }
 }
 
 function eventAt(event: HostEvent): number | undefined {
