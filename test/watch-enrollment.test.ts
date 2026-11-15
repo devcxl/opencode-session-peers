@@ -120,13 +120,23 @@ describeSafe("watch enrollment and reading", () => {
         taskState: "not-started",
         participation: "not-seen",
         ownership: "this-instance",
+        attempts: { used: 0, limit: 3 },
+        pause: null,
         version: 1,
       })
       expect(data.capability).toMatchObject({
         mode: "alert",
         monitoring: "participant-reports-only",
         automaticDetection: "unavailable",
+        automaticDetectionReason: expect.any(String),
         correction: "unavailable",
+        correctionReason: expect.any(String),
+        delegation: "unavailable",
+        delegationReason: expect.any(String),
+        transfer: "unavailable",
+        transferReason: expect.any(String),
+        recovery: "unavailable",
+        recoveryReason: expect.any(String),
       })
       expect(data.controls).toMatchObject({
         pause: { enabled: true, reason: null },
@@ -144,6 +154,7 @@ describeSafe("watch enrollment and reading", () => {
       const shown = watchDetails(await watch(host, { operation: "show" }))
       expect(shown.task).toMatchObject({ taskID: (data.task as Record<string, unknown>)["taskID"] })
       expect(shown.ok).toBe(true)
+      expect(host.rpcs[0]?.events.some((event) => event.name === "watchChanged")).toBe(true)
       expectNoAgentCalls(host)
     } finally {
       await unload()
@@ -182,7 +193,11 @@ describeSafe("watch enrollment and reading", () => {
       const paused = watchDetails(
         await watch(host, { operation: "pause", taskID: first.taskID, expectedVersion: first.version }),
       )
-      expect(paused).toMatchObject({ ok: true, changed: true, task: { watchState: "paused" } })
+      expect(paused).toMatchObject({
+        ok: true,
+        changed: true,
+        task: { watchState: "paused", pause: { kind: "manual", reason: expect.any(String) } },
+      })
       expect(
         watchDetails(await watch(host, { operation: "enroll", requestId: "req-2", goal: "Another task" })),
       ).toMatchObject({ ok: false, failure: { code: "E_WATCH_SESSION_BUSY" } })
@@ -211,20 +226,23 @@ describeSafe("watch reports", () => {
     try {
       const task = await enrolled(host)
       let version = task.version
-      const report = async (kind: string, reportId: string, evidence: Record<string, unknown>) => {
-        const result = watchDetails(
-          await watch(host, {
-            operation: "report",
-            taskID: task.taskID,
-            expectedVersion: version,
-            reportId,
-            kind,
-            evidence,
-          }),
-        )
+      const report = async (
+        kind: string,
+        reportId: string,
+        evidence: Record<string, unknown>,
+      ): Promise<Record<string, unknown> & { text: string }> => {
+        const raw = await watch(host, {
+          operation: "report",
+          taskID: task.taskID,
+          expectedVersion: version,
+          reportId,
+          kind,
+          evidence,
+        })
+        const result = watchDetails(raw)
         expect(result.ok).toBe(true)
         version = (result.task as Record<string, unknown>)["version"] as number
-        return result
+        return { ...result, text: raw.text }
       }
 
       expect((await report("begin", "r-begin", {})).task).toMatchObject({ taskState: "in-progress", participation: "seen" })
@@ -244,9 +262,19 @@ describeSafe("watch reports", () => {
       expect(
         (await report("blocked", "r-blocked", { reason: "missing credentials", reference: "run-7" })).task,
       ).toMatchObject({ taskState: "blocked" })
-      expect(
-        (await report("completed", "r-completed", { summary: "All parser tests pass", reference: "commit abc123" })).task,
-      ).toMatchObject({ taskState: "completed", completedAt: expect.any(Number) })
+      const completed = await report("completed", "r-completed", {
+        summary: "All parser tests pass",
+        reference: "commit abc123",
+      })
+      expect(completed.task).toMatchObject({
+        taskState: "completed",
+        watchState: "ended",
+        completedAt: expect.any(Number),
+        endedAt: expect.any(Number),
+      })
+      expect(completed.controls).toMatchObject({ pause: { enabled: false }, end: { enabled: false } })
+      expect(completed.text).toContain("supervision ended because the task completed")
+      expect(completed.text).not.toContain("not a business success")
       expectNoAgentCalls(host)
     } finally {
       await unload()
@@ -381,7 +409,8 @@ describeSafe("the normal model context", () => {
       expect(system).toHaveLength(1)
       expect(system[0]).toContain("[session-peers watch]")
       expect(system[0]).toContain(task.taskID)
-      expect(system[0]).toContain("Keep the normal turn moving")
+      expect(system[0]).toContain("read it with")
+      expect(system[0]).not.toContain("Keep the normal turn moving")
       expect(system[0]).toContain("alert-only")
       expect(system[0]).toContain("not a request to start a new turn")
       expectNoAgentCalls(host)
@@ -426,6 +455,33 @@ describeSafe("persistence and reload", () => {
 
       const context = await second.host.modelContext()
       expect(context[0]).toContain(task.taskID)
+      expectNoAgentCalls(second.host)
+    } finally {
+      await second.unload()
+    }
+  })
+
+  test("a missing database with an identity anchor fails closed instead of starting empty", async () => {
+    const state = stateDirectory()
+    const first = await loaded({}, state)
+    await enrolled(first.host, "req-lost", "A task that must not be recreated")
+    await first.unload()
+
+    for (const file of ["watch-ledger.sqlite3", "watch-ledger.sqlite3-wal", "watch-ledger.sqlite3-shm"]) {
+      rmSync(join(state, file), { force: true })
+    }
+
+    const second = await loaded({}, state)
+    try {
+      const shown = watchDetails(await watch(second.host, { operation: "show" }))
+      expect(shown).toMatchObject({ ok: false, failure: { code: "E_WATCH_UNAVAILABLE" } })
+      expect(String((shown.failure as Record<string, unknown>)["reason"])).toContain("not recreated")
+
+      const enrolledAgain = watchDetails(
+        await watch(second.host, { operation: "enroll", requestId: "req-recreate", goal: "Should not replace" }),
+      )
+      expect(enrolledAgain).toMatchObject({ ok: false, failure: { code: "E_WATCH_UNAVAILABLE" } })
+      expect(enrolledAgain.task).toBeNull()
       expectNoAgentCalls(second.host)
     } finally {
       await second.unload()
@@ -505,7 +561,12 @@ describeSafe("the watch RPC entry point", () => {
           goal: "An RPC-enrolled task",
         }),
       )
-      expect(enrolledPayload?.task).toMatchObject({ goal: "An RPC-enrolled task", watchState: "active" })
+      expect(enrolledPayload?.task).toMatchObject({
+        goal: "An RPC-enrolled task",
+        watchState: "active",
+        attempts: { used: 0, limit: 3 },
+        pause: null,
+      })
       const taskID = enrolledPayload?.task?.taskID
       expect(taskID).toBeString()
 
@@ -520,7 +581,11 @@ describeSafe("the watch RPC entry point", () => {
           expectedVersion: 1,
         }),
       )
-      expect(paused?.task).toMatchObject({ watchState: "paused", version: 2 })
+      expect(paused?.task).toMatchObject({
+        watchState: "paused",
+        pause: { kind: "manual", reason: expect.any(String) },
+        version: 2,
+      })
       expect(paused?.controls.pause.enabled).toBe(false)
 
       const ended = readWatchPayload(

@@ -8,9 +8,12 @@
  */
 
 import {
+  AUTOMATIC_DETECTION_UNAVAILABLE_REASON,
   CORRECTION_UNAVAILABLE_REASON,
+  DELEGATION_UNAVAILABLE_REASON,
   RECOVERY_UNAVAILABLE_REASON,
   TRANSFER_UNAVAILABLE_REASON,
+  WATCH_CORRECTION_LIMIT,
   type WatchCapability,
   type WatchControl,
   type WatchControls,
@@ -33,6 +36,11 @@ export function watchTaskView(task: WatchTaskRecord, activationID: string): Watc
     generation: task.generation,
     ownership: task.ownerActivation === activationID ? "this-instance" : "another-activation",
     participation: task.lastReport === undefined ? "not-seen" : "seen",
+    attempts: { used: 0, limit: WATCH_CORRECTION_LIMIT },
+    pause:
+      task.watchState === "paused"
+        ? { kind: "manual", reason: "paused by the user; business execution is untouched" }
+        : null,
     lastReport: task.lastReport === undefined ? null : reportView(task.lastReport),
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
@@ -46,11 +54,15 @@ export function watchCapability(): WatchCapability {
     mode: "alert",
     monitoring: "participant-reports-only",
     automaticDetection: "unavailable",
+    automaticDetectionReason: AUTOMATIC_DETECTION_UNAVAILABLE_REASON,
     correction: "unavailable",
     correctionReason: CORRECTION_UNAVAILABLE_REASON,
     delegation: "unavailable",
+    delegationReason: DELEGATION_UNAVAILABLE_REASON,
     transfer: "unavailable",
+    transferReason: TRANSFER_UNAVAILABLE_REASON,
     recovery: "unavailable",
+    recoveryReason: RECOVERY_UNAVAILABLE_REASON,
   }
 }
 
