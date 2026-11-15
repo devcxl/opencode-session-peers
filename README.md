@@ -98,6 +98,7 @@ server log; `trigger` fails closed to `"never"`.
 | `cancel` | Request a stop to this session's local ask wait (`replyTo` names it; omit it if only one is waiting). It does not withdraw the question or stop the recipient. |
 | `handover` | Summarise this session with this session's own model and send the summary to one peer, which continues the work. |
 | `status` | This session's id, its scope, and whether the host is answering. |
+| `watch` | Explicitly enroll, inspect, report on, pause or end an alert-only watched task. See [Watching a task](#watching-a-task-alert-only). |
 
 `to` accepts a full session id, the short id `list` shows in parentheses, or a session title. An
 address that matches more than one peer is refused, never guessed. A message carries text and
@@ -137,6 +138,52 @@ Behaviour worth knowing before you rely on it:
   that has been idle since its location's instance started is therefore simply not on the roster yet, even
   though the tool is available inside it; the fix is one turn. This is why an empty `list` usually means
   "nobody has done anything yet", not "nothing is running".
+
+## Watching a task (alert-only)
+
+A session can explicitly enroll one task for observation. A session being idle is not a watched
+task; the user must give the target session, the real goal and an idempotency key:
+
+```ts
+peers({ action: "watch", watch: {
+  operation: "enroll",
+  requestId: "stable-request-id",
+  goal: "Ship the parser fix and its tests",
+} })
+```
+
+The default and only available mode is **alert-only**. Enrollment, reading, pausing and ending
+never prompt a model, generate text or interrupt a session. The executing session sees the task
+reference and reporting protocol in its next normal model context; no extra turn is started, and
+the raw goal is not copied into that system notice (read it with `watch show`). Completion is not
+the same as ending supervision: a `completed` report ends the watch because the business task is
+done, while a manual `end` records that supervision stopped without claiming success. Pausing
+stops new proactive work but leaves the business session untouched, and a paused task still holds
+the session's one live watch slot.
+
+Report only a real state change or new result, with the version read from `watch show`:
+
+```ts
+peers({ action: "watch", watch: {
+  operation: "report",
+  taskID: "…", expectedVersion: 2, reportId: "new-report-id",
+  kind: "progress",
+  evidence: { summary: "Parser fixtures pass", reference: "test/parser.test.ts:42" },
+} })
+```
+
+`begin` needs no evidence; `progress` and `completed` need `summary` and `reference`; `waiting`
+needs `waitKind`, `waitFor`, `reason` and `reference`; `blocked` needs `reason`. Repeated report ids
+with the same evidence are idempotent; a stale version or a different payload is refused.
+
+The authority for task identity, state and history is a plugin-owned SQLite ledger under
+`$XDG_STATE_HOME/opencode-session-peers/watchdog/` (or `~/.local/state/...`). It is not the
+shared plugin storage. The ledger validates its identity anchor, canonical path and SQLite build,
+uses `0700`/`0600` permissions, and fails closed rather than recreating a missing or mismatched
+database. **Automatic stall detection, finite correction, child-task delegation, receipts and
+watch ownership transfer are not implemented in this build**; the tool and panel show them as
+unavailable rather than accepting them silently. A general `/peers-watch` command and the panel
+share the same application path.
 
 The plugin registers two skills, both loaded on demand. `session-peers` covers how to use the tool
 for coordination: which action fits which situation, the rules above in more detail, the failure

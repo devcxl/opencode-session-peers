@@ -164,6 +164,8 @@ const capabilitySchema = {
     transferReason: { type: "string" },
     recovery: { type: "string", enum: ["unavailable"] },
     recoveryReason: { type: "string" },
+    safetyPause: { type: "string", enum: ["unavailable"] },
+    safetyPauseReason: { type: "string" },
   },
   required: [
     "mode",
@@ -178,6 +180,8 @@ const capabilitySchema = {
     "transferReason",
     "recovery",
     "recoveryReason",
+    "safetyPause",
+    "safetyPauseReason",
   ],
 } as const
 
@@ -420,6 +424,8 @@ function readCapability(value: unknown): WatchCapability | undefined {
     transferReason,
     recovery,
     recoveryReason,
+    safetyPause,
+    safetyPauseReason,
   } = record
   if (
     mode !== "alert" ||
@@ -433,7 +439,9 @@ function readCapability(value: unknown): WatchCapability | undefined {
     transfer !== "unavailable" ||
     typeof transferReason !== "string" ||
     recovery !== "unavailable" ||
-    typeof recoveryReason !== "string"
+    typeof recoveryReason !== "string" ||
+    safetyPause !== "unavailable" ||
+    typeof safetyPauseReason !== "string"
   ) {
     return undefined
   }
@@ -450,6 +458,8 @@ function readCapability(value: unknown): WatchCapability | undefined {
     transferReason,
     recovery,
     recoveryReason,
+    safetyPause,
+    safetyPauseReason,
   }
 }
 

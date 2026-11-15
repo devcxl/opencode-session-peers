@@ -926,6 +926,8 @@ function mapError(error: unknown): { readonly code: WatchLedgerErrorCode; readon
     if (code === "SQLITE_NOTADB" || code === "SQLITE_CORRUPT") return { code: "corrupt", detail: text }
     if (code.startsWith("SQLITE_CONSTRAINT")) return { code: "conflict", detail: text }
     if (code.startsWith("SQLITE_IOERR") || code === "SQLITE_CANTOPEN") return { code: "io_error", detail: text }
+    if (code === "EACCES" || code === "EPERM" || code === "EROFS") return { code: "readonly", detail: text }
+    if (code === "ENOENT") return { code: "io_error", detail: text }
   }
   return { code: "ledger_error", detail: text }
 }

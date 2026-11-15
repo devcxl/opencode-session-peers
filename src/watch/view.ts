@@ -12,6 +12,7 @@ import {
   CORRECTION_UNAVAILABLE_REASON,
   DELEGATION_UNAVAILABLE_REASON,
   RECOVERY_UNAVAILABLE_REASON,
+  SAFETY_PAUSE_UNAVAILABLE_REASON,
   TRANSFER_UNAVAILABLE_REASON,
   WATCH_CORRECTION_LIMIT,
   type WatchCapability,
@@ -63,6 +64,8 @@ export function watchCapability(): WatchCapability {
     transferReason: TRANSFER_UNAVAILABLE_REASON,
     recovery: "unavailable",
     recoveryReason: RECOVERY_UNAVAILABLE_REASON,
+    safetyPause: "unavailable",
+    safetyPauseReason: SAFETY_PAUSE_UNAVAILABLE_REASON,
   }
 }
 

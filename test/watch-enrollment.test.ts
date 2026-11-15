@@ -137,6 +137,8 @@ describeSafe("watch enrollment and reading", () => {
         transferReason: expect.any(String),
         recovery: "unavailable",
         recoveryReason: expect.any(String),
+        safetyPause: "unavailable",
+        safetyPauseReason: expect.any(String),
       })
       expect(data.controls).toMatchObject({
         pause: { enabled: true, reason: null },
@@ -180,6 +182,9 @@ describeSafe("watch enrollment and reading", () => {
         await watch(host, { operation: "enroll", requestId: "req-2", goal: "A second task" }),
       )
       expect(second).toMatchObject({ ok: false, failure: { code: "E_WATCH_SESSION_BUSY" } })
+
+      const missingGoal = watchDetails(await watch(host, { operation: "enroll", requestId: "req-no-goal" }))
+      expect(missingGoal).toMatchObject({ ok: false, failure: { code: "E_WATCH_INVALID" } })
       expectNoAgentCalls(host)
     } finally {
       await unload()
@@ -190,6 +195,9 @@ describeSafe("watch enrollment and reading", () => {
     const { host, unload } = await loaded()
     try {
       const first = await enrolled(host, "req-1")
+      expect(
+        watchDetails(await watch(host, { operation: "pause", taskID: first.taskID, expectedVersion: 99 })),
+      ).toMatchObject({ ok: false, failure: { code: "E_WATCH_STALE" } })
       const paused = watchDetails(
         await watch(host, { operation: "pause", taskID: first.taskID, expectedVersion: first.version }),
       )

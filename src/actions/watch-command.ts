@@ -9,7 +9,12 @@
 
 import { randomUUID } from "node:crypto"
 
-import { DELEGATION_UNAVAILABLE_REASON } from "../domain/watch.ts"
+import {
+  CORRECTION_UNAVAILABLE_REASON,
+  DELEGATION_UNAVAILABLE_REASON,
+  RECOVERY_UNAVAILABLE_REASON,
+  TRANSFER_UNAVAILABLE_REASON,
+} from "../domain/watch.ts"
 import type { SessionLookup } from "../host/session.ts"
 import type { WatchApplication } from "../watch/service.ts"
 
@@ -69,6 +74,14 @@ export async function watchCommand(deps: WatchCommandDeps, sessionID: string, in
     }
     case "delegate":
       throw new Error(DELEGATION_UNAVAILABLE_REASON)
+    case "grant":
+    case "correct":
+    case "receipt":
+      throw new Error(CORRECTION_UNAVAILABLE_REASON)
+    case "transfer":
+      throw new Error(TRANSFER_UNAVAILABLE_REASON)
+    case "resume":
+      throw new Error(RECOVERY_UNAVAILABLE_REASON)
     default:
       throw new Error(USAGE)
   }
