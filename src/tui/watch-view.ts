@@ -43,6 +43,9 @@ export interface WatchViewInput {
   readonly selectedAlertID?: string
   readonly alertPage?: number
   readonly alertPageSize?: number
+  /** Wait page in the task pane; the dialog clamps it from the answer. */
+  readonly waitPage?: number
+  readonly waitPageSize?: number
   /** Keep the task pane within a short terminal by compressing legacy capability notes. */
   readonly compact?: boolean
 }
@@ -124,12 +127,24 @@ export function watchContent(input: WatchViewInput): WatchContent {
       }
       return pane === "alerts"
         ? alertsContent(payload, input.sessionID, input)
-        : taskContent(payload, input.sessionID, input.compact ?? false)
+        : taskContent(
+            payload,
+            input.sessionID,
+            input.compact ?? false,
+            input.waitPage ?? 0,
+            input.waitPageSize ?? 4,
+          )
     }
   }
 }
 
-function taskContent(payload: WatchPayload, sessionID: string, compact: boolean): WatchContent {
+function taskContent(
+  payload: WatchPayload,
+  sessionID: string,
+  compact: boolean,
+  waitPage: number,
+  waitPageSize: number,
+): WatchContent {
   const task = payload.task
   if (task === null) {
     return {
@@ -153,7 +168,7 @@ function taskContent(payload: WatchPayload, sessionID: string, compact: boolean)
     }
   }
 
-  const observation = observationRows(payload, compact)
+  const observation = observationRows(payload, { compact, waitPage, waitPageSize })
   const notes: string[] = []
   if (task.participation === "not-seen") {
     notes.push("The executing session has not reported yet; enrollment is not readiness.")
@@ -179,7 +194,7 @@ function taskContent(payload: WatchPayload, sessionID: string, compact: boolean)
   notes.push(...observation.notes)
   notes.push(...capabilityNotes(payload, compact))
   const canViewAlerts = viewableAlerts(payload)
-  const footer = footerFor(payload, task.watchState === "ended", canViewAlerts)
+  const footer = footerFor(payload, task.watchState === "ended", canViewAlerts, compact)
   if (footer !== undefined) notes.push(footer)
 
   return {
@@ -380,12 +395,7 @@ function capabilityNotes(payload: WatchPayload, compact: boolean): string[] {
         : `Automatic detection: partial — ${ensurePeriod(capability.automaticDetectionReason)}`,
     )
   }
-  if (compact) {
-    notes.push(
-      "Correction, child-task enrollment, ownership transfer, recovery and safety pause are unavailable in this build.",
-    )
-    return notes
-  }
+  if (compact) return notes
   if (capability.correction === "unavailable") {
     notes.push(`Correction: unavailable — ${ensurePeriod(capability.correctionReason)}`)
   }
@@ -403,8 +413,17 @@ function capabilityNotes(payload: WatchPayload, compact: boolean): string[] {
   return notes
 }
 
-function footerFor(payload: WatchPayload, ended: boolean, canViewAlerts: boolean): string | undefined {
-  const alerts = canViewAlerts ? " · v: alerts" : ""
+function footerFor(
+  payload: WatchPayload,
+  ended: boolean,
+  canViewAlerts: boolean,
+  compact: boolean,
+): string | undefined {
+  const alertLabel =
+    canViewAlerts && compact
+      ? `v: alerts (${payload.alerts.unread} unread)`
+      : "v: alerts"
+  const alerts = canViewAlerts ? ` · ${alertLabel}` : ""
   if (ended) return `this watch has ended${alerts} · esc: close`
   if (payload.task === null) return "enroll: /peers-watch enroll <goal> · esc: close"
   const pause = payload.controls.pause.enabled
@@ -417,7 +436,7 @@ function footerFor(payload: WatchPayload, ended: boolean, canViewAlerts: boolean
   const parts: string[] = []
   if (pause) parts.push("p: pause watch")
   if (end) parts.push("x: end watch")
-  if (canViewAlerts) parts.push("v: alerts")
+  if (canViewAlerts) parts.push(alertLabel)
   parts.push("esc: close")
   return parts.join(" · ")
 }
@@ -439,16 +458,31 @@ function taskRows(
     ...observation,
     fact("Authorization", authorizationText(task.mode)),
     fact("Actual capability", capabilityText(payload.capability)),
-    fact("Owner", ownerText(task.ownership, task.generation)),
-    fact("Attempts", attemptsText(task.attempts)),
   ]
+  if (compact) {
+    rows.push(
+      fact(
+        "Owner",
+        `${ownerText(task.ownership, task.generation)} · attempts ${attemptsText(task.attempts)}`,
+      ),
+    )
+  } else {
+    rows.push(fact("Owner", ownerText(task.ownership, task.generation)))
+    rows.push(fact("Attempts", attemptsText(task.attempts)))
+  }
   if (!compact || task.participation === "not-seen") {
     rows.push(fact("Protocol", protocolText(task.participation)))
   }
-  if (!(compact && task.lastReport === null && task.taskState !== "completed")) {
+  if (compact && task.lastReport === null && task.taskState !== "completed") {
+    // Compact chrome omits an empty report pair.
+  } else if (compact && (payload.observation?.waits.length ?? 0) > 0 && task.taskState !== "completed") {
+    rows.push(fact("Result", resultText(task)))
+  } else {
     rows.push(fact("Last report", lastReportText(task.lastReport)))
     rows.push(fact("Result", resultText(task)))
   }
-  if (!compact) rows.push(fact("Alerts", alertsSummary(payload.alerts)))
+  const showAlertsRow =
+    !compact || !payload.alerts.available || payload.alerts.truncated
+  if (showAlertsRow) rows.push(fact("Alerts", alertsSummary(payload.alerts)))
   return rows
 }

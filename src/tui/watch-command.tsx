@@ -47,10 +47,18 @@ export function installWatch(port: TuiPort): () => void {
    */
   const seenEscalations = new Set<string>()
   const remindedAlertIDs = new Set<string>()
+  /**
+   * A failed/unavailable or task-less payload is not a trustworthy alert-list
+   * seed. Remain in seeding mode until a successful payload for a task with an
+   * available alert list arrives; otherwise a later recovery would look like a
+   * new escalation and toast old alerts.
+   */
+  let notificationSeeding = true
 
-  feed.onSnapshot((payload, initial) => {
+  feed.onSnapshot((payload) => {
     if (disposed) return
-    if (initial) {
+    if (notificationSeeding) {
+      if (!seedableAlerts(payload)) return
       // Opening/reconnect shows existing unread alerts but never re-toasts them.
       seenEscalations.clear()
       remindedAlertIDs.clear()
@@ -61,6 +69,7 @@ export function installWatch(port: TuiPort): () => void {
           remindedAlertIDs.add(alert.alertID)
         }
       }
+      notificationSeeding = false
       return
     }
     if (!panelOpen) return
@@ -96,6 +105,9 @@ export function installWatch(port: TuiPort): () => void {
     const openedEpoch = ++lifecycleEpoch
     panelSessionID = sessionID
     panelOpen = true
+    notificationSeeding = true
+    seenEscalations.clear()
+    remindedAlertIDs.clear()
     feed.open(sessionID)
     port.dialog.show(
       () => (
@@ -399,6 +411,15 @@ function successText(operation: "pause" | "end", task: WatchPayload["task"]): st
   if (operation === "pause") return "Watch paused. The session keeps running."
   if (task?.taskState === "completed") return "Watch ended. The task remains completed."
   return "Watch ended. This is not a business success."
+}
+
+function seedableAlerts(payload: WatchPayload): boolean {
+  return (
+    payload.failure === null &&
+    payload.ledger.available &&
+    payload.task !== null &&
+    payload.alerts.available
+  )
 }
 
 function escalationKey(alert: { readonly alertID: string; readonly escalatedAt: number | null }): string {

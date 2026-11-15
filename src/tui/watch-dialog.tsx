@@ -21,6 +21,7 @@ import {
   alertPageSizeFor,
   selectedAlert,
 } from "./watch-alerts.ts"
+import { waitPageOf, waitPageSizeFor } from "./watch-observation.ts"
 import { watchContent, type WatchPane, type WatchState } from "./watch-view.ts"
 import type { Tone } from "./view.ts"
 import { colourFor, tableStyle } from "./table.ts"
@@ -48,8 +49,10 @@ export function WatchDialog(props: WatchDialogProps) {
   const [pane, setPane] = createSignal<WatchPane>("task")
   const [selectedAlertID, setSelectedAlertID] = createSignal<string | undefined>()
   const [alertPage, setAlertPage] = createSignal(0)
+  const [waitPage, setWaitPage] = createSignal(0)
   const dimensions = useTerminalDimensions()
   const alertPageSize = createMemo(() => alertPageSizeFor(dimensions().height))
+  const waitPageSize = createMemo(() => waitPageSizeFor(dimensions().height))
 
   const payload = createMemo(() => {
     const state = props.state()
@@ -98,6 +101,16 @@ export function WatchDialog(props: WatchDialogProps) {
     if (pane() === "alerts" && !canViewAlerts()) setPane("task")
   })
 
+  createEffect(() => {
+    const current = payload()
+    if (current === undefined) {
+      if (waitPage() !== 0) setWaitPage(0)
+      return
+    }
+    const page = waitPageOf(current, waitPage(), waitPageSize())
+    if (page.index !== waitPage()) setWaitPage(page.index)
+  })
+
   const content = createMemo(() =>
     watchContent({
       state: props.state(),
@@ -106,6 +119,8 @@ export function WatchDialog(props: WatchDialogProps) {
       selectedAlertID: selectedAlertID(),
       alertPage: alertPage(),
       alertPageSize: alertPageSize(),
+      waitPage: waitPage(),
+      waitPageSize: waitPageSize(),
       compact: dimensions().height < 52,
     }),
   )
@@ -145,6 +160,14 @@ export function WatchDialog(props: WatchDialogProps) {
       return
     }
     if (pane() === "task") {
+      if (key.name === "left" || key.name === "pageup") {
+        moveWaitPage(-1)
+        return
+      }
+      if (key.name === "right" || key.name === "pagedown") {
+        moveWaitPage(1)
+        return
+      }
       if (key.name === "p" && canPause()) {
         setPending("pause")
         return
@@ -188,6 +211,14 @@ export function WatchDialog(props: WatchDialogProps) {
     if (alert === undefined) return
     setSelectedAlertID(alert.alertID)
     setAlertPage(Math.floor(index / alertPageSize()))
+  }
+
+  function moveWaitPage(delta: number): void {
+    const current = payload()
+    if (current === undefined) return
+    const page = waitPageOf(current, waitPage(), waitPageSize())
+    const next = Math.max(0, Math.min(page.count - 1, page.index + delta))
+    if (next !== waitPage()) setWaitPage(next)
   }
 
   function movePage(delta: number): void {

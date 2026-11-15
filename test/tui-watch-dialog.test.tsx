@@ -10,9 +10,11 @@ import {
   alertsView,
   control,
   controls,
+  observation,
   palette,
   payload,
   task,
+  wait,
 } from "./tui-watch-fake.ts"
 
 async function rendered(
@@ -425,7 +427,7 @@ describe("a short terminal", () => {
     expect(text()).toContain("Session watch")
     expect(text()).toContain("Observation")
     expect(text()).toContain("Progress")
-    expect(text()).toContain("unavailable in this build")
+    expect(text()).toContain("observer alerts")
 
     setup.mockInput.pressKey("p")
     await setup.flush()
@@ -443,6 +445,38 @@ describe("a short terminal", () => {
     )
     expect(text()).toContain("Session watch")
     expect(text()).toContain("v: alerts")
+  })
+
+  test("keeps an unavailable alert store visible on a short terminal", async () => {
+    const acks: string[] = []
+    const { setup, text } = await rendered(
+      {
+        kind: "payload",
+        payload: payload({
+          alerts: alertsView([], {
+            available: false,
+            reason: "the alert store is locked",
+            unread: 0,
+            total: 0,
+            active: 0,
+          }),
+        }),
+      },
+      {
+        height: 40,
+        onAck: async (alertID) => {
+          acks.push(alertID)
+        },
+      },
+    )
+    expect(text()).toContain("Session watch")
+    expect(text()).toContain("Alerts")
+    expect(text()).toContain("unavailable — the alert store is locked")
+    expect(text()).not.toContain("none recorded")
+    setup.mockInput.pressKey("v")
+    setup.mockInput.pressKey("a")
+    await setup.flush()
+    expect(acks).toEqual([])
   })
 
   test("keeps a trusted-false running-silence readable on a short terminal", async () => {
@@ -473,4 +507,66 @@ describe("a short terminal", () => {
     if (view === null) throw new Error("fixture has no observation")
     return view
   }
+})
+
+describe("the bounded wait capacity on a short terminal", () => {
+  test("pages twelve waits without losing trust, partial, result or controls", async () => {
+    const waits = Array.from({ length: 12 }, (_, index) =>
+      wait({
+        waitID: `wait_${String(index + 1).padStart(2, "0")}`,
+        source: index === 0 ? "reported" : "permission",
+        object: `object ${index + 1}`,
+        reason:
+          index === 0
+            ? "a deliberately long reason that explains why this wait is still active and what response is missing"
+            : `reason ${index + 1}`,
+        status: index === 11 ? "denied" : "active",
+        denyEvidence: index === 11 ? "the approval was refused" : null,
+        deadline: null,
+      }),
+    )
+    const { setup, text } = await rendered(
+      {
+        kind: "payload",
+        payload: payload({
+          task: task({
+            lastReport: {
+              reportID: "report_progress",
+              kind: "progress",
+              evidence: { summary: "tests pass", reference: "src/auth.test.ts" },
+              at: Date.UTC(2026, 10, 16, 4, 32, 0),
+              version: 3,
+            },
+          }),
+          observation: observation({
+            state: "normal-waiting",
+            waits,
+            waitsPartial: true,
+          }),
+          alerts: alertsView([alert({ alertID: "alert_0001" })]),
+        }),
+      },
+      { height: 40 },
+    )
+
+    expect(text()).toContain("Session watch")
+    expect(text()).toContain("Observation")
+    expect(text()).toContain("normal waiting")
+    expect(text()).toContain("trusted")
+    expect(text()).toContain("partial")
+    expect(text()).toContain("Result")
+    expect(text()).toContain("showing waits 1–2 of 12")
+    expect(text()).toContain("p: pause watch")
+    expect(text()).toContain("x: end watch")
+    expect(text()).toContain("v: alerts (1 unread)")
+
+    setup.mockInput.pressArrow("right")
+    await setup.flush()
+    expect(text()).toContain("showing waits 3–4 of 12")
+
+    for (let index = 0; index < 4; index += 1) setup.mockInput.pressArrow("right")
+    await setup.flush()
+    expect(text()).toContain("showing waits 11–12 of 12")
+    expect(text()).toContain("denied — the approval was refused")
+  })
 })
