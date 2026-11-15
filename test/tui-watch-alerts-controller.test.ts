@@ -22,6 +22,10 @@ import {
   tick,
 } from "./tui-watch-fake.ts"
 
+const OPENED_AT = 1_000
+const OLD_ESCALATION = 900
+const NEW_ESCALATION = 2_000
+
 function withAlert(
   item: ReturnType<typeof alert>,
   overrides: Partial<WatchPayload> = {},
@@ -33,9 +37,9 @@ describe("the one non-intrusive reminder", () => {
   test("opening or reconnecting seeds escalated alerts without a toast", async () => {
     const fake = fakePort({
       read: async () =>
-        withAlert(alert({ escalatedAt: Date.UTC(2026, 10, 16, 4, 36, 0) })),
+        withAlert(alert({ escalatedAt: NEW_ESCALATION })),
     })
-    const dispose = installWatch(fake.port)
+    const dispose = installWatch(fake.port, { now: () => OPENED_AT })
     commandOf(fake).run()
     await tick(0)
 
@@ -45,10 +49,10 @@ describe("the one non-intrusive reminder", () => {
   })
 
   test("closing the panel does not read or toast a later escalation; reopening seeds it", async () => {
-    const escalatedAt = Date.UTC(2026, 10, 16, 4, 36, 0)
+    const escalatedAt = NEW_ESCALATION
     let current = payload()
     const fake = fakePort({ read: async () => current })
-    const dispose = installWatch(fake.port)
+    const dispose = installWatch(fake.port, { now: () => OPENED_AT })
     commandOf(fake).run()
     await tick(0)
     const reads = fake.reads.length
@@ -68,10 +72,10 @@ describe("the one non-intrusive reminder", () => {
   })
 
   test("a later durable escalation produces one toast, never a nudge-only one", async () => {
-    const escalatedAt = Date.UTC(2026, 10, 16, 4, 36, 0)
+    const escalatedAt = NEW_ESCALATION
     let current = payload()
     const fake = fakePort({ read: async () => current })
-    const dispose = installWatch(fake.port)
+    const dispose = installWatch(fake.port, { now: () => OPENED_AT })
     commandOf(fake).run()
     await tick(0)
 
@@ -88,7 +92,7 @@ describe("the one non-intrusive reminder", () => {
 
     // A pure nudge, updatedAt change or same escalation is not a new reminder.
     current = withAlert(
-      alert({ escalatedAt, updatedAt: Date.UTC(2026, 10, 16, 4, 40, 0) }),
+      alert({ escalatedAt, updatedAt: NEW_ESCALATION }),
     )
     fake.announce()
     await tick(0)
@@ -97,10 +101,10 @@ describe("the one non-intrusive reminder", () => {
   })
 
   test("an alert that appears without an escalation waits for the durable fact", async () => {
-    const escalatedAt = Date.UTC(2026, 10, 16, 4, 36, 0)
+    const escalatedAt = NEW_ESCALATION
     let current = payload()
     const fake = fakePort({ read: async () => current })
-    const dispose = installWatch(fake.port)
+    const dispose = installWatch(fake.port, { now: () => OPENED_AT })
     commandOf(fake).run()
     await tick(0)
 
@@ -121,10 +125,10 @@ describe("the one non-intrusive reminder", () => {
   })
 
   test("ended tasks do not toast", async () => {
-    const escalatedAt = Date.UTC(2026, 10, 16, 4, 36, 0)
+    const escalatedAt = NEW_ESCALATION
     let current = payload()
     const fake = fakePort({ read: async () => current })
-    const dispose = installWatch(fake.port)
+    const dispose = installWatch(fake.port, { now: () => OPENED_AT })
     commandOf(fake).run()
     await tick(0)
 
@@ -141,10 +145,10 @@ describe("the one non-intrusive reminder", () => {
   })
 
   test("paused and ended tasks do not toast, but their alert rows remain", async () => {
-    const escalatedAt = Date.UTC(2026, 10, 16, 4, 36, 0)
+    const escalatedAt = NEW_ESCALATION
     let current = payload()
     const fake = fakePort({ read: async () => current })
-    const dispose = installWatch(fake.port)
+    const dispose = installWatch(fake.port, { now: () => OPENED_AT })
     commandOf(fake).run()
     await tick(0)
 
@@ -188,7 +192,7 @@ describe("alert acknowledgement", () => {
         return current
       },
     })
-    const dispose = installWatch(fake.port)
+    const dispose = installWatch(fake.port, { now: () => OPENED_AT })
     commandOf(fake).run()
     await tick(0)
 
@@ -238,7 +242,7 @@ describe("alert acknowledgement", () => {
         },
       }),
     })
-    const dispose = installWatch(fake.port)
+    const dispose = installWatch(fake.port, { now: () => OPENED_AT })
     commandOf(fake).run()
     await tick(0)
 
@@ -269,7 +273,7 @@ describe("alert acknowledgement", () => {
           }),
         }),
     })
-    const dispose = installWatch(fake.port)
+    const dispose = installWatch(fake.port, { now: () => OPENED_AT })
     commandOf(fake).run()
     await tick(0)
 
@@ -282,6 +286,55 @@ describe("alert acknowledgement", () => {
     expect(fake.calls).toEqual([])
     dispose()
     panel.renderer.destroy()
+  })
+})
+
+describe("a truncated first trusted snapshot", () => {
+  test("does not toast an old escalation that enters the window later", async () => {
+    let current = payload({
+      alerts: alertsView([], {
+        truncated: true,
+        total: 20,
+        unread: 20,
+        active: 20,
+      }),
+    })
+    const fake = fakePort({ read: async () => current })
+    const dispose = installWatch(fake.port, { now: () => OPENED_AT })
+    commandOf(fake).run()
+    await tick(0)
+    expect(fake.toasts).toEqual([])
+
+    current = payload({
+      alerts: alertsView([alert({ alertID: "alert_old", escalatedAt: OLD_ESCALATION })], {
+        truncated: true,
+        total: 20,
+        unread: 20,
+        active: 20,
+      }),
+    })
+    fake.announce()
+    await tick(0)
+    expect(fake.toasts).toEqual([])
+
+    current = payload({
+      alerts: alertsView(
+        [
+          alert({ alertID: "alert_old", escalatedAt: OLD_ESCALATION }),
+          alert({
+            alertID: "alert_new",
+            summary: "A genuinely new escalation.",
+            escalatedAt: NEW_ESCALATION,
+          }),
+        ],
+        { truncated: true, total: 20, unread: 20, active: 20 },
+      ),
+    })
+    fake.announce()
+    await tick(0)
+    expect(fake.toasts).toHaveLength(1)
+    expect(fake.toasts[0]?.message).toContain("A genuinely new escalation.")
+    dispose()
   })
 })
 
@@ -299,7 +352,7 @@ describe("notification seeding survives an untrustworthy first snapshot", () => 
       },
     })
     const fake = fakePort({ read: async () => current })
-    const dispose = installWatch(fake.port)
+    const dispose = installWatch(fake.port, { now: () => OPENED_AT })
     commandOf(fake).run()
     await tick(0)
 
@@ -309,7 +362,7 @@ describe("notification seeding survives an untrustworthy first snapshot", () => 
     ).toContain("Session watch is unavailable")
 
     current = withAlert(
-      alert({ alertID: "alert_old", escalatedAt: Date.UTC(2026, 10, 16, 4, 36, 0) }),
+      alert({ alertID: "alert_old", escalatedAt: OLD_ESCALATION }),
     )
     fake.announce()
     await tick(0)
@@ -317,11 +370,11 @@ describe("notification seeding survives an untrustworthy first snapshot", () => 
 
     current = payload({
       alerts: alertsView([
-        alert({ alertID: "alert_old", escalatedAt: Date.UTC(2026, 10, 16, 4, 36, 0) }),
+        alert({ alertID: "alert_old", escalatedAt: OLD_ESCALATION }),
         alert({
           alertID: "alert_new",
           summary: "A new escalation appeared.",
-          escalatedAt: Date.UTC(2026, 10, 16, 4, 40, 0),
+          escalatedAt: NEW_ESCALATION,
         }),
       ]),
     })
@@ -344,7 +397,7 @@ describe("notification seeding survives an untrustworthy first snapshot", () => 
       }),
     })
     const fake = fakePort({ read: async () => current })
-    const dispose = installWatch(fake.port)
+    const dispose = installWatch(fake.port, { now: () => OPENED_AT })
     commandOf(fake).run()
     await tick(0)
 
@@ -354,14 +407,14 @@ describe("notification seeding survives an untrustworthy first snapshot", () => 
     ).toContain("unavailable")
 
     current = withAlert(
-      alert({ alertID: "alert_old", escalatedAt: Date.UTC(2026, 10, 16, 4, 36, 0) }),
+      alert({ alertID: "alert_old", escalatedAt: OLD_ESCALATION }),
     )
     fake.announce()
     await tick(0)
     expect(fake.toasts).toEqual([])
 
     current = withAlert(
-      alert({ alertID: "alert_new", escalatedAt: Date.UTC(2026, 10, 16, 4, 40, 0) }),
+      alert({ alertID: "alert_new", escalatedAt: NEW_ESCALATION }),
     )
     fake.announce()
     await tick(0)

@@ -36,7 +36,13 @@ const NO_SESSION = "Peers watch: no session is open here."
  * subscription. Tests call this through a fake TuiPort; the plugin's setup
  * calls it with the real one.
  */
-export function installWatch(port: TuiPort): () => void {
+export interface WatchCommandOptions {
+  /** Local clock for notification freshness only; never used for task decisions. */
+  readonly now?: () => number
+}
+
+export function installWatch(port: TuiPort, options: WatchCommandOptions = {}): () => void {
+  const now = options.now ?? (() => Date.now())
   const feed = createWatchFeed(port.watch)
   let panelSessionID: string | undefined
   let panelOpen = false
@@ -54,6 +60,8 @@ export function installWatch(port: TuiPort): () => void {
    * new escalation and toast old alerts.
    */
   let notificationSeeding = true
+  /** First trusted seed boundary; escalations at or before it are history. */
+  let notificationReadyAt: number | undefined
 
   feed.onSnapshot((payload) => {
     if (disposed) return
@@ -70,6 +78,7 @@ export function installWatch(port: TuiPort): () => void {
         }
       }
       notificationSeeding = false
+      notificationReadyAt = now()
       return
     }
     if (!panelOpen) return
@@ -85,6 +94,10 @@ export function installWatch(port: TuiPort): () => void {
       }
       const key = escalationKey(alert)
       if (seenEscalations.has(key)) continue
+      if (notificationReadyAt === undefined || alert.escalatedAt <= notificationReadyAt) {
+        seenEscalations.add(key)
+        continue
+      }
       if (remindedAlertIDs.has(alert.alertID)) {
         seenEscalations.add(key)
         continue
@@ -106,6 +119,7 @@ export function installWatch(port: TuiPort): () => void {
     panelSessionID = sessionID
     panelOpen = true
     notificationSeeding = true
+    notificationReadyAt = undefined
     seenEscalations.clear()
     remindedAlertIDs.clear()
     feed.open(sessionID)
