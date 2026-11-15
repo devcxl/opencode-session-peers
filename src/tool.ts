@@ -43,7 +43,7 @@ const PEERS_TOOL_DESCRIPTION =
   `to one peer, which continues the work; ` +
   `"status" — this session's id, its scope, and whether the host is answering; ` +
   `"watch" — enroll or inspect an explicitly watched task, report its state, pause/end supervision, ` +
-  `or acknowledge one persistent alert. Watch is alert-only: it never prompts, generates, corrects or interrupts.`
+  `or acknowledge one persistent alert. Watch defaults to alert-only; automatic correction stays closed on an unverified runtime, and a correction prompt is answered only through the bounded receipt action.`
 
 const PEERS_TOOL_INPUT = {
   type: "object",
@@ -108,8 +108,8 @@ const PEERS_TOOL_INPUT = {
       additionalProperties: false,
       description:
         `For "watch": one bounded watchdog request. Enroll is explicit and alert-only; show, pause and end ` +
-        `are read/control operations. Reporting is for the executing session. Correction, delegation, ` +
-        `receipt and ownership transfer are refused explicitly because this build does not implement them.`,
+        `are read/control operations. Reporting and receipt are for the executing session. Grant, delegation, ` +
+        `ownership transfer and resume are refused explicitly because this build does not implement them.`,
       properties: {
         operation: {
           type: "string",
@@ -129,7 +129,7 @@ const PEERS_TOOL_INPUT = {
           ],
           description:
             `"show" a task, "enroll" the calling session, "report" begin/progress/waiting/blocked/completed, ` +
-            `"pause" or "end" supervision, "ack" read one alert. The remaining operations are explicit unavailable refusals in this build.`,
+            `"pause" or "end" supervision, "ack" read one alert, "receipt" confirm one correction prompt with its task/attempt/correlation. Grant, delegation, transfer and resume remain explicit unavailable refusals.`,
         },
         taskID: { type: "string", description: `The watched task id for show, report, pause or end.` },
         alertID: { type: "string", description: `The persistent alert id for ack; it only marks the alert read.` },
@@ -155,6 +155,14 @@ const PEERS_TOOL_INPUT = {
         reportId: {
           type: "string",
           description: `A stable idempotency key for one report; a repeat with the same evidence is not a second report.`,
+        },
+        attemptID: {
+          type: "string",
+          description: `The permanent correction attempt id carried by a correction prompt; required for receipt.`,
+        },
+        correlation: {
+          type: "string",
+          description: `The opaque correlation carried only by a correction prompt; required for receipt and never exposed by show.`,
         },
         kind: {
           type: "string",

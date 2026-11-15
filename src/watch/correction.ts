@@ -21,6 +21,9 @@ const MIN_SQLITE = "3.51.3"
 /** No app/platform tuple is verified until the isolated protocol passes. */
 const VERIFIED_APP_TUPLES: readonly string[] = []
 
+/** Local filesystem allowlist; unknown or network filesystems stay closed. */
+const LOCAL_FILESYSTEMS = new Set(["ext4", "xfs", "btrfs", "tmpfs", "zfs", "overlay"])
+
 export interface CorrectionRuntimeFacts {
   readonly platform: string | null
   readonly arch: string | null
@@ -30,7 +33,7 @@ export interface CorrectionRuntimeFacts {
   /** `2` is SQLite's FULL synchronous level. */
   readonly synchronous: number | null
   readonly busyTimeoutMs: number | null
-  readonly filesystem: "local" | "unknown"
+  readonly filesystem: string | null
 }
 
 export interface CorrectionGateInput {
@@ -43,6 +46,8 @@ export interface CorrectionGateInput {
   readonly singleHostDeclared: boolean
   readonly closing: boolean
   readonly executorReady: boolean
+  /** The executor's own committed reservation is not a blocking pending attempt. */
+  readonly ignoreAttemptID?: string
 }
 
 export interface CorrectionGateResult {
@@ -53,26 +58,42 @@ export interface CorrectionGateResult {
 }
 
 export function correctionGate(input: CorrectionGateInput): CorrectionGateResult {
+  return evaluate(input, VERIFIED_APP_TUPLES)
+}
+
+/**
+ * A source-level factory for an isolated candidate harness. Production uses
+ * the empty whitelist above; no model/config/env path can call this.
+ */
+export function correctionGateWithVerifiedTuples(
+  verified: readonly string[],
+): (input: CorrectionGateInput) => CorrectionGateResult {
+  return (input) => evaluate(input, verified)
+}
+
+function evaluate(input: CorrectionGateInput, verified: readonly string[]): CorrectionGateResult {
   const { task, snapshot, observation, runtime } = input
   const open = snapshot.attempts.find(
     (attempt) =>
-      attempt.phase === "reserved" ||
-      attempt.phase === "sending" ||
-      attempt.phase === "accepted" ||
-      attempt.phase === "unknown",
+      attempt.reservationID !== input.ignoreAttemptID &&
+      (attempt.phase === "reserved" ||
+        attempt.phase === "sending" ||
+        attempt.phase === "accepted" ||
+        attempt.phase === "unknown"),
   )
-  const used = snapshot.attempts.length
+  const used = snapshot.attempts.filter((attempt) => attempt.reservationID !== input.ignoreAttemptID).length
   const runtimeTuple = `${runtime.appVersion ?? "?"}/${runtime.platform ?? "?"}/${runtime.arch ?? "?"}`
   const runtimeOk =
     runtime.platform === "linux" &&
     runtime.arch === "x64" &&
-    VERIFIED_APP_TUPLES.includes(runtimeTuple) &&
+    verified.includes(runtimeTuple) &&
     runtime.sqliteVersion !== null &&
     versionAtLeast(runtime.sqliteVersion, MIN_SQLITE) &&
     runtime.journalMode === "wal" &&
     runtime.synchronous === 2 &&
     (runtime.busyTimeoutMs ?? 0) > 0 &&
-    runtime.filesystem === "local"
+    runtime.filesystem !== null &&
+    LOCAL_FILESYSTEMS.has(runtime.filesystem)
   const grantOk =
     snapshot.grant?.state === "granted" &&
     task.mode === "limited-correction" &&
@@ -107,7 +128,7 @@ export function correctionGate(input: CorrectionGateInput): CorrectionGateResult
     gate(
       "runtime",
       runtimeOk,
-      `${runtimeTuple}; sqlite=${runtime.sqliteVersion ?? "unknown"}; journal=${runtime.journalMode ?? "unknown"}; synchronous=${runtime.synchronous ?? "unknown"}; busy=${runtime.busyTimeoutMs ?? "unknown"}; fs=${runtime.filesystem}`,
+      `${runtimeTuple}; sqlite=${runtime.sqliteVersion ?? "unknown"}; journal=${runtime.journalMode ?? "unknown"}; synchronous=${runtime.synchronous ?? "unknown"}; busy=${runtime.busyTimeoutMs ?? "unknown"}; fs=${runtime.filesystem ?? "unknown"}`,
       "Linux x64, a verified app tuple, embedded SQLite >= 3.51.3, WAL, FULL, bounded busy_timeout and local filesystem",
     ),
     gate(

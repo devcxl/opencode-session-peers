@@ -335,6 +335,51 @@ describeCorrection("correction ledger", () => {
     }
   })
 
+  test("a grant challenge expires and is consumed without granting", () => {
+    const clock = { value: 1_000 }
+    const ledger = open(clock)
+    try {
+      let task = enroll(ledger)
+      const began = ledger.report({
+        taskId: task.taskID,
+        callerSessionId: "ses_a",
+        expectedVersion: task.version,
+        reportId: "ttl-begin",
+        kind: "begin",
+        evidence: {},
+      })
+      if (!began.ok) return
+      task = began.value.task
+      const prepared = ledger.prepareCorrectionGrant({
+        taskId: task.taskID,
+        callerSessionId: "ses_a",
+        ownerActivation: "activation-a",
+        expectedVersion: task.version,
+        reviewSummary: "ttl grant",
+        deployment: "single-host-same-location",
+        ttlMs: 30_000,
+        at: clock.value,
+      })
+      if (!prepared.ok) return
+      clock.value += 31_000
+      const expired = ledger.confirmCorrectionGrant({
+        challenge: prepared.value.challenge,
+        taskId: task.taskID,
+        callerSessionId: "ses_a",
+        ownerActivation: "activation-a",
+        expectedVersion: prepared.value.expectedVersion,
+        generation: prepared.value.generation,
+        termsDigest: prepared.value.termsDigest,
+        deployment: "single-host-same-location",
+        at: clock.value,
+      })
+      expect(expired).toMatchObject({ ok: false, code: "grant_expired" })
+      expect(attemptOf(ledger.correction(task.taskID))).toHaveLength(0)
+    } finally {
+      ledger.close()
+    }
+  })
+
   test("an old reservation cannot be revived by downgrade, regrant or a newer task version", () => {
     const clock = { value: 1_000 }
     const ledger = open(clock)
@@ -381,6 +426,23 @@ describeCorrection("correction ledger", () => {
       expect(attemptOf(ledger.correction(task.taskID))[0]).toMatchObject({ phase: "reserved" })
     } finally {
       ledger.close()
+    }
+  })
+
+  test("busy timeout and WAL are read back from the embedded connection", () => {
+    const directory = mkdtempSync(join(tmpdir(), "session-peers-correction-pragmas-"))
+    scratch.push(directory)
+    const opened = openWatchLedger({
+      path: join(directory, "watch-ledger.sqlite3"),
+      busyTimeoutMs: 123,
+    })
+    expect(opened.ok).toBe(true)
+    if (opened.ok) {
+      expect(opened.ledger.busyTimeoutMs).toBe(123)
+      expect(opened.ledger.journalMode).toBe("wal")
+      expect(opened.ledger.synchronous).toBe(2)
+      expect(opened.ledger.filesystem).not.toBe("unknown")
+      opened.ledger.close()
     }
   })
 

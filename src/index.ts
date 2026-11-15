@@ -28,6 +28,7 @@ import { PEERS_SKILL, SUPERVISOR_SKILL } from "./skill.ts"
 import { rosterPayload } from "./surface.ts"
 import { peersTool } from "./tool.ts"
 import { sessionAtLocation } from "./watch/access.ts"
+import { createCorrectionExecutor } from "./watch/executor.ts"
 import { createWatchObserver } from "./watch/observe.ts"
 import { createWatchApplication } from "./watch/service.ts"
 
@@ -48,17 +49,47 @@ export default {
     // hook. Enrolling records this activation as the owner; a reload gets a new
     // activation and therefore observes the old task without adopting it.
     let announceWatch: (() => void) | undefined
+    let observer: ReturnType<typeof createWatchObserver> | undefined
+    const activationID = randomUUID()
     const watch = config.enabled
       ? createWatchApplication({
           ledgerPath: watchLedgerPath(),
-          activationID: randomUUID(),
+          activationID,
           runtime: host.runtime,
           now: () => host.scheduler.now(),
           onChanged: () => announceWatch?.(),
           sessionAtLocation: (sessionID) =>
             sessionAtLocation(host.sessions, sessionID, host.location.directory),
+          observationFor: (taskID) => observer?.observationFor(taskID) ?? null,
         })
       : undefined
+
+    const correctionAuthority = watch?.correctionAuthority()
+    const executor =
+      watch === undefined || correctionAuthority === undefined
+        ? undefined
+        : createCorrectionExecutor({
+            authority: correctionAuthority,
+            observationFor: (taskID) => observer?.observationFor(taskID) ?? null,
+            sameLocation: (sessionID) => sessionAtLocation(host.sessions, sessionID, host.location.directory),
+            runtime: () => {
+              const status = watch.status()
+              return {
+                appVersion: status.appVersion,
+                platform: status.platform,
+                arch: status.arch,
+                sqliteVersion: status.sqliteVersion,
+                journalMode: status.journalMode,
+                synchronous: status.synchronous,
+                busyTimeoutMs: status.busyTimeoutMs,
+                filesystem: status.filesystem,
+              }
+            },
+            delivery: host.correctionDelivery,
+            activationID,
+            now: () => host.scheduler.now(),
+            warn,
+          })
 
     // A disabled plugin publishes nothing: peers must not see a session that is
     // not listening, and its own session is told why nothing happens.
@@ -144,7 +175,7 @@ export default {
     // Observation is started only after the RPC surface exists, so an alert
     // commit can nudge the panel. It uses the host's scheduler and event stream;
     // it never prompts or generates text.
-    const observer =
+    observer =
       watch === undefined
         ? undefined
         : createWatchObserver({
@@ -158,6 +189,7 @@ export default {
             asks: host.storage.asks,
             replies: host.storage.replies,
             onChanged: () => announceWatch?.(),
+            onSample: (taskID) => executor?.kick(taskID),
             warn,
           })
     observer?.start()
@@ -217,6 +249,9 @@ export default {
     // The host calls this when the location shuts down or the plugin reloads.
     // Closing the ledger is a clean close, not a handover of watch ownership.
     return async () => {
+      // Close the executor synchronously first; its in-flight promises settle
+      // before the ledger closes, so a claimed send cannot be replayed.
+      await executor?.close()
       // Close the observer before awaiting any surface/context cleanup so a
       // late sample cannot repopulate observations or emit a final nudge.
       observer?.dispose()

@@ -7,6 +7,7 @@
  * activation value; it says only whether the current instance is that owner.
  */
 
+import { correctionGate } from "./correction.ts"
 import {
   CORRECTION_UNAVAILABLE_REASON,
   DELEGATION_UNAVAILABLE_REASON,
@@ -20,9 +21,9 @@ import {
   type WatchCorrectionAttemptRecord,
   type WatchCorrectionAttemptView,
   type WatchCorrectionSnapshot,
-  type WatchCorrectionStopReason,
   type WatchCorrectionView,
   type WatchMode,
+  type WatchObservationView,
   type WatchControl,
   type WatchControls,
   type WatchReportRecord,
@@ -39,6 +40,7 @@ export interface WatchRuntimeFactsView {
   readonly journalMode: string | null
   readonly synchronous: number | null
   readonly busyTimeoutMs: number | null
+  readonly filesystem: string | null
 }
 
 export function watchTaskView(
@@ -46,6 +48,8 @@ export function watchTaskView(
   activationID: string,
   correction: WatchCorrectionSnapshot,
   runtime?: WatchRuntimeFactsView,
+  observation?: WatchObservationView | null,
+  closing?: boolean,
 ): WatchTaskView {
   return {
     taskID: task.taskID,
@@ -60,7 +64,7 @@ export function watchTaskView(
     ownership: task.ownerActivation === activationID ? "this-instance" : "another-activation",
     participation: task.lastReport === undefined ? "not-seen" : "seen",
     attempts: { used: task.attemptsUsed, limit: WATCH_CORRECTION_LIMIT },
-    correction: watchCorrectionView(task, correction, activationID, runtime),
+    correction: watchCorrectionView(task, correction, activationID, runtime, observation, closing),
     pause:
       task.watchState === "paused"
         ? { kind: "manual", reason: "paused by the user; business execution is untouched" }
@@ -83,6 +87,8 @@ export function watchCorrectionView(
   snapshot: WatchCorrectionSnapshot,
   activationID: string,
   runtime?: WatchRuntimeFactsView,
+  observation?: WatchObservationView | null,
+  closing = false,
 ): WatchCorrectionView {
   const grant = snapshot.grant
   const attempts = snapshot.attempts
@@ -95,13 +101,26 @@ export function watchCorrectionView(
   )
   const last = attempts.length === 0 ? null : (attempts[attempts.length - 1] ?? null)
   const used = attempts.length
-  const businessCompleted = task.taskState === "completed"
-  const grantOk =
-    grant?.state === "granted" &&
-    task.mode === "limited-correction" &&
-    grant.generation === task.generation &&
-    grant.scopeTargetSessionID === task.targetSessionID
-  const stop = correctionStop(task, grant, open, used, snapshot.sessionUnresolved)
+  const gate = correctionGate({
+    task,
+    snapshot,
+    observation: observation ?? null,
+    runtime: {
+      appVersion: runtime?.appVersion ?? null,
+      platform: runtime?.platform ?? null,
+      arch: runtime?.arch ?? null,
+      sqliteVersion: runtime?.sqliteVersion ?? null,
+      journalMode: runtime?.journalMode ?? null,
+      synchronous: runtime?.synchronous ?? null,
+      busyTimeoutMs: runtime?.busyTimeoutMs ?? null,
+      filesystem: runtime?.filesystem ?? null,
+    },
+    ownerActivation: activationID,
+    sameLocation: observation !== null && observation !== undefined,
+    singleHostDeclared: grant?.deployment === "single-host-same-location",
+    closing,
+    executorReady: true,
+  })
   const history = attempts.map(correctionAttemptView)
   const pending = open === undefined ? null : correctionAttemptView(open)
   return {
@@ -113,132 +132,22 @@ export function watchCorrectionView(
       reviewSummary: grant?.reviewSummary ?? null,
       grantedAt: grant?.grantedAt ?? null,
     },
-    actual: "unavailable",
-    actualReason: CORRECTION_UNAVAILABLE_REASON,
+    actual: gate.eligible ? "ready" : "unavailable",
+    actualReason: gate.eligible
+      ? "The correction executor gates are satisfied for this attempt."
+      : (gate.missingEvidence ?? CORRECTION_UNAVAILABLE_REASON),
     attempts: { used, limit: WATCH_CORRECTION_LIMIT },
     executionPolicy: "first-attempt-only",
     phase: pending?.phase ?? (last === null ? "idle" : last.phase),
     pending,
     last: last === null ? null : correctionAttemptView(last),
     history,
-    stop,
-    gates: [
-      {
-        gate: "grant",
-        ok: grantOk,
-        reason: grantOk ? null : "no active correction grant matches the task mode, generation and scope",
-        observed:
-          grant === null
-            ? "not-granted"
-            : `${grant.state} version ${grant.version}; generation ${grant.generation}; scope ${grant.scopeTargetSessionID}`,
-        required: "an active limited-correction grant for this generation and target",
-      },
-      {
-        gate: "attempts",
-        ok: used < WATCH_CORRECTION_LIMIT,
-        reason: used < WATCH_CORRECTION_LIMIT ? null : "the three permanent attempts are spent",
-        observed: `${used}/3 permanent attempts`,
-        required: "fewer than three permanent attempts",
-      },
-      {
-        gate: "pending-attempt",
-        ok: open === undefined,
-        reason: open === undefined ? null : `attempt ${open.ordinal} is still ${open.phase}`,
-        observed: open === undefined ? "none" : `attempt ${open.ordinal} ${open.phase}`,
-        required: "no unresolved attempt",
-      },
-      {
-        gate: "business-unfinished",
-        ok: !businessCompleted && task.taskState !== "blocked",
-        reason: businessCompleted ? "the business task is completed" : task.taskState === "blocked" ? "the business task is explicitly blocked" : null,
-        observed: task.taskState,
-        required: "not completed or explicitly blocked",
-      },
-      {
-        gate: "task-active",
-        ok: task.watchState === "active",
-        reason: task.watchState === "active" ? null : `the watch is ${task.watchState}`,
-        observed: task.watchState,
-        required: "an active watch",
-      },
-      {
-        gate: "session-unresolved",
-        ok: !snapshot.sessionUnresolved,
-        reason: snapshot.sessionUnresolved ? "an older task for this session is unresolved" : null,
-        observed: snapshot.sessionUnresolved ? "unresolved older attempt" : "none",
-        required: "no unresolved older attempt for this session",
-      },
-      {
-        gate: "runtime",
-        ok: false,
-        reason: "the runtime tuple is not verified for automatic sending",
-        observed:
-          runtime === undefined
-            ? "not collected"
-            : `${runtime.appVersion ?? "?"}/${runtime.platform ?? "?"}/${runtime.arch ?? "?"}; sqlite=${runtime.sqliteVersion ?? "unknown"}; journal=${runtime.journalMode ?? "unknown"}; synchronous=${runtime.synchronous ?? "unknown"}; busy=${runtime.busyTimeoutMs ?? "unknown"}`,
-        required: "Linux x64, a verified app tuple, embedded SQLite >= 3.51.3 with WAL, FULL, bounded busy_timeout and local filesystem",
-      },
-      {
-        gate: "single-host",
-        ok: grant?.deployment === "single-host-same-location",
-        reason:
-          grant?.deployment === "single-host-same-location"
-            ? null
-            : "no explicit single-host deployment statement is recorded",
-        observed: grant?.deployment ?? "unknown",
-        required: "an explicit single-host, same-location deployment statement (a declaration, not proof of uniqueness)",
-      },
-      {
-        gate: "location",
-        ok: false,
-        reason: "same-host, same-location observation is not established",
-        observed: "not established",
-        required: "the same host and location continuously serve the target",
-      },
-      {
-        gate: "owner-generation",
-        ok: task.ownerActivation === activationID,
-        reason: task.ownerActivation === activationID ? null : "this activation is not the recorded executor",
-        observed: task.ownerActivation === activationID ? "this activation" : "another activation",
-        required: "the current recorded owner activation and generation",
-      },
-      {
-        gate: "protocol",
-        ok: task.lastReport !== undefined,
-        reason: task.lastReport === undefined ? "the target has not reported protocol participation" : null,
-        observed: task.lastReport === undefined ? "no report" : "a report was recorded",
-        required: "the target has participated in the protocol",
-      },
-      {
-        gate: "observation",
-        ok: false,
-        reason: "trusted continuous idle is required and is not established here",
-        observed: "no trusted idle sample",
-        required: "continuous trusted idle-candidate evidence",
-      },
-      {
-        gate: "waits",
-        ok: false,
-        reason: "no trusted wait snapshot is established here",
-        observed: "not snapshotted",
-        required: "no active, overdue or unknown wait and a complete wait snapshot",
-      },
-      {
-        gate: "closing",
-        ok: true,
-        reason: null,
-        observed: "open",
-        required: "the activation is not closing",
-      },
-      {
-        gate: "executor",
-        ok: false,
-        reason: "the controlled executor path is not open in this build",
-        observed: "closed",
-        required: "a controlled first-attempt executor that rechecks immediately before queue",
-      },
-    ],
-    businessCompleted,
+    stop:
+      gate.stopReason === null
+        ? null
+        : { reason: gate.stopReason, missingEvidence: gate.missingEvidence },
+    gates: gate.gates,
+    businessCompleted: task.taskState === "completed",
     controls: {
       grant: correctionGrantControl(task, activationID, grant?.state === "granted"),
       downgrade: correctionDowngradeControl(task, activationID, grant?.state === "granted"),
@@ -301,43 +210,6 @@ function correctionAttemptView(attempt: WatchCorrectionAttemptRecord): WatchCorr
           },
     stopReason: attempt.stopReason ?? null,
   }
-}
-
-function correctionStop(
-  task: WatchTaskRecord,
-  grant: WatchCorrectionSnapshot["grant"],
-  open: WatchCorrectionAttemptRecord | undefined,
-  used: number,
-  sessionUnresolved: boolean,
-): { readonly reason: WatchCorrectionStopReason; readonly missingEvidence: string | null } {
-  if (task.taskState === "completed") return { reason: "task-completed", missingEvidence: "the business task is completed" }
-  if (task.watchState === "paused") return { reason: "task-paused", missingEvidence: "the watch is manually paused" }
-  if (task.watchState === "ended") return { reason: "task-ended", missingEvidence: "the watch has ended" }
-  if (grant === null || grant.state !== "granted") {
-    return { reason: "grant-missing", missingEvidence: "no controlled correction grant is recorded" }
-  }
-  if (sessionUnresolved) {
-    return { reason: "session-unresolved", missingEvidence: "an older task for this session still has an unresolved attempt" }
-  }
-  if (open !== undefined) {
-    if (open.phase === "reserved") {
-      return { reason: "reservation-pending", missingEvidence: "the permanent reservation has not claimed its one send slot" }
-    }
-    if (open.phase === "sending") {
-      return { reason: "sending-unaccounted", missingEvidence: "the claimed send has no accepted or unknown outcome recorded" }
-    }
-    if (open.phase === "accepted") {
-      return { reason: "accepted-without-receipt", missingEvidence: "the target has not submitted a correction receipt" }
-    }
-    return { reason: "unknown-result", missingEvidence: "the delivery outcome is unknown; no replay is allowed" }
-  }
-  if (used >= WATCH_CORRECTION_LIMIT) {
-    return { reason: "attempt-limit", missingEvidence: "the three permanent attempts are spent" }
-  }
-  if (used >= 1) {
-    return { reason: "first-attempt-policy", missingEvidence: "this build's automatic executor may use only the first attempt" }
-  }
-  return { reason: "executor-unavailable", missingEvidence: "the controlled executor path is not open in this build" }
 }
 
 export function watchAlertView(alert: WatchAlertRecord): WatchAlertView {

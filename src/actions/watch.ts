@@ -47,6 +47,8 @@ const WATCH_FIELDS = new Set([
   "reportId",
   "kind",
   "evidence",
+  "attemptID",
+  "correlation",
 ])
 const EVIDENCE_FIELDS = new Set([
   "summary",
@@ -78,7 +80,7 @@ const OPERATIONS = [
 type Operation = (typeof OPERATIONS)[number]
 
 /** Operations that read or mutate the ledger, and therefore need a local session. */
-const LOCAL_OPERATIONS: readonly Operation[] = ["show", "enroll", "report", "pause", "end", "ack"]
+const LOCAL_OPERATIONS: readonly Operation[] = ["show", "enroll", "report", "pause", "end", "ack", "receipt"]
 
 export async function watchAction(deps: WatchActionDeps, call: ToolCall, input: unknown): Promise<ActionResult> {
   if (deps.watch === undefined) return outcomeResult(failure("E_WATCH_DISABLED", "Session peers is disabled by configuration."))
@@ -108,13 +110,23 @@ export async function watchAction(deps: WatchActionDeps, call: ToolCall, input: 
       )
     case "correct":
       return outcomeResult(failure("E_WATCH_UNSUPPORTED", CORRECTION_UNAVAILABLE_REASON))
-    case "receipt":
-      return outcomeResult(
-        failure(
-          "E_WATCH_UNSUPPORTED",
-          "Correction receipts are not implemented in this build because finite correction is not open.",
-        ),
+    case "receipt": {
+      if (
+        request.taskID === undefined ||
+        request.attemptID === undefined ||
+        request.correlation === undefined
+      ) {
+        return outcomeResult(failure("E_WATCH_INVALID", "receipt needs taskID, attemptID and correlation"))
+      }
+      return receiptResult(
+        deps.watch.receipt({
+          callerSessionID: call.sessionID,
+          taskID: request.taskID,
+          attemptID: request.attemptID,
+          correlation: request.correlation,
+        }),
       )
+    }
     case "delegate":
       return outcomeResult(failure("E_WATCH_UNSUPPORTED", DELEGATION_UNAVAILABLE_REASON))
     case "transfer":
@@ -196,6 +208,8 @@ interface WatchRequest {
   readonly reportID?: string
   readonly kind?: WatchReportKind
   readonly evidence?: WatchEvidence
+  readonly attemptID?: string
+  readonly correlation?: string
 }
 
 type Parsed = { readonly ok: true; readonly value: WatchRequest } | { readonly ok: false; readonly reason: string }
@@ -236,6 +250,10 @@ function readWatchInput(input: unknown): Parsed {
   if (!kind.ok) return kind
   const expectedVersion = optionalVersion(fields["expectedVersion"])
   if (!expectedVersion.ok) return expectedVersion
+  const attemptID = optionalString(fields, "attemptID")
+  if (!attemptID.ok) return attemptID
+  const correlation = optionalString(fields, "correlation")
+  if (!correlation.ok) return correlation
 
   let evidence: WatchEvidence | undefined
   const rawEvidence = fields["evidence"]
@@ -262,6 +280,8 @@ function readWatchInput(input: unknown): Parsed {
       ...(reportID.value === undefined ? {} : { reportID: reportID.value }),
       ...(kind.value === undefined ? {} : { kind: kind.value }),
       ...(expectedVersion.value === undefined ? {} : { expectedVersion: expectedVersion.value }),
+      ...(attemptID.value === undefined ? {} : { attemptID: attemptID.value }),
+      ...(correlation.value === undefined ? {} : { correlation: correlation.value }),
       ...(evidence === undefined ? {} : { evidence }),
     },
   }
@@ -331,6 +351,42 @@ function outcomeResult(outcome: WatchOutcome): ActionResult {
   }
 }
 
+function receiptResult(outcome: ReturnType<WatchApplication["receipt"]>): ActionResult {
+  const text = !outcome.ok
+    ? `${outcome.failure?.reason ?? "The correction receipt was refused."}\n\nCode: ${outcome.failure?.code ?? "E_WATCH_UNAVAILABLE"}. No continuation was authorized.`
+    : outcome.continuePermit
+      ? [
+          "**Correction receipt recorded.**",
+          "One continue permit was issued for this attempt. Continue only within the original authorization with the smallest next step.",
+          "This permit is for this attempt only. A receipt is not recovery; report a real state change or completion with a new result reference when it exists.",
+          "Do not repeat completed or unknown side effects, expand permissions, or rerun tools whose result is unknown.",
+        ].join("\n")
+      : outcome.duplicate
+        ? "**Correction receipt already recorded.** No second continue permit was issued. Do not use the earlier receipt as a new permission."
+        : [
+            "**Correction receipt recorded as seen, but no continue permit was issued.**",
+            `Reason: ${outcome.refusalReason ?? "the attempt is not eligible for continuation"}.`,
+            "Do not continue business work on the basis of this receipt.",
+          ].join("\n")
+  return {
+    text,
+    details: {
+      watch: {
+        ok: outcome.ok,
+        task: outcome.task,
+        capability: outcome.capability,
+        controls: outcome.controls,
+        alerts: outcome.alerts,
+        failure: outcome.failure,
+        continuePermit: outcome.continuePermit,
+        duplicate: outcome.duplicate,
+        seen: outcome.seen,
+        refusalReason: outcome.refusalReason,
+      },
+    },
+  }
+}
+
 function watchText(outcome: WatchOutcome): string {
   if (!outcome.ok) {
     const code = outcome.failure?.code ?? "E_WATCH_UNAVAILABLE"
@@ -352,7 +408,15 @@ function watchText(outcome: WatchOutcome): string {
     ...capabilityLines(outcome.capability),
     `Correction attempts: ${task.attempts.used}/${task.attempts.limit} permanent; policy: ${task.correction.executionPolicy}.`,
     `Correction actual: ${task.correction.actual} — ${task.correction.actualReason}`,
-    `Correction grant: ${task.correction.authorization.mode}/${task.correction.authorization.state}, version ${task.correction.authorization.version}; phase ${task.correction.phase}.`,
+    `Correction grant: ${task.correction.authorization.mode}/${task.correction.authorization.state}, version ${task.correction.authorization.version}; deployment ${task.correction.authorization.deployment}; phase ${task.correction.phase}.`,
+    ...(task.correction.stop === null
+      ? []
+      : [`Correction stop: ${task.correction.stop.reason}${task.correction.stop.missingEvidence === null ? "" : ` — ${task.correction.stop.missingEvidence}`}`]),
+    ...(task.correction.pending === null
+      ? []
+      : [
+          `Correction attempt: #${task.correction.pending.ordinal} ${task.correction.pending.phase}${task.correction.pending.receipt?.continuePermitIssuedAt != null ? " (continue permit issued)" : ""}.`,
+        ]),
     `Protocol participation: ${task.participation === "seen" ? "seen (a report has been recorded)" : "not seen (no report yet)"}`,
     `Ownership: ${task.ownership === "this-instance" ? "this plugin instance" : "another activation (read-only observation; no takeover)"}`,
     `State version: ${task.version}; generation: ${task.generation}`,

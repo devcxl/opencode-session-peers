@@ -147,7 +147,7 @@ describeWatch("trusted idle and running observation", () => {
       expect(payload.task?.correction.gates.find((gate) => gate.gate === "runtime")).toMatchObject({
         ok: false,
         observed: expect.stringContaining("sqlite="),
-        reason: expect.stringContaining("not verified"),
+        reason: expect.stringContaining("verified app tuple"),
       })
       expect(JSON.stringify(payload)).not.toContain("challenge")
       expectNoAgentCalls(host)
@@ -530,6 +530,11 @@ describeWatch("trusted idle and running observation", () => {
       })
       expect(confirmed?.task?.correction.controls.grant.enabled).toBe(false)
       expect(confirmed?.task?.correction.controls.downgrade.enabled).toBe(true)
+      await host.advance(2_000)
+      const alertOnly = await show(host)
+      expect(alertOnly.task?.correction.actual).toBe("unavailable")
+      expect(alertOnly.task?.correction.stop?.reason).toBe("runtime-unsupported")
+      expect(host.prompts).toEqual([])
       expect(JSON.stringify(await show(host))).not.toContain(challenge.challenge)
 
       const repeated = readWatchGrantPayload(
@@ -545,7 +550,19 @@ describeWatch("trusted idle and running observation", () => {
         }),
       )
       expect(repeated?.ok).toBe(false)
-      expect(repeated?.failure?.code).toBe("E_WATCH_STALE")
+      expect(repeated?.failure?.code).toBe("E_WATCH_INVALID_TRANSITION")
+
+      const duplicatePrepare = readWatchGrantPayload(
+        await rpc.call("watchGrant", {
+          operation: "prepare",
+          sessionID: CALLER_SESSION_ID,
+          taskID,
+          expectedVersion: confirmed?.task?.version,
+          deployment: "single-host-same-location",
+        }),
+      )
+      expect(duplicatePrepare?.ok).toBe(false)
+      expect(duplicatePrepare?.failure?.code).toBe("E_WATCH_INVALID_TRANSITION")
 
       const downgraded = readWatchGrantPayload(
         await rpc.call("watchGrant", {

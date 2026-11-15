@@ -21,6 +21,7 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
+  statfsSync,
   renameSync,
   writeFileSync,
 } from "node:fs"
@@ -102,6 +103,7 @@ export type WatchLedgerErrorCode =
   | "not_claimable"
   | "receipt_conflict"
   | "recovery_evidence_missing"
+  | "grant_active"
   | "ledger_error"
 
 export type LedgerResult<T> =
@@ -233,6 +235,8 @@ export interface RecordCorrectionOutcomeInput {
   readonly reservationId: string
   readonly ownerActivation: string
   readonly outcome: "accepted" | "rejected" | "unknown"
+  /** The host admission id when the outcome is accepted. */
+  readonly admissionID?: string
   readonly at: number
 }
 
@@ -283,6 +287,7 @@ export interface WatchLedger {
   readonly journalMode: string
   readonly synchronous: number
   readonly busyTimeoutMs: number
+  readonly filesystem: string
   enroll(input: EnrollWatchTaskInput): LedgerResult<{ readonly task: WatchTaskRecord; readonly created: boolean }>
   show(input: { readonly taskID?: string; readonly sessionID: string }): LedgerResult<WatchTaskRecord | null>
   report(input: ReportWatchTaskInput): LedgerResult<{ readonly task: WatchTaskRecord; readonly duplicate: boolean }>
@@ -469,6 +474,7 @@ interface CorrectionAttemptRow {
   readonly receipt_refusal_reason: string | null
   readonly last_seen_at: number | null
   readonly last_seen_reason: string | null
+  readonly admission_id: string | null
   readonly recovery_report_id: string | null
   readonly recovery_reference: string | null
   readonly recovered_at: number | null
@@ -639,6 +645,7 @@ CREATE TABLE IF NOT EXISTS watch_correction_attempts (
   receipt_refusal_reason TEXT,
   last_seen_at INTEGER,
   last_seen_reason TEXT,
+  admission_id TEXT,
   recovery_report_id TEXT,
   recovery_reference TEXT,
   recovered_at INTEGER,
@@ -759,6 +766,7 @@ const REQUIRED_CORRECTION_ATTEMPT_COLUMNS = [
   "receipt_refusal_reason",
   "last_seen_at",
   "last_seen_reason",
+  "admission_id",
   "recovery_report_id",
   "recovery_reference",
   "recovered_at",
@@ -938,8 +946,9 @@ function openOnce(options: OpenWatchLedgerOptions): OpenWatchLedgerResult {
 
     db = new Database(path, { create: anchor === undefined, strict: true })
     chmodSync(path, 0o600)
-    const busyTimeoutMs = Math.max(0, Math.trunc(options.busyTimeoutMs ?? 500))
-    db.run(`PRAGMA busy_timeout = ${busyTimeoutMs}`)
+    const requestedBusyTimeoutMs = Math.max(0, Math.trunc(options.busyTimeoutMs ?? 500))
+    db.run(`PRAGMA busy_timeout = ${requestedBusyTimeoutMs}`)
+    const busyTimeoutMs = (db.query("PRAGMA busy_timeout").get() as { timeout?: number }).timeout ?? -1
     db.run("PRAGMA synchronous = FULL")
     db.run("PRAGMA foreign_keys = ON")
 
@@ -1040,6 +1049,7 @@ function openOnce(options: OpenWatchLedgerOptions): OpenWatchLedgerResult {
       })
     }
 
+    const filesystem = filesystemType(directory)
     const ledger = new SqliteWatchLedger(
       db,
       path,
@@ -1048,6 +1058,7 @@ function openOnce(options: OpenWatchLedgerOptions): OpenWatchLedgerResult {
       journalMode,
       synchronous,
       busyTimeoutMs,
+      filesystem,
       options.now ?? Date.now,
     )
     ledger.secureFiles()
@@ -1180,6 +1191,7 @@ class SqliteWatchLedger implements WatchLedger {
     readonly journalMode: string,
     readonly synchronous: number,
     readonly busyTimeoutMs: number,
+    readonly filesystem: string,
     private readonly now: () => number,
   ) {}
 
@@ -1599,6 +1611,10 @@ class SqliteWatchLedger implements WatchLedger {
       if (task.watch_state === "ended" || task.task_state === "completed") {
         throw new LedgerFailure("invalid_transition", "a completed or ended task cannot receive a grant")
       }
+      const existingGrant = this.correctionGrantRow(task.task_id)
+      if (existingGrant?.state === "granted") {
+        throw new LedgerFailure("grant_active", "an active correction grant already exists; downgrade it first")
+      }
       const ttl = Math.min(Math.max(Math.trunc(input.ttlMs ?? 120_000), 30_000), 300_000)
       const termsDigest = createHash("sha256")
         .update(
@@ -1679,6 +1695,10 @@ class SqliteWatchLedger implements WatchLedger {
       }
       if (task.version !== input.expectedVersion || task.generation !== input.generation) {
         throw new LedgerFailure("stale_version", "the task version or generation changed")
+      }
+      const activeGrant = this.correctionGrantRow(task.task_id)
+      if (activeGrant?.state === "granted") {
+        throw new LedgerFailure("grant_active", "an active correction grant already exists; downgrade it first")
       }
       const row = this.db
         .query("SELECT * FROM watch_correction_challenges WHERE challenge = ?")
@@ -2032,9 +2052,13 @@ class SqliteWatchLedger implements WatchLedger {
         return { attempt: correctionAttemptFromRow(this.correctionAttemptRow(reservationID)), changed: true }
       }
       const nextPhase = input.outcome === "rejected" ? "rejected" : input.outcome
+      const admission =
+        input.outcome === "accepted" && input.admissionID !== undefined
+          ? requiredIdentifier(input.admissionID, "admissionID")
+          : null
       this.db
-        .query(`UPDATE watch_correction_attempts SET state = ?, ${column} = ? WHERE reservation_id = ?`)
-        .run(nextPhase, input.at, reservationID)
+        .query(`UPDATE watch_correction_attempts SET state = ?, ${column} = ?, admission_id = ? WHERE reservation_id = ?`)
+        .run(nextPhase, input.at, admission, reservationID)
       return { attempt: correctionAttemptFromRow(this.correctionAttemptRow(reservationID)), changed: true }
     })
   }
@@ -2505,6 +2529,25 @@ class SqliteWatchLedger implements WatchLedger {
   }
 }
 
+const LOCAL_FILESYSTEMS: Readonly<Record<number, string>> = {
+  0xef53: "ext4",
+  0x58465342: "xfs",
+  0x9123683e: "btrfs",
+  0x01021994: "tmpfs",
+  0x2fc12fc1: "zfs",
+  0x794c7630: "overlay",
+}
+
+function filesystemType(path: string): string {
+  try {
+    const stats = statfsSync(path) as unknown as { type?: number | bigint }
+    if (stats.type === undefined) return "unknown"
+    return LOCAL_FILESYSTEMS[Number(stats.type)] ?? "unknown"
+  } catch {
+    return "unknown"
+  }
+}
+
 function taskFromRow(row: TaskRow, reportedWaits: readonly WatchReportedWait[] = []): WatchTaskRecord {
   const lastReport =
     row.last_report_id === null
@@ -2589,6 +2632,7 @@ function correctionAttemptFromRow(row: CorrectionAttemptRow | null): WatchCorrec
     ...(row.receipt_refusal_reason === null ? {} : { receiptRefusalReason: row.receipt_refusal_reason }),
     ...(row.last_seen_at === null ? {} : { lastSeenAt: row.last_seen_at }),
     ...(row.last_seen_reason === null ? {} : { lastSeenReason: row.last_seen_reason }),
+    ...(row.admission_id === null ? {} : { admissionID: row.admission_id }),
     ...(row.recovery_report_id === null ? {} : { recoveryReportID: row.recovery_report_id }),
     ...(row.recovery_reference === null ? {} : { recoveryReference: row.recovery_reference }),
     ...(row.recovered_at === null ? {} : { recoveredAt: row.recovered_at }),

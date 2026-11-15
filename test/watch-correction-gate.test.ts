@@ -71,7 +71,7 @@ const runtime: CorrectionRuntimeFacts = {
   journalMode: "wal",
   synchronous: 2,
   busyTimeoutMs: 500,
-  filesystem: "local",
+  filesystem: "tmpfs",
 }
 
 describe("correction gate", () => {
@@ -172,6 +172,21 @@ describe("correction gate", () => {
     })
     expect(result.gates.find((gate) => gate.gate === "waits")).toMatchObject({ ok: true })
     expect(result.gates.find((gate) => gate.gate === "observation")).toMatchObject({ ok: true })
+  })
+
+  test("a non-local or unknown filesystem keeps the runtime gate closed", () => {
+    const result = correctionGate({
+      task,
+      snapshot,
+      observation,
+      runtime: { ...runtime, filesystem: "nfs" },
+      ownerActivation: "activation-a",
+      sameLocation: true,
+      singleHostDeclared: true,
+      closing: false,
+      executorReady: true,
+    })
+    expect(result.gates.find((gate) => gate.gate === "runtime")).toMatchObject({ ok: false })
   })
 
   test("reports observation and wait gaps without turning them into a grant decision", () => {
