@@ -20,7 +20,7 @@ export interface ObservationContent {
   readonly notes: readonly string[]
 }
 
-export function observationRows(payload: WatchPayload): ObservationContent {
+export function observationRows(payload: WatchPayload, compact = false): ObservationContent {
   const observation = payload.observation
   const activity = payload.activity
 
@@ -38,12 +38,19 @@ export function observationRows(payload: WatchPayload): ObservationContent {
   }
 
   const rows: (readonly TableCell[])[] = [
-    fact("Observation", observationText(observation)),
+    fact("Observation", observationText(observation, compact)),
     fact("Activity", activityText(activity)),
     fact("Progress", "not judged — activity is not goal progress"),
-    fact("Snapshot", snapshotText(observation)),
-    fact("Wait state", waitsSummary(observation)),
   ]
+  if (!compact || !observation.trusted) rows.push(fact("Snapshot", snapshotText(observation)))
+  const emptyWaits =
+    observation.waits.length === 0 &&
+    !observation.waitsPartial &&
+    observation.state !== "normal-waiting" &&
+    observation.state !== "blocked" &&
+    observation.state !== "unknown" &&
+    observation.state !== "unavailable"
+  if (!compact || !emptyWaits) rows.push(fact("Wait state", waitsSummary(observation)))
   observation.waits.forEach((wait, index) => {
     rows.push(fact(`Wait ${index + 1}`, waitText(wait)))
   })
@@ -83,19 +90,20 @@ export function observationRows(payload: WatchPayload): ObservationContent {
   return { rows, notes }
 }
 
-function observationText(observation: Observation): string {
+function observationText(observation: Observation, compact: boolean): string {
   const reason = observation.reason ?? "no reason given"
+  const trust = compact && observation.trusted ? " · trusted" : ""
   switch (observation.state) {
     case "active":
-      return "active"
+      return `active${trust}`
     case "idle-candidate":
-      return `sustained idle — candidate · idle threshold ${formatDuration(observation.effective.idleMs)}`
+      return `sustained idle — candidate · idle threshold ${formatDuration(observation.effective.idleMs)}${trust}`
     case "running-silence":
-      return `running, no new activity — reminder only · silence threshold ${formatDuration(observation.effective.runningSilentMs)}`
+      return `running, no new activity — reminder only · silence threshold ${formatDuration(observation.effective.runningSilentMs)}${trust}`
     case "normal-waiting":
-      return `normal waiting · overdue threshold ${formatDuration(observation.effective.waitOverdueMs)}`
+      return `normal waiting · overdue threshold ${formatDuration(observation.effective.waitOverdueMs)}${trust}`
     case "blocked":
-      return "blocked"
+      return `blocked${trust}`
     case "unknown":
       return `unknown — ${reason}`
     case "unavailable":

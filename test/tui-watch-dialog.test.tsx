@@ -418,3 +418,18 @@ describe("the alert pane", () => {
     expect(pauses).toEqual([])
   })
 })
+
+describe("a short terminal", () => {
+  test("keeps the title, observation and pause question visible", async () => {
+    const { setup, text } = await rendered({ kind: "payload", payload: payload() }, { height: 40 })
+    expect(text()).toContain("Session watch")
+    expect(text()).toContain("Observation")
+    expect(text()).toContain("Progress")
+    expect(text()).toContain("unavailable in this build")
+
+    setup.mockInput.pressKey("p")
+    await setup.flush()
+    expect(text()).toContain("Pause supervision?")
+    expect(text()).toContain("the business session keeps running")
+  })
+})
