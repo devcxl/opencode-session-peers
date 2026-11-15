@@ -36,9 +36,19 @@ const NO_SESSION = "Peers watch: no session is open here."
 export function installWatch(port: TuiPort): () => void {
   const feed = createWatchFeed(port.watch)
   let panelSessionID: string | undefined
+  let panelOpen = false
+  let disposed = false
+  /**
+   * Changes whenever the visible panel changes or the plugin unloads. A reply
+   * is only allowed to touch the panel epoch it was requested from.
+   */
+  let lifecycleEpoch = 0
 
   const open = (sessionID: string): void => {
+    if (disposed) return
+    const openedEpoch = ++lifecycleEpoch
     panelSessionID = sessionID
+    panelOpen = true
     feed.open(sessionID)
     port.dialog.show(
       () => (
@@ -46,18 +56,30 @@ export function installWatch(port: TuiPort): () => void {
           state={feed.state}
           sessionID={sessionID}
           palette={port.palette}
-          onPause={(taskID, version) => control("pause", taskID, version, true)}
-          onEnd={(taskID, version) => control("end", taskID, version, true)}
+          onPause={async (taskID, version) => {
+            if (disposed || openedEpoch !== lifecycleEpoch || panelSessionID !== sessionID) return
+            await control("pause", taskID, version, true)
+          }}
+          onEnd={async (taskID, version) => {
+            if (disposed || openedEpoch !== lifecycleEpoch || panelSessionID !== sessionID) return
+            await control("end", taskID, version, true)
+          }}
         />
       ),
-      // The host closes on escape; the feed keeps its subscription but stops
-      // its refresh floor until the next opening.
-      () => feed.close(),
+      // A close from an older panel must not act for the one on screen now.
+      () => {
+        if (disposed || openedEpoch !== lifecycleEpoch) return
+        panelOpen = false
+        panelSessionID = undefined
+        lifecycleEpoch += 1
+        feed.close()
+      },
     )
     port.dialog.set({ size: "xlarge", centered: true })
   }
 
   const openCurrent = (): void => {
+    if (disposed) return
     const { sessionID } = port.currentSession()
     if (sessionID === undefined) {
       port.toast(NO_SESSION, "warning")
@@ -67,6 +89,9 @@ export function installWatch(port: TuiPort): () => void {
   }
 
   const enroll = async (goal: string): Promise<void> => {
+    if (disposed) return
+    const startedEpoch = lifecycleEpoch
+    const stillCurrent = () => !disposed && lifecycleEpoch === startedEpoch
     const { sessionID } = port.currentSession()
     if (sessionID === undefined) {
       port.toast(NO_SESSION, "warning")
@@ -84,10 +109,12 @@ export function installWatch(port: TuiPort): () => void {
         mode: "alert",
       })
     } catch (error) {
+      if (!stillCurrent()) return
       port.toast(`Could not enroll the watch: ${failureText(error)}`, "error")
       open(sessionID)
       return
     }
+    if (!stillCurrent()) return
     const payload = readWatchPayload(answer)
     if (payload === undefined) {
       port.toast(
@@ -112,11 +139,17 @@ export function installWatch(port: TuiPort): () => void {
     expectedVersion: number,
     fromPanel: boolean,
   ): Promise<void> => {
+    if (disposed) return
+    const startedEpoch = lifecycleEpoch
     const sessionID = fromPanel ? panelSessionID : port.currentSession().sessionID
     if (sessionID === undefined) {
       port.toast(NO_SESSION, "warning")
       return
     }
+    const stillCurrent = () =>
+      !disposed &&
+      lifecycleEpoch === startedEpoch &&
+      (!fromPanel || (panelOpen && panelSessionID === sessionID))
 
     if (fromPanel) {
       const state = feed.state()
@@ -143,11 +176,13 @@ export function installWatch(port: TuiPort): () => void {
     try {
       answer = await port.watch.call({ operation, sessionID, taskID, expectedVersion })
     } catch (error) {
+      if (!stillCurrent()) return
       port.toast(`Could not ${operation} the watch: ${failureText(error)}`, "error")
       if (fromPanel) feed.refresh()
       else open(sessionID)
       return
     }
+    if (!stillCurrent()) return
     const payload = readWatchPayload(answer)
     if (payload === undefined) {
       port.toast(
@@ -186,6 +221,7 @@ export function installWatch(port: TuiPort): () => void {
     slash: "peers-watch",
     arguments: true,
     run: (input) => {
+      if (disposed) return
       const text = input?.trim() ?? ""
       if (text === "" || text === "show") {
         openCurrent()
@@ -240,7 +276,14 @@ export function installWatch(port: TuiPort): () => void {
     },
   })
 
-  return () => feed.dispose()
+  return () => {
+    if (disposed) return
+    disposed = true
+    panelOpen = false
+    panelSessionID = undefined
+    lifecycleEpoch += 1
+    feed.dispose()
+  }
 }
 
 function successText(operation: "pause" | "end", task: WatchPayload["task"]): string {

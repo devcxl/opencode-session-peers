@@ -406,10 +406,12 @@ describe("unavailable states", () => {
   test("a failed ledger never reads as no task", () => {
     const blocks = content(state({ ledger: { available: false, reason: "the ledger is locked" } }))
     expect(blocks.title).toBe("Session watch is unavailable")
-    expect(blocks.notes.join("\n")).toContain(
-      "Watch ledger unavailable: the ledger is locked. No watched task was created or changed.",
+    const notes = blocks.notes.join("\n")
+    expect(notes).toContain(
+      "Watch ledger unavailable: the ledger is locked. The current task state could not be read; re-read to verify. No rollback is assumed.",
     )
-    expect(blocks.notes.join("\n")).not.toContain("No watched task is enrolled")
+    expect(notes).not.toContain("No watched task is enrolled")
+    expect(notes).not.toContain("created or changed")
     expect(blocks.noteTone).toBe("error")
   })
 
