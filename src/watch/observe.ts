@@ -15,7 +15,7 @@
 
 import type { WatchConfig } from "../config.ts"
 import { describeError } from "../domain/errors.ts"
-import type { AskRecord, SessionID } from "../domain/types.ts"
+import type { AskRecord, ReplyRecord, SessionID } from "../domain/types.ts"
 import {
   type WatchActivityView,
   type WatchAlertKind,
@@ -77,6 +77,7 @@ export interface WatchObserverDeps {
   /** The authoritative task record source; alerts are persisted through the same application. */
   readonly store: WatchApplication
   readonly asks: RecordStore<AskRecord>
+  readonly replies: RecordStore<ReplyRecord>
   readonly onChanged?: () => void
   readonly warn: (message: string) => void
 }
@@ -84,6 +85,7 @@ export interface WatchObserverDeps {
 export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
   const facts = new Map<SessionID, SessionFacts>()
   const observations = new Map<string, TaskObservation>()
+  const observedWaitKeys = new Map<string, Set<string>>()
   const startedAt = deps.scheduler.now()
   let lastTickAt: number | null = null
   let gap: string | null = null
@@ -303,7 +305,10 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
       await sample(task, now)
     }
     for (const taskID of [...observations.keys()]) {
-      if (!seen.has(taskID)) observations.delete(taskID)
+      if (!seen.has(taskID)) {
+        observations.delete(taskID)
+        observedWaitKeys.delete(taskID)
+      }
     }
     if (gap !== null) {
       // The gap is cleared by a new sample; its effect is already in the
@@ -350,15 +355,25 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
     if (!asks.ok) {
       waits.partial = true
     } else {
-      mergeAskWaits(waits, asks.records, now)
+      await mergeAskWaits(waits, asks.records, current, now)
     }
     mergeFormWaits(current, waits, now)
     mergeRetryWait(current, waits, now)
 
+    const previousWaitKeys = observedWaitKeys.get(task.taskID) ?? new Set<string>()
+    const currentWaitKeys = new Set(waits.items.map((wait) => wait.waitID))
+    for (const key of previousWaitKeys) {
+      if (!currentWaitKeys.has(key)) resolveConditionAlerts(task.taskID, [`wait:${key}`], now)
+    }
+    observedWaitKeys.set(task.taskID, currentWaitKeys)
     const waitsTruncated = waits.items.length > MAX_WAITS
     const visibleWaits = waits.items.slice(0, MAX_WAITS)
     const observed = observe(task, current, session.idleAt, waits.partial, visibleWaits, waitsTruncated, now)
     observations.set(task.taskID, observed)
+    if (task.watchState !== "active") {
+      // Pausing stops new alerts but leaves the old ones queryable/ackable.
+      return
+    }
 
     const hasWait = visibleWaits.some((wait) => wait.status === "active" || wait.status === "overdue")
     const blocked = visibleWaits.some((wait) => wait.status === "denied")
@@ -453,7 +468,7 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
     if (task.watchState !== "active") {
       return {
         observation: {
-          state: task.watchState === "paused" ? "unavailable" : "unavailable",
+          state: "unavailable",
           reason: task.watchState === "paused" ? "supervision is paused" : "supervision has ended",
           observedAt: now,
           baselineAt: null,
@@ -461,6 +476,47 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
           trusted: false,
           waits,
           waitsPartial,
+          waitsTruncated,
+          effective: thresholds,
+        },
+        activity,
+      }
+    }
+    // Event-only sources are complete from the observation baseline onward. A
+    // task enrolled after that baseline is covered; a reloaded task is covered
+    // again once a fresh terminal execution is observed.
+    const eventHistoryComplete =
+      task.createdAt >= current.observedFrom ||
+      (current.settledAt !== null && current.settledAt >= current.observedFrom)
+    const effectivePartial = waitsPartial || !eventHistoryComplete
+    if (task.taskState === "blocked") {
+      return {
+        observation: {
+          state: "blocked",
+          reason: "the executing session reported blocked work",
+          observedAt: now,
+          baselineAt: null,
+          idleSince: null,
+          trusted: false,
+          waits,
+          waitsPartial: effectivePartial,
+          waitsTruncated,
+          effective: thresholds,
+        },
+        activity,
+      }
+    }
+    if (task.taskState === "waiting") {
+      return {
+        observation: {
+          state: "normal-waiting",
+          reason: "the executing session reported a normal wait",
+          observedAt: now,
+          baselineAt: null,
+          idleSince: null,
+          trusted: false,
+          waits,
+          waitsPartial: effectivePartial,
           waitsTruncated,
           effective: thresholds,
         },
@@ -514,9 +570,18 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
         activity,
       }
     }
-    if (waitsPartial) {
+    if (effectivePartial) {
       return {
-        observation: unknownObservation(now, "a wait source is unavailable or incomplete", waits, waitsPartial, thresholds, waitsTruncated),
+        observation: unknownObservation(
+          now,
+          eventHistoryComplete
+            ? "a wait source is unavailable or incomplete"
+            : "event-only wait sources predate this observation",
+          waits,
+          true,
+          thresholds,
+          waitsTruncated,
+        ),
         activity,
       }
     }
@@ -560,7 +625,9 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
     }
     const baseline = Math.max(
       task.createdAt,
+      task.updatedAt,
       current.settledAt ?? task.createdAt,
+      current.lastActivityAt ?? 0,
       current.invalidatedAt ?? 0,
       current.observedFrom,
     )
@@ -667,14 +734,31 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
     })
   }
 
-  const mergeAskWaits = (
+  const mergeAskWaits = async (
     waits: { items: WatchWaitView[]; partial: boolean },
     records: readonly { readonly id: string; readonly value: AskRecord }[],
+    current: SessionFacts,
     now: number,
   ) => {
     for (const record of records) {
       const ask = record.value
       if (ask.targetSessionID === undefined) continue
+      const reply = await deps.replies.read(ask.askID)
+      if (reply !== undefined) {
+        addCleared(current, {
+          waitID: `ask:${ask.askID}`,
+          source: "ask",
+          object: "peer ask",
+          reason: "a peer question was awaiting an answer",
+          reference: ask.askID,
+          startedAt: ask.createdAt,
+          deadline: ask.expiresAt,
+          status: "cleared",
+          clearEvidence: "reply stored for this ask",
+          denyEvidence: null,
+        })
+        continue
+      }
       const started = ask.createdAt
       const expired = ask.expiresAt <= now
       waits.items.push({
@@ -698,17 +782,24 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
     now: number,
   ): Promise<{ items: WatchWaitView[]; partial: boolean }> => {
     const waits: { items: WatchWaitView[]; partial: boolean } = { items: [], partial: false }
-    if (task.lastReport?.kind === "waiting") {
-      const evidence = task.lastReport.evidence
+    if (task.reportedWait !== undefined) {
+      const wait = task.reportedWait
       waits.items.push({
-        waitID: `report:${task.lastReport.reportID}`,
+        waitID: wait.waitID,
         source: "reported",
-        object: evidence.waitFor ?? "reported wait",
-        reason: evidence.reason ?? "the executing session declared a normal wait",
-        reference: evidence.reference ?? null,
-        startedAt: task.lastReport.at,
-        deadline: null,
-        status: now - task.lastReport.at >= deps.config.waitOverdueMs ? "overdue" : "active",
+        object: wait.waitFor,
+        reason: wait.reason,
+        reference: wait.reference,
+        startedAt: wait.at,
+        deadline: wait.waitUntil ?? null,
+        status:
+          wait.waitUntil !== undefined
+            ? now >= wait.waitUntil
+              ? "overdue"
+              : "active"
+            : now - wait.at >= deps.config.waitOverdueMs
+              ? "overdue"
+              : "active",
         clearEvidence: null,
         denyEvidence: null,
       })
@@ -820,6 +911,7 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
       registration?.dispose()
       registration = undefined
       observations.clear()
+      observedWaitKeys.clear()
       facts.clear()
     },
   }

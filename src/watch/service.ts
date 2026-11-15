@@ -14,7 +14,7 @@ import {
   readIdentifier,
   type WatchActivityView,
   type WatchAlertRecord,
-  type WatchAlertView,
+  type WatchAlertsView,
   type WatchEvidence,
   type WatchObservationView,
   type WatchFailure,
@@ -37,8 +37,8 @@ export interface WatchOutcome {
   readonly task: WatchTaskView | null
   readonly capability: ReturnType<typeof watchCapability>
   readonly controls: ReturnType<typeof watchControls>
-  /** Active alerts for the task; a read failure is surfaced by the payload's alert availability. */
-  readonly alerts: readonly WatchAlertView[]
+  /** Persisted alerts for the task, including resolved history and real availability. */
+  readonly alerts: WatchAlertsView
   readonly failure: WatchFailure | null
   readonly created: boolean
   readonly duplicate: boolean
@@ -87,7 +87,7 @@ export interface WatchApplication {
   upsertAlert(input: UpsertWatchAlertInput): { readonly alert: WatchAlertRecord; readonly created: boolean; readonly escalated: boolean } | undefined
   resolveAlert(input: { readonly taskId: string; readonly dedupeKey: string; readonly at: number }): boolean
   /** Active alerts for one task; empty when none or the ledger cannot answer. */
-  alertsFor(taskID: string): readonly WatchAlertView[]
+  alertsFor(taskID: string): WatchAlertsView
   /**
    * The line to append to a normal model context, or `undefined` when this
    * session has no local task that should hear from the watchdog. This never
@@ -140,11 +140,23 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
     return state
   }
 
-  const alertsFor = (taskID: string): readonly WatchAlertView[] => {
+  const alertsFor = (taskID: string): WatchAlertsView => {
     const current = ensure()
-    if (current.ledger === undefined) return []
+    if (current.ledger === undefined) {
+      const reason = `${current.failure?.code ?? "ledger_error"}: ${current.failure?.detail ?? "unknown"}`
+      return emptyWatchAlerts(false, reason)
+    }
     const listed = current.ledger.alerts(taskID)
-    return listed.ok ? listed.value.map(watchAlertView) : []
+    if (!listed.ok) return emptyWatchAlerts(false, `${listed.code}: ${listed.detail}`)
+    return {
+      items: listed.value.alerts.map(watchAlertView),
+      unread: listed.value.unread,
+      total: listed.value.total,
+      active: listed.value.active,
+      truncated: listed.value.truncated,
+      available: true,
+      reason: null,
+    }
   }
 
   const view = (sessionID: string, taskID?: string): { outcome: WatchOutcome; ledger?: WatchLedger } => {
@@ -167,7 +179,7 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
         task,
         capability: watchCapability(),
         controls: watchControls(task),
-        alerts: task === null ? [] : alertsFor(task.taskID),
+        alerts: task === null ? emptyWatchAlerts(true, null) : alertsFor(task.taskID),
         failure: null,
         created: false,
         duplicate: false,
@@ -420,12 +432,16 @@ function failureOutcome(failure: WatchFailure): WatchOutcome {
     task: null,
     capability: watchCapability(),
     controls: watchControls(null),
-    alerts: [],
+    alerts: emptyWatchAlerts(false, failure.reason),
     failure,
     created: false,
     duplicate: false,
     changed: false,
   }
+}
+
+export function emptyWatchAlerts(available: boolean, reason: string | null): WatchAlertsView {
+  return { items: [], unread: 0, total: 0, active: 0, truncated: false, available, reason }
 }
 
 export function mapLedgerFailure(code: WatchLedgerErrorCode, detail: string): WatchFailure {

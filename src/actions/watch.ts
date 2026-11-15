@@ -21,7 +21,7 @@ import type { ActionResult } from "../domain/types.ts"
 import type { SessionLookup } from "../host/session.ts"
 import type { ToolCall } from "../host/tools.ts"
 import { sessionAtLocation } from "../watch/access.ts"
-import type { WatchApplication, WatchObservationSource, WatchOutcome } from "../watch/service.ts"
+import { emptyWatchAlerts, type WatchApplication, type WatchObservationSource, type WatchOutcome } from "../watch/service.ts"
 import { watchCapability, watchControls } from "../watch/view.ts"
 
 export interface WatchActionDeps {
@@ -265,7 +265,7 @@ function failure(code: WatchFailure["code"], reason: string): WatchOutcome {
     task: null,
     capability: watchCapability(),
     controls: watchControls(null),
-    alerts: [],
+    alerts: emptyWatchAlerts(false, reason),
     failure: { code, reason },
     created: false,
     duplicate: false,

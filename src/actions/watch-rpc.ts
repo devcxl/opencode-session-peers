@@ -11,7 +11,7 @@
 import { DELEGATION_UNAVAILABLE_REASON, type WatchFailure } from "../domain/watch.ts"
 import type { SessionLookup } from "../host/session.ts"
 import { sessionAtLocation } from "../watch/access.ts"
-import type { WatchApplication, WatchObservationSource, WatchOutcome } from "../watch/service.ts"
+import { emptyWatchAlerts, type WatchApplication, type WatchObservationSource, type WatchOutcome } from "../watch/service.ts"
 import { watchCapability, watchControls } from "../watch/view.ts"
 import type { WatchFailureView, WatchPayload } from "../watch/contract.ts"
 
@@ -173,9 +173,15 @@ function payload(deps: WatchRpcDeps, outcome: WatchOutcome): WatchPayload {
     task: outcome.task,
     capability: outcome.capability,
     controls: outcome.controls,
-    observation: taskID === undefined ? null : deps.observe?.observationFor(taskID) ?? null,
-    activity: taskID === undefined ? null : deps.observe?.activityFor(taskID) ?? null,
-    alerts: alertsView(outcome, status.available, status.reason),
+    observation:
+      taskID === undefined || outcome.task?.watchState === "ended" || outcome.task?.taskState === "completed"
+        ? null
+        : deps.observe?.observationFor(taskID) ?? null,
+    activity:
+      taskID === undefined || outcome.task?.watchState === "ended" || outcome.task?.taskState === "completed"
+        ? null
+        : deps.observe?.activityFor(taskID) ?? null,
+    alerts: outcome.alerts,
     failure: outcome.failure === null ? null : failureView(outcome.failure),
   }
 }
@@ -187,10 +193,10 @@ function failurePayload(deps: WatchRpcDeps, failure: WatchFailure): WatchPayload
     ledger: status,
     task: null,
     capability: watchCapability(),
-    controls: watchControls(null),
+    controls: unavailableControls(status.available, status.reason),
     observation: null,
     activity: null,
-    alerts: alertsView(null, status.available, status.reason),
+    alerts: emptyWatchAlerts(status.available, status.reason),
     failure: failureView(failure),
   }
 }
@@ -201,16 +207,11 @@ function ledgerStatus(deps: WatchRpcDeps): { available: boolean; reason: string 
     : deps.watch.status()
 }
 
-function alertsView(outcome: WatchOutcome | null, available: boolean, reason: string | null) {
-  const items = outcome?.alerts ?? []
-  return {
-    items,
-    unread: items.filter((alert) => alert.state === "unread").length,
-    total: items.length,
-    truncated: false,
-    available,
-    reason: available ? null : reason,
-  }
+function unavailableControls(available: boolean, reason: string | null) {
+  const controls = watchControls(null)
+  if (available) return controls
+  const disabled = { enabled: false, reason: reason ?? "the watch ledger is unavailable" }
+  return { ...controls, pause: disabled, end: disabled, acknowledge: disabled }
 }
 
 function failureView(failure: WatchFailure): WatchFailureView {

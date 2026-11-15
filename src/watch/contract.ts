@@ -51,10 +51,10 @@ export interface WatchPayload {
   readonly capability: WatchCapability
   readonly controls: WatchControls
   /** Current observer reading; `null` when no task is enrolled or no sample exists. */
-  readonly observation?: WatchObservationView | null
+  readonly observation: WatchObservationView | null
   /** The target's last own activity; continuous activity is never judged as progress. */
-  readonly activity?: WatchActivityView | null
-  readonly alerts?: WatchAlertsView
+  readonly activity: WatchActivityView | null
+  readonly alerts: WatchAlertsView
   readonly failure: WatchFailureView | null
 }
 
@@ -67,6 +67,10 @@ const evidenceSchema = {
     waitKind: { type: "string", enum: ["human", "peer", "permission", "form", "child", "other"] },
     waitFor: { type: "string" },
     reason: { type: "string" },
+    waitID: { type: "string" },
+    waitUntil: { type: "integer" },
+    clearsWaitID: { type: "string" },
+    clearEvidence: { type: "string" },
   },
 } as const
 
@@ -163,8 +167,8 @@ const capabilitySchema = {
   additionalProperties: false,
   properties: {
     mode: { type: "string", enum: ["alert"] },
-    monitoring: { type: "string", enum: ["participant-reports-only", "observer-alerts"] },
-    automaticDetection: { type: "string", enum: ["unavailable", "partial"] },
+    monitoring: { type: "string", enum: ["observer-alerts"] },
+    automaticDetection: { type: "string", enum: ["partial"] },
     automaticDetectionReason: { type: "string" },
     correction: { type: "string", enum: ["unavailable"] },
     correctionReason: { type: "string" },
@@ -201,11 +205,12 @@ const controlsSchema = {
   properties: {
     pause: controlSchema,
     end: controlSchema,
+    acknowledge: controlSchema,
     resume: controlSchema,
     correction: controlSchema,
     transfer: controlSchema,
   },
-  required: ["pause", "end", "resume", "correction", "transfer"],
+  required: ["pause", "end", "acknowledge", "resume", "correction", "transfer"],
 } as const
 
 const ledgerSchema = {
@@ -357,11 +362,12 @@ const alertsSchema = {
     items: { type: "array", items: alertSchema },
     unread: { type: "number" },
     total: { type: "number" },
+    active: { type: "number" },
     truncated: { type: "boolean" },
     available: { type: "boolean" },
     reason: { type: ["string", "null"] },
   },
-  required: ["items", "unread", "total", "truncated", "available", "reason"],
+  required: ["items", "unread", "total", "active", "truncated", "available", "reason"],
 } as const
 
 export const watchRpcMethod = {
@@ -492,7 +498,7 @@ function readWait(value: unknown): WatchWaitView | undefined {
     typeof object !== "string" ||
     typeof reason !== "string" ||
     !isStringOrNull(reference) ||
-    typeof startedAt !== "number" ||
+    !isFiniteNumber(startedAt) ||
     !isNumberOrNull(deadline) ||
     !isStringOrNull(clearEvidence) ||
     !isStringOrNull(denyEvidence)
@@ -519,9 +525,10 @@ function readThresholds(value: unknown): { idleMs: number; runningSilentMs: numb
   const idleMs = record["idleMs"]
   const runningSilentMs = record["runningSilentMs"]
   const waitOverdueMs = record["waitOverdueMs"]
-  if (typeof idleMs !== "number" || typeof runningSilentMs !== "number" || typeof waitOverdueMs !== "number") {
+  if (!isFiniteNumber(idleMs) || !isFiniteNumber(runningSilentMs) || !isFiniteNumber(waitOverdueMs)) {
     return undefined
   }
+  if (idleMs <= 0 || runningSilentMs <= 0 || waitOverdueMs <= 0) return undefined
   return { idleMs, runningSilentMs, waitOverdueMs }
 }
 
@@ -552,12 +559,16 @@ function readAlerts(value: unknown): WatchAlertsView | undefined {
   if (record === undefined) return undefined
   const unread = record["unread"]
   const total = record["total"]
+  const active = record["active"]
   const truncated = record["truncated"]
   const available = record["available"]
   const reason = record["reason"]
   if (
-    typeof unread !== "number" ||
-    typeof total !== "number" ||
+    !isNonNegativeInteger(unread) ||
+    !isNonNegativeInteger(total) ||
+    !isNonNegativeInteger(active) ||
+    unread > total ||
+    active > total ||
     typeof truncated !== "boolean" ||
     typeof available !== "boolean" ||
     !isStringOrNull(reason) ||
@@ -571,7 +582,7 @@ function readAlerts(value: unknown): WatchAlertsView | undefined {
     if (alert === undefined) return undefined
     items.push(alert)
   }
-  return { items, unread, total, truncated, available, reason }
+  return { items, unread, total, active, truncated, available, reason }
 }
 
 function readAlert(value: unknown): WatchAlertView | undefined {
@@ -607,8 +618,8 @@ function readAlert(value: unknown): WatchAlertView | undefined {
     typeof reason !== "string" ||
     typeof nextStep !== "string" ||
     typeof plainText !== "string" ||
-    typeof firstAt !== "number" ||
-    typeof updatedAt !== "number" ||
+    !isFiniteNumber(firstAt) ||
+    !isFiniteNumber(updatedAt) ||
     !isNumberOrNull(readAt) ||
     !isNumberOrNull(escalatedAt) ||
     !isNumberOrNull(resolvedAt)
@@ -757,11 +768,19 @@ function readEvidence(value: unknown): WatchEvidence | undefined {
   const waitKind = record["waitKind"]
   const waitFor = record["waitFor"]
   const reason = record["reason"]
+  const waitID = record["waitID"]
+  const waitUntil = record["waitUntil"]
+  const clearsWaitID = record["clearsWaitID"]
+  const clearEvidence = record["clearEvidence"]
   if (
     (summary !== undefined && typeof summary !== "string") ||
     (reference !== undefined && typeof reference !== "string") ||
     (waitFor !== undefined && typeof waitFor !== "string") ||
-    (reason !== undefined && typeof reason !== "string")
+    (reason !== undefined && typeof reason !== "string") ||
+    (waitID !== undefined && typeof waitID !== "string") ||
+    (waitUntil !== undefined && (typeof waitUntil !== "number" || !Number.isSafeInteger(waitUntil))) ||
+    (clearsWaitID !== undefined && typeof clearsWaitID !== "string") ||
+    (clearEvidence !== undefined && typeof clearEvidence !== "string")
   ) {
     return undefined
   }
@@ -772,6 +791,10 @@ function readEvidence(value: unknown): WatchEvidence | undefined {
     ...(waitKind === undefined ? {} : { waitKind }),
     ...(waitFor === undefined ? {} : { waitFor }),
     ...(reason === undefined ? {} : { reason }),
+    ...(waitID === undefined ? {} : { waitID }),
+    ...(waitUntil === undefined ? {} : { waitUntil }),
+    ...(clearsWaitID === undefined ? {} : { clearsWaitID }),
+    ...(clearEvidence === undefined ? {} : { clearEvidence }),
   }
 }
 
@@ -796,8 +819,8 @@ function readCapability(value: unknown): WatchCapability | undefined {
   } = record
   if (
     mode !== "alert" ||
-    (monitoring !== "observer-alerts" && monitoring !== "participant-reports-only") ||
-    (automaticDetection !== "partial" && automaticDetection !== "unavailable") ||
+    monitoring !== "observer-alerts" ||
+    automaticDetection !== "partial" ||
     typeof automaticDetectionReason !== "string" ||
     correction !== "unavailable" ||
     typeof correctionReason !== "string" ||
@@ -835,12 +858,15 @@ function readControls(value: unknown): WatchControls | undefined {
   if (record === undefined) return undefined
   const pause = readControl(record["pause"])
   const end = readControl(record["end"])
+  const acknowledge = readControl(record["acknowledge"])
   const resume = readControl(record["resume"])
   const correction = readControl(record["correction"])
   const transfer = readControl(record["transfer"])
-  if (pause === undefined || end === undefined || resume === undefined) return undefined
+  if (pause === undefined || end === undefined || acknowledge === undefined || resume === undefined) {
+    return undefined
+  }
   if (correction === undefined || transfer === undefined) return undefined
-  return { pause, end, resume, correction, transfer }
+  return { pause, end, acknowledge, resume, correction, transfer }
 }
 
 function readControl(value: unknown): WatchControl | undefined {
@@ -885,7 +911,15 @@ function isStringOrNull(value: unknown): value is string | null {
 }
 
 function isNumberOrNull(value: unknown): value is number | null {
-  return value === null || typeof value === "number"
+  return value === null || isFiniteNumber(value)
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value)
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

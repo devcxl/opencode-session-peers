@@ -143,6 +143,7 @@ export default {
             scheduler: host.scheduler,
             store: watch,
             asks: host.storage.asks,
+            replies: host.storage.replies,
             onChanged: () => announceWatch?.(),
             warn,
           })

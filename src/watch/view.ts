@@ -95,6 +95,7 @@ export function watchControls(task: WatchTaskView | null): WatchControls {
     return {
       pause: disabled("no watched task is enrolled for this session"),
       end: disabled("no watched task is enrolled for this session"),
+      acknowledge: disabled("no watched task is enrolled for this session"),
       resume: disabled(RECOVERY_UNAVAILABLE_REASON),
       correction: disabled(CORRECTION_UNAVAILABLE_REASON),
       transfer: disabled(TRANSFER_UNAVAILABLE_REASON),
@@ -105,6 +106,9 @@ export function watchControls(task: WatchTaskView | null): WatchControls {
   return {
     pause: ended || paused ? disabled(ended ? "the watch has ended" : "the watch is already paused") : enabled(),
     end: ended ? disabled("the watch has ended") : enabled(),
+    // Reading is always allowed for the task initiator, including paused/ended
+    // histories; it changes only the unread flag.
+    acknowledge: enabled(),
     resume: disabled(RECOVERY_UNAVAILABLE_REASON),
     correction: disabled(CORRECTION_UNAVAILABLE_REASON),
     transfer: disabled(TRANSFER_UNAVAILABLE_REASON),

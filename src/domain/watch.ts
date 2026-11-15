@@ -31,6 +31,24 @@ export interface WatchEvidence {
   readonly waitKind?: WatchWaitKind
   readonly waitFor?: string
   readonly reason?: string
+  /** Stable id for a reported wait; defaults to the report id. */
+  readonly waitID?: string
+  /** Optional deadline for a reported wait; absent means the configured fallback. */
+  readonly waitUntil?: number
+  /** A later report may clear only this matching reported wait. */
+  readonly clearsWaitID?: string
+  /** Short evidence for the matched response/termination; not fetched or verified externally. */
+  readonly clearEvidence?: string
+}
+
+export interface WatchReportedWait {
+  readonly waitID: string
+  readonly waitKind: WatchWaitKind
+  readonly waitFor: string
+  readonly reason: string
+  readonly reference: string
+  readonly waitUntil?: number
+  readonly at: number
 }
 
 export interface WatchReportRecord {
@@ -56,6 +74,8 @@ export interface WatchTaskRecord {
   readonly attemptsUsed: number
   /** The activation that enrolled the task; a later activation only observes it. */
   readonly ownerActivation: string
+  /** The one reported wait still in force; host waits are separate observation facts. */
+  readonly reportedWait?: WatchReportedWait
   readonly lastReport?: WatchReportRecord
   readonly createdAt: number
   readonly updatedAt: number
@@ -223,7 +243,9 @@ export interface WatchAlertsView {
   readonly items: readonly WatchAlertView[]
   readonly unread: number
   readonly total: number
-  /** The bounded list dropped active alerts. */
+  /** Unresolved alerts, regardless of whether `items` had to be truncated. */
+  readonly active: number
+  /** The bounded list dropped recorded alerts. */
   readonly truncated: boolean
   readonly available: boolean
   readonly reason: string | null
@@ -236,9 +258,8 @@ export interface WatchAlertsView {
  */
 export interface WatchCapability {
   readonly mode: WatchMode
-  /** Old builds reported participant-reports-only; new builds report observer-alerts. */
-  readonly monitoring: "participant-reports-only" | "observer-alerts"
-  readonly automaticDetection: "unavailable" | "partial"
+  readonly monitoring: "observer-alerts"
+  readonly automaticDetection: "partial"
   readonly automaticDetectionReason: string
   readonly correction: "unavailable"
   readonly correctionReason: string
@@ -261,6 +282,7 @@ export interface WatchControl {
 export interface WatchControls {
   readonly pause: WatchControl
   readonly end: WatchControl
+  readonly acknowledge: WatchControl
   readonly resume: WatchControl
   readonly correction: WatchControl
   readonly transfer: WatchControl
@@ -375,6 +397,14 @@ export function readEvidence(kind: WatchReportKind, value: unknown): Checked<Wat
   if (!waitFor.ok) return waitFor
   const reason = optionalText(record["reason"], "reason", WATCH_LIMITS.reason)
   if (!reason.ok) return reason
+  const waitID = optionalText(record["waitID"], "waitID", WATCH_LIMITS.id)
+  if (!waitID.ok) return waitID
+  const clearsWaitID = optionalText(record["clearsWaitID"], "clearsWaitID", WATCH_LIMITS.id)
+  if (!clearsWaitID.ok) return clearsWaitID
+  const clearEvidence = optionalText(record["clearEvidence"], "clearEvidence", WATCH_LIMITS.reason)
+  if (!clearEvidence.ok) return clearEvidence
+  const waitUntil = optionalInteger(record["waitUntil"], "waitUntil")
+  if (!waitUntil.ok) return waitUntil
 
   let waitKind: WatchWaitKind | undefined
   if (record["waitKind"] !== undefined) {
@@ -390,6 +420,10 @@ export function readEvidence(kind: WatchReportKind, value: unknown): Checked<Wat
     ...(waitKind === undefined ? {} : { waitKind }),
     ...(waitFor.value === undefined ? {} : { waitFor: waitFor.value }),
     ...(reason.value === undefined ? {} : { reason: reason.value }),
+    ...(waitID.value === undefined ? {} : { waitID: waitID.value }),
+    ...(waitUntil.value === undefined ? {} : { waitUntil: waitUntil.value }),
+    ...(clearsWaitID.value === undefined ? {} : { clearsWaitID: clearsWaitID.value }),
+    ...(clearEvidence.value === undefined ? {} : { clearEvidence: clearEvidence.value }),
   }
 
   switch (kind) {
@@ -424,6 +458,14 @@ export function readEvidence(kind: WatchReportKind, value: unknown): Checked<Wat
       }
       return { ok: true, value: evidence }
   }
+}
+
+function optionalInteger(value: unknown, field: string): Checked<number | undefined> {
+  if (value === undefined || value === null) return { ok: true, value: undefined }
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    return { ok: false, reason: `${field} must be a positive integer timestamp` }
+  }
+  return { ok: true, value }
 }
 
 function optionalText(value: unknown, field: string, maximum: number): Checked<string | undefined> {

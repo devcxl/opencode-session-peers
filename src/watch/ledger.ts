@@ -47,12 +47,13 @@ import {
   type WatchEvidence,
   type WatchMode,
   type WatchReportKind,
+  type WatchReportedWait,
   type WatchState,
   type WatchTaskRecord,
   type WatchedTaskState,
 } from "../domain/watch.ts"
 
-export const WATCH_LEDGER_SCHEMA_VERSION = 4
+export const WATCH_LEDGER_SCHEMA_VERSION = 5
 export const WATCH_LEDGER_PROTOCOL_VERSION = 1
 export const WATCH_MIN_SQLITE = "3.51.3"
 
@@ -139,6 +140,14 @@ export interface UpsertWatchAlertInput {
   readonly escalate?: boolean
 }
 
+export interface WatchAlertsSnapshot {
+  readonly alerts: readonly WatchAlertRecord[]
+  readonly total: number
+  readonly unread: number
+  readonly active: number
+  readonly truncated: boolean
+}
+
 export interface WatchAlertAckInput {
   readonly alertID: string
   readonly callerSessionId: string
@@ -156,7 +165,7 @@ export interface WatchLedger {
   control(input: ControlWatchTaskInput): LedgerResult<{ readonly task: WatchTaskRecord; readonly changed: boolean }>
   /** Active tasks the observer may sample; paused tasks create no new alerts. */
   listActive(): LedgerResult<readonly WatchTaskRecord[]>
-  alerts(taskID: string): LedgerResult<readonly WatchAlertRecord[]>
+  alerts(taskID: string): LedgerResult<WatchAlertsSnapshot>
   upsertAlert(input: UpsertWatchAlertInput): LedgerResult<{
     readonly alert: WatchAlertRecord
     readonly created: boolean
@@ -193,6 +202,13 @@ interface TaskRow {
   readonly version: number
   readonly generation: number
   readonly attempts_used: number
+  readonly wait_id: string | null
+  readonly wait_kind: string | null
+  readonly wait_for: string | null
+  readonly wait_reason: string | null
+  readonly wait_reference: string | null
+  readonly wait_until: number | null
+  readonly wait_at: number | null
   readonly owner_activation: string
   readonly last_report_id: string | null
   readonly last_report_kind: string | null
@@ -248,6 +264,13 @@ CREATE TABLE IF NOT EXISTS watch_tasks (
   version INTEGER NOT NULL CHECK (version >= 1),
   generation INTEGER NOT NULL CHECK (generation >= 1),
   attempts_used INTEGER NOT NULL DEFAULT 0 CHECK (attempts_used BETWEEN 0 AND ${WATCH_CORRECTION_LIMIT}),
+  wait_id TEXT,
+  wait_kind TEXT,
+  wait_for TEXT,
+  wait_reason TEXT,
+  wait_reference TEXT,
+  wait_until INTEGER,
+  wait_at INTEGER,
   owner_activation TEXT NOT NULL,
   last_report_id TEXT,
   last_report_kind TEXT,
@@ -315,6 +338,13 @@ const REQUIRED_TASK_COLUMNS = [
   "version",
   "generation",
   "attempts_used",
+  "wait_id",
+  "wait_kind",
+  "wait_for",
+  "wait_reason",
+  "wait_reference",
+  "wait_until",
+  "wait_at",
   "owner_activation",
   "last_report_id",
   "last_report_kind",
@@ -856,6 +886,18 @@ class SqliteWatchLedger implements WatchLedger {
       const version = task.version + 1
       const encoded = canonicalJson(evidence.value)
       const completedAt = next.value === "completed" ? at : task.completed_at
+      const reportedWait = nextReportedWait(task, kind.value, evidence.value, reportID, at)
+      const wait = reportedWait
+        ? [
+            reportedWait.waitID,
+            reportedWait.waitKind,
+            reportedWait.waitFor,
+            reportedWait.reason,
+            reportedWait.reference,
+            reportedWait.waitUntil ?? null,
+            reportedWait.at,
+          ]
+        : [null, null, null, null, null, null, null]
       // Completion ends supervision: the business goal is done, so the live
       // slot is released. The task row and its reports remain as history; this
       // is not a manual "end", which is what must not be read as success.
@@ -872,7 +914,8 @@ class SqliteWatchLedger implements WatchLedger {
           `UPDATE watch_tasks SET
             task_state = ?, watch_state = ?, version = ?, updated_at = ?,
             last_report_id = ?, last_report_kind = ?, last_report_evidence = ?,
-            last_report_at = ?, last_report_version = ?, completed_at = ?, ended_at = ?
+            last_report_at = ?, last_report_version = ?, completed_at = ?, ended_at = ?,
+            wait_id = ?, wait_kind = ?, wait_for = ?, wait_reason = ?, wait_reference = ?, wait_until = ?, wait_at = ?
            WHERE task_id = ?`,
         )
         .run(
@@ -887,6 +930,7 @@ class SqliteWatchLedger implements WatchLedger {
           version,
           completedAt,
           endedAt,
+          ...wait,
           taskID,
         )
       return { task: this.task(taskID), duplicate: false }
@@ -950,15 +994,32 @@ class SqliteWatchLedger implements WatchLedger {
     })
   }
 
-  alerts(taskID: string): LedgerResult<readonly WatchAlertRecord[]> {
+  alerts(taskID: string): LedgerResult<WatchAlertsSnapshot> {
     const id = requiredIdentifier(taskID, "taskID")
     return this.read(() => {
+      const limit = 20
       const rows = this.db
         .query(
-          "SELECT * FROM watch_alerts WHERE task_id = ? AND resolved_at IS NULL ORDER BY first_at, alert_id",
+          `SELECT * FROM watch_alerts WHERE task_id = ?
+           ORDER BY resolved_at IS NULL DESC, updated_at DESC, alert_id
+           LIMIT ?`,
         )
-        .all(id) as AlertRow[]
-      return rows.map(alertFromRow)
+        .all(id, limit) as AlertRow[]
+      const counts = this.db
+        .query(
+          `SELECT COUNT(*) AS total,
+                  COALESCE(SUM(CASE WHEN state = 'unread' THEN 1 ELSE 0 END), 0) AS unread,
+                  COALESCE(SUM(CASE WHEN resolved_at IS NULL THEN 1 ELSE 0 END), 0) AS active
+           FROM watch_alerts WHERE task_id = ?`,
+        )
+        .get(id) as { total: number; unread: number; active: number }
+      return {
+        alerts: rows.map(alertFromRow),
+        total: counts.total,
+        unread: counts.unread,
+        active: counts.active,
+        truncated: counts.total > rows.length,
+      }
     })
   }
 
@@ -1160,6 +1221,7 @@ function taskFromRow(row: TaskRow): WatchTaskRecord {
     version: row.version,
     generation: row.generation,
     attemptsUsed: parseAttemptsUsed(row.attempts_used),
+    ...(row.wait_id === null ? {} : { reportedWait: reportedWaitFromRow(row) }),
     ownerActivation: row.owner_activation,
     ...(lastReport === undefined ? {} : { lastReport }),
     createdAt: row.created_at,
@@ -1167,6 +1229,60 @@ function taskFromRow(row: TaskRow): WatchTaskRecord {
     ...(row.completed_at === null ? {} : { completedAt: row.completed_at }),
     ...(row.ended_at === null ? {} : { endedAt: row.ended_at }),
   }
+}
+
+function nextReportedWait(
+  task: TaskRow,
+  kind: WatchReportKind,
+  evidence: WatchEvidence,
+  reportID: string,
+  at: number,
+): WatchReportedWait | null {
+  if (kind === "completed") return null
+  if (kind === "waiting") {
+    return {
+      waitID: evidence.waitID ?? reportID,
+      waitKind: evidence.waitKind ?? "other",
+      waitFor: evidence.waitFor ?? "unspecified",
+      reason: evidence.reason ?? "the executing session declared a wait",
+      reference: evidence.reference ?? reportID,
+      ...(evidence.waitUntil === undefined ? {} : { waitUntil: evidence.waitUntil }),
+      at,
+    }
+  }
+  const existing = task.wait_id === null ? null : reportedWaitFromRow(task)
+  if (existing === null) return null
+  if (evidence.clearsWaitID === existing.waitID) return null
+  return existing
+}
+
+function reportedWaitFromRow(row: TaskRow): WatchReportedWait {
+  if (
+    row.wait_id === null ||
+    row.wait_kind === null ||
+    row.wait_for === null ||
+    row.wait_reason === null ||
+    row.wait_reference === null ||
+    row.wait_at === null
+  ) {
+    throw new LedgerFailure("corrupt", "the task has a partial reported wait")
+  }
+  return {
+    waitID: row.wait_id,
+    waitKind: parseWaitKind(row.wait_kind),
+    waitFor: row.wait_for,
+    reason: row.wait_reason,
+    reference: row.wait_reference,
+    ...(row.wait_until === null ? {} : { waitUntil: row.wait_until }),
+    at: row.wait_at,
+  }
+}
+
+function parseWaitKind(value: string): WatchReportedWait["waitKind"] {
+  if (value === "human" || value === "peer" || value === "permission" || value === "form" || value === "child" || value === "other") {
+    return value
+  }
+  throw new LedgerFailure("corrupt", `unknown wait kind ${value}`)
 }
 
 function alertFromRow(row: AlertRow): WatchAlertRecord {
