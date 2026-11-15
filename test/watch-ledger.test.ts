@@ -328,8 +328,11 @@ describeSafe("the security ledger", () => {
         at: 5_000,
         escalate: true,
       })
-      expect(reopened).toMatchObject({ ok: true, value: { created: false, escalated: false } })
-      if (reopened.ok) expect(reopened.value.alert.escalatedAt).toBeUndefined()
+      expect(reopened).toMatchObject({ ok: true, value: { created: true, escalated: false } })
+      if (reopened.ok) {
+        expect(reopened.value.alert.alertID).not.toBe(created.value.alert.alertID)
+        expect(reopened.value.alert.escalatedAt).toBeUndefined()
+      }
       const reEscalated = ledger.upsertAlert({
         taskId,
         dedupeKey: "idle",
@@ -339,8 +342,17 @@ describeSafe("the security ledger", () => {
         at: 6_000,
         escalate: true,
       })
-      expect(reEscalated).toMatchObject({ ok: true, value: { escalated: true } })
+      expect(reEscalated).toMatchObject({ ok: true, value: { created: false, escalated: true } })
       if (reEscalated.ok) expect(reEscalated.value.alert.escalatedAt).toBe(6_000)
+      const episodes = ledger.alerts(taskId)
+      expect(episodes.ok).toBe(true)
+      if (episodes.ok) {
+        expect(episodes.value.total).toBe(2)
+        expect(episodes.value.active).toBe(1)
+        expect(episodes.value.alerts.map((alert) => alert.alertID)).toEqual(
+          expect.arrayContaining([created.value.alert.alertID, reopened.ok ? reopened.value.alert.alertID : ""]),
+        )
+      }
 
       const paused = ledger.control({
         taskId,

@@ -463,6 +463,8 @@ export function mapLedgerFailure(code: WatchLedgerErrorCode, detail: string): Wa
       return make("E_WATCH_NOT_FOUND", `No watched task matches "${detail}".`)
     case "unknown_wait":
       return make("E_WATCH_NOT_FOUND", `No active reported wait matches "${detail}".`)
+    case "unknown_alert":
+      return make("E_WATCH_NOT_FOUND", `No persistent alert matches "${detail}".`)
     case "wait_limit":
       return make("E_WATCH_INVALID_TRANSITION", "Too many active reported waits; clear one before adding another.")
     case "caller_mismatch":

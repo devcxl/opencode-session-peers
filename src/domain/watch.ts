@@ -139,6 +139,7 @@ export interface WatchReportView {
 /** A persistent observation problem; one row per task and continuing problem. */
 export type WatchAlertKind =
   | "idle"
+  | "blocked"
   | "running-silent"
   | "wait-overdue"
   | "observation-unknown"
@@ -255,8 +256,9 @@ export interface WatchAlertsView {
 
 /**
  * What this build can actually do, as distinct from the mode the user chose.
- * There is no automatic stall detection and no correction: the panel must say
- * so instead of letting `alert` read as an enabled automation.
+ * This build observes local execution and persists alerts, but it does not
+ * correct, wake or judge goal progress: the panel must show that partial
+ * capability instead of letting `alert` read as full automation.
  */
 export interface WatchCapability {
   readonly mode: WatchMode
@@ -326,9 +328,7 @@ export const WATCH_ALERT_SUMMARY_LIMIT = 300
 export const WATCH_ALERT_REASON_LIMIT = 500
 
 export const CORRECTION_UNAVAILABLE_REASON =
-  "Finite correction is not implemented in this build; this watch can only record reports."
-export const AUTOMATIC_DETECTION_UNAVAILABLE_REASON =
-  "Automatic stall detection is not implemented in this build; only participant reports are recorded."
+  "Finite correction is not implemented in this build; this watch can observe and alert but cannot correct or resume."
 export const DELEGATION_UNAVAILABLE_REASON =
   "Child-task delegation is not open in this build; enroll the calling session itself."
 export const TRANSFER_UNAVAILABLE_REASON =
@@ -493,6 +493,7 @@ function optionalText(value: unknown, field: string, maximum: number): Checked<s
 export function readAlertKind(value: unknown): Checked<WatchAlertKind> {
   if (
     value === "idle" ||
+    value === "blocked" ||
     value === "running-silent" ||
     value === "wait-overdue" ||
     value === "observation-unknown" ||

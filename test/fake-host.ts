@@ -134,6 +134,8 @@ export interface FakeHostOptions {
   readonly permissionsError?: boolean
   /** Delay the permission snapshot so a test can pause/end while a tick is in flight. */
   readonly permissionDelayMs?: number
+  /** Make selected storage keys fail on read, for an observer wait-source failure. */
+  readonly storageReadFailure?: (key: string) => boolean
   /** Initial controlled clock. */
   readonly now?: number
 }
@@ -179,6 +181,8 @@ export interface FakeHost {
   setIdle(sessionID: string, idleAt: number): void
   /** Replace the pending permission snapshot for one session. */
   setPermissions(sessionID: string, requests: readonly { readonly id: string; readonly action: string; readonly resources: readonly string[]; readonly message?: string }[]): void
+  /** Change the storage-read failure predicate during a test. */
+  setStorageReadFailure(failure?: (key: string) => boolean): void
   /** Live event subscriptions; zero once the plugin has unsubscribed. */
   subscribers(): number
   /**
@@ -228,6 +232,7 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
   const idleOverrides = new Map<string, number>()
   const busyOverrides = new Map<string, number>()
   const permissionOverrides = new Map<string, readonly { readonly id: string; readonly action: string; readonly resources: readonly string[]; readonly message?: string }[]>()
+  let storageReadFailure = options.storageReadFailure
   const scheduler = new FakeScheduler(options.now ?? 1_000_000)
   let eventCounter = 0
 
@@ -348,7 +353,15 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
         }
       },
     },
-    storage,
+    storage: {
+      get: async (key: string) => {
+        if (storageReadFailure?.(key) === true) throw new Error("Storage.ReadFailed")
+        return storage.get(key)
+      },
+      set: storage.set,
+      remove: storage.remove,
+      scan: storage.scan,
+    },
     permission: {
       list: async (input: { readonly sessionID: string }) => {
         if (options.permissionDelayMs !== undefined) {
@@ -441,6 +454,9 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
     },
     setPermissions(sessionID, requests) {
       permissionOverrides.set(sessionID, requests)
+    },
+    setStorageReadFailure(failure) {
+      storageReadFailure = failure
     },
     subscribers: () => subscriptions.size,
     async modelContext(sessionID = caller) {

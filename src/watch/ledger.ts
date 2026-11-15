@@ -53,7 +53,7 @@ import {
   type WatchedTaskState,
 } from "../domain/watch.ts"
 
-export const WATCH_LEDGER_SCHEMA_VERSION = 6
+export const WATCH_LEDGER_SCHEMA_VERSION = 7
 export const WATCH_LEDGER_PROTOCOL_VERSION = 1
 export const WATCH_MIN_SQLITE = "3.51.3"
 
@@ -312,7 +312,7 @@ CREATE TABLE IF NOT EXISTS watch_alerts (
   alert_id TEXT PRIMARY KEY,
   task_id TEXT NOT NULL REFERENCES watch_tasks(task_id),
   dedupe_key TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK (kind IN ('idle','running-silent','wait-overdue','observation-unknown','approval-rejected')),
+  kind TEXT NOT NULL CHECK (kind IN ('idle','blocked','running-silent','wait-overdue','observation-unknown','approval-rejected')),
   state TEXT NOT NULL CHECK (state IN ('unread','read')),
   summary TEXT NOT NULL,
   reason TEXT NOT NULL,
@@ -320,9 +320,11 @@ CREATE TABLE IF NOT EXISTS watch_alerts (
   updated_at INTEGER NOT NULL,
   read_at INTEGER,
   escalated_at INTEGER,
-  resolved_at INTEGER,
-  UNIQUE (task_id, dedupe_key)
+  resolved_at INTEGER
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS one_unresolved_alert_per_problem
+  ON watch_alerts(task_id, dedupe_key) WHERE resolved_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS watch_reported_waits (
   task_id TEXT NOT NULL REFERENCES watch_tasks(task_id),
@@ -1066,7 +1068,7 @@ class SqliteWatchLedger implements WatchLedger {
       }
 
       const existing = this.db
-        .query("SELECT * FROM watch_alerts WHERE task_id = ? AND dedupe_key = ?")
+        .query("SELECT * FROM watch_alerts WHERE task_id = ? AND dedupe_key = ? AND resolved_at IS NULL")
         .get(taskID, dedupeKey.value) as AlertRow | null
       if (existing === null) {
         const alertID = randomUUID()
@@ -1091,23 +1093,18 @@ class SqliteWatchLedger implements WatchLedger {
         return { alert: this.alert(alertID), created: true, escalated: false }
       }
 
-      const reopened = existing.resolved_at !== null
-      const escalated = input.escalate === true && !reopened && existing.escalated_at === null
+      const escalated = input.escalate === true && existing.escalated_at === null
       this.db
         .query(
           `UPDATE watch_alerts SET
-            state = ?, summary = ?, reason = ?, first_at = ?, updated_at = ?,
-            read_at = ?, escalated_at = ?, resolved_at = NULL
+            summary = ?, reason = ?, updated_at = ?, escalated_at = ?
            WHERE alert_id = ?`,
         )
         .run(
-          reopened ? "unread" : existing.state,
           summary.value,
           reason.value,
-          reopened ? input.at : existing.first_at,
           input.at,
-          reopened ? null : existing.read_at,
-          reopened ? null : escalated ? input.at : existing.escalated_at,
+          escalated ? input.at : existing.escalated_at,
           existing.alert_id,
         )
       return { alert: this.alert(existing.alert_id), created: false, escalated }
@@ -1181,14 +1178,34 @@ class SqliteWatchLedger implements WatchLedger {
   ): void {
     if (kind === "waiting") {
       const waitID = evidence.waitID ?? reportID
+      if (evidence.clearsWaitID !== undefined) {
+        if (evidence.clearEvidence === undefined || evidence.clearEvidence.trim().length === 0) {
+          throw new LedgerFailure("invalid_input", "clearsWaitID needs a non-empty clearEvidence")
+        }
+        const clearable = this.db
+          .query(
+            "SELECT wait_id FROM watch_reported_waits WHERE task_id = ? AND wait_id = ? AND cleared_at IS NULL",
+          )
+          .get(taskID, evidence.clearsWaitID) as { wait_id: string } | null
+        if (clearable === null) {
+          throw new LedgerFailure("unknown_wait", evidence.clearsWaitID)
+        }
+        this.db
+          .query(
+            "UPDATE watch_reported_waits SET cleared_at = ?, clear_evidence = ? WHERE task_id = ? AND wait_id = ? AND cleared_at IS NULL",
+          )
+          .run(at, evidence.clearEvidence, taskID, evidence.clearsWaitID)
+      }
       const active = this.db
         .query("SELECT COUNT(*) AS n FROM watch_reported_waits WHERE task_id = ? AND cleared_at IS NULL")
         .get(taskID) as { n: number }
       const existing = this.db
         .query("SELECT cleared_at FROM watch_reported_waits WHERE task_id = ? AND wait_id = ?")
         .get(taskID, waitID) as { cleared_at: number | null } | null
-      if (existing === null && active.n >= 8) {
-        throw new LedgerFailure("wait_limit", "too many active reported waits")
+      if (existing === null || existing.cleared_at !== null) {
+        if (active.n >= 8) {
+          throw new LedgerFailure("wait_limit", "too many active reported waits")
+        }
       }
       this.db
         .query(
@@ -1216,6 +1233,7 @@ class SqliteWatchLedger implements WatchLedger {
           evidence.waitUntil ?? null,
           at,
         )
+      if (evidence.clearsWaitID !== undefined) this.trimReportedWaits(taskID)
       return
     }
     if (kind === "completed") {
