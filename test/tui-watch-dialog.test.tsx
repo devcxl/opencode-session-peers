@@ -1,110 +1,19 @@
-/** @jsxImportSource @opentui/solid */
-
-/**
- * The watch dialog, driven through the host's headless renderer.
- *
- * `watch-view.ts` is asserted cell by cell in `tui-watch-view.test.ts`; this
- * file asserts what only the screen can: the facts reach a table, the two-step
- * pause/end confirmation asks before it acts, and a state change swaps the
- * content of the elements already there.
- */
-
 import { describe, expect, test } from "bun:test"
-import { RGBA } from "@opentui/core"
 import { createSignal } from "solid-js"
 import { testRender } from "@opentui/solid"
 
-import type { WatchPayload } from "../src/rpc.ts"
-import type { TuiPalette } from "../src/host/tui.ts"
 import { WatchDialog } from "../src/tui/watch-dialog.tsx"
 import type { WatchState } from "../src/tui/watch-view.ts"
-
-const SELF = "ses_self0000"
-const palette: TuiPalette = {
-  base: RGBA.fromHex("#cdd6f4"),
-  muted: RGBA.fromHex("#7f849c"),
-  error: RGBA.fromHex("#f38ba8"),
-}
-
-type Task = NonNullable<WatchPayload["task"]>
-
-function control(enabled = true, reason: string | null = null) {
-  return { enabled, reason }
-}
-
-function capability(): WatchPayload["capability"] {
-  return {
-    mode: "alert",
-    monitoring: "participant-reports-only",
-    automaticDetection: "unavailable",
-    automaticDetectionReason: "No supported execution signal is available in this build.",
-    correction: "unavailable",
-    correctionReason:
-      "Finite correction is not implemented in this build; this watch can only record reports.",
-    delegation: "unavailable",
-    delegationReason: "Child-task delegation is not open in this build; enroll the calling session itself.",
-    transfer: "unavailable",
-    transferReason: "Watch ownership transfer is not implemented in this build.",
-    recovery: "unavailable",
-    recoveryReason: "Resume and recovery confirmation are not implemented in this build.",
-    safetyPause: "unavailable",
-    safetyPauseReason:
-      "Watch safety pause is not implemented in this build; only a manual pause can occur.",
-  }
-}
-
-function controls(overrides: Partial<WatchPayload["controls"]> = {}): WatchPayload["controls"] {
-  return {
-    pause: control(),
-    end: control(),
-    resume: control(false, "Resume and recovery confirmation are not implemented in this build."),
-    correction: control(false, "Finite correction is not implemented in this build."),
-    transfer: control(false, "Watch ownership transfer is not implemented in this build."),
-    ...overrides,
-  }
-}
-
-function task(overrides: Partial<Task> = {}): Task {
-  return {
-    taskID: "task_0001",
-    initiatorSessionID: SELF,
-    targetSessionID: SELF,
-    goal: "finish the migration",
-    mode: "alert",
-    watchState: "active",
-    taskState: "in-progress",
-    version: 3,
-    generation: 1,
-    ownership: "this-instance",
-    participation: "seen",
-    attempts: { used: 0, limit: 3 },
-    pause: null,
-    lastReport: {
-      reportID: "report_1",
-      kind: "progress",
-      evidence: { summary: "tests pass", reference: "src/auth.test.ts" },
-      at: Date.UTC(2026, 10, 16, 4, 32, 0),
-      version: 3,
-    },
-    createdAt: Date.UTC(2026, 10, 16, 4, 0, 0),
-    updatedAt: Date.UTC(2026, 10, 16, 4, 32, 0),
-    completedAt: null,
-    endedAt: null,
-    ...overrides,
-  }
-}
-
-function payload(overrides: Partial<WatchPayload> = {}): WatchPayload {
-  return {
-    enabled: true,
-    ledger: { available: true, reason: null },
-    task: task(),
-    capability: capability(),
-    controls: controls(),
-    failure: null,
-    ...overrides,
-  }
-}
+import {
+  SELF,
+  alert,
+  alertsView,
+  control,
+  controls,
+  palette,
+  payload,
+  task,
+} from "./tui-watch-fake.ts"
 
 async function rendered(
   initial: WatchState,
@@ -112,6 +21,7 @@ async function rendered(
     readonly height?: number
     readonly onPause?: (taskID: string, version: number) => Promise<void>
     readonly onEnd?: (taskID: string, version: number) => Promise<void>
+    readonly onAck?: (alertID: string) => Promise<void>
   } = {},
 ) {
   const [state, setState] = createSignal<WatchState>(initial)
@@ -123,9 +33,10 @@ async function rendered(
         palette={() => palette}
         onPause={options.onPause ?? (async () => {})}
         onEnd={options.onEnd ?? (async () => {})}
+        onAck={options.onAck ?? (async () => {})}
       />
     ),
-    { width: 100, height: options.height ?? 40 },
+    { width: 100, height: options.height ?? 60 },
   )
   await setup.flush()
   const frame = () => setup.captureCharFrame()
@@ -312,5 +223,198 @@ describe("the two-step controls", () => {
     setup.mockInput.pressKey("y")
     await setup.flush()
     expect(calls).toEqual([])
+  })
+})
+
+describe("the alert pane", () => {
+  const many = Array.from({ length: 10 }, (_, index) =>
+    alert({
+      alertID: `alert_${String(index + 1).padStart(4, "0")}`,
+      summary: `Problem ${index + 1}`,
+      state: index === 1 ? "read" : "unread",
+    }),
+  )
+
+  test("v switches to alerts, shows unread/read/resolved and pages by identity", async () => {
+    const { setup, text } = await rendered({
+      kind: "payload",
+      payload: payload({
+        alerts: alertsView([
+          alert({ alertID: "alert_0001", summary: "Idle problem" }),
+          alert({
+            alertID: "alert_0002",
+            state: "read",
+            readAt: Date.UTC(2026, 10, 16, 4, 35, 0),
+            resolvedAt: Date.UTC(2026, 10, 16, 4, 36, 0),
+          }),
+        ]),
+      }),
+    })
+
+    setup.mockInput.pressKey("v")
+    await setup.flush()
+    expect(text()).toContain("Session watch — alerts")
+    expect(text()).toContain("…0001")
+    expect(text()).toContain("sustained idle")
+    expect(text()).toContain("unread")
+    expect(text()).toContain("…0002")
+    expect(text()).toContain("read · resolved")
+    expect(text()).toContain("Next:")
+
+    setup.mockInput.pressKey("v")
+    await setup.flush()
+    expect(text()).toContain("Session watch")
+    expect(text()).not.toContain("Session watch — alerts")
+  })
+
+  test("a marks only the selected unread alert read", async () => {
+    const acks: string[] = []
+    const { setup } = await rendered(
+      {
+        kind: "payload",
+        payload: payload({
+          alerts: alertsView([
+            alert({ alertID: "alert_0001" }),
+            alert({ alertID: "alert_0002" }),
+          ]),
+        }),
+      },
+      {
+        onAck: async (alertID) => {
+          acks.push(alertID)
+        },
+      },
+    )
+
+    setup.mockInput.pressKey("v")
+    await setup.flush()
+    setup.mockInput.pressKey("a")
+    await setup.flush()
+    expect(acks).toEqual(["alert_0001"])
+
+    setup.mockInput.pressArrow("down")
+    setup.mockInput.pressKey("a")
+    await setup.flush()
+    expect(acks).toEqual(["alert_0001", "alert_0002"])
+  })
+
+  test("a read alert is not acknowledged again, and a disabled control explains why", async () => {
+    const acks: string[] = []
+    const { setup, text } = await rendered(
+      {
+        kind: "payload",
+        payload: payload({
+          alerts: alertsView([
+            alert({ alertID: "alert_0001", state: "read", readAt: Date.UTC(2026, 10, 16, 4, 35, 0) }),
+          ]),
+        }),
+      },
+      {
+        onAck: async (alertID) => {
+          acks.push(alertID)
+        },
+      },
+    )
+    setup.mockInput.pressKey("v")
+    await setup.flush()
+    setup.mockInput.pressKey("a")
+    await setup.flush()
+    expect(acks).toEqual([])
+    expect(text()).toContain("already read")
+  })
+
+  test("a disabled acknowledge control shows the server reason and performs nothing", async () => {
+    const acks: string[] = []
+    const { setup, text } = await rendered(
+      {
+        kind: "payload",
+        payload: payload({
+          alerts: alertsView([alert({ alertID: "alert_0001" })]),
+          controls: controls({ acknowledge: control(false, "only the initiator may acknowledge") }),
+        }),
+      },
+      {
+        onAck: async (alertID) => {
+          acks.push(alertID)
+        },
+      },
+    )
+    setup.mockInput.pressKey("v")
+    await setup.flush()
+    setup.mockInput.pressKey("a")
+    await setup.flush()
+    expect(acks).toEqual([])
+    expect(text()).toContain("Mark read unavailable: only the initiator may acknowledge")
+  })
+
+  test("pages alerts and keeps selection on a visible alert id", async () => {
+    const acks: string[] = []
+    const { setup, text } = await rendered(
+      { kind: "payload", payload: payload({ alerts: alertsView(many) }) },
+      {
+        onAck: async (alertID) => {
+          acks.push(alertID)
+        },
+      },
+    )
+    setup.mockInput.pressKey("v")
+    await setup.flush()
+    expect(text()).toContain("…0001")
+    expect(text()).not.toContain("…0009")
+    expect(text()).toContain("page 1 of 2")
+
+    setup.mockInput.pressArrow("right")
+    await setup.flush()
+    expect(text()).toContain("…0009")
+    expect(text()).toContain("page 2 of 2")
+
+    setup.mockInput.pressKey("a")
+    await setup.flush()
+    expect(acks).toEqual(["alert_0009"])
+  })
+
+  test("a paused task still shows its alert history and can acknowledge it", async () => {
+    const acks: string[] = []
+    const { setup, text } = await rendered(
+      {
+        kind: "payload",
+        payload: payload({
+          task: task({
+            watchState: "paused",
+            pause: { kind: "manual", reason: "paused by the user" },
+          }),
+          alerts: alertsView([alert({ alertID: "alert_0001" })]),
+        }),
+      },
+      {
+        onAck: async (alertID) => {
+          acks.push(alertID)
+        },
+      },
+    )
+    setup.mockInput.pressKey("v")
+    await setup.flush()
+    expect(text()).toContain("…0001")
+    setup.mockInput.pressKey("a")
+    await setup.flush()
+    expect(acks).toEqual(["alert_0001"])
+  })
+
+  test("p and x do not arm task controls in the alert pane", async () => {
+    const pauses: string[] = []
+    const { setup } = await rendered(
+      { kind: "payload", payload: payload({ alerts: alertsView([alert()]) }) },
+      {
+        onPause: async (taskID) => {
+          pauses.push(taskID)
+        },
+      },
+    )
+    setup.mockInput.pressKey("v")
+    await setup.flush()
+    setup.mockInput.pressKey("p")
+    setup.mockInput.pressKey("y")
+    await setup.flush()
+    expect(pauses).toEqual([])
   })
 })

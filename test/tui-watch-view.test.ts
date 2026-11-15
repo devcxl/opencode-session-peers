@@ -18,6 +18,10 @@ const SELF = "ses_self0000"
 
 type Task = NonNullable<WatchPayload["task"]>
 type Control = WatchPayload["controls"]["pause"]
+type Observation = NonNullable<WatchPayload["observation"]>
+type Activity = NonNullable<WatchPayload["activity"]>
+type AlertsView = WatchPayload["alerts"]
+type Alert = AlertsView["items"][number]
 
 function control(enabled = true, reason: string | null = null): Control {
   return { enabled, reason }
@@ -28,9 +32,10 @@ function capability(
 ): WatchPayload["capability"] {
   return {
     mode: "alert",
-    monitoring: "participant-reports-only",
-    automaticDetection: "unavailable",
-    automaticDetectionReason: "No supported execution signal is available in this build.",
+    monitoring: "observer-alerts",
+    automaticDetection: "partial",
+    automaticDetectionReason:
+      "Observes local execution lifecycle, target activity and same-location waits; it does not prove goal progress.",
     correction: "unavailable",
     correctionReason:
       "Finite correction is not implemented in this build; this watch can only record reports.",
@@ -51,6 +56,7 @@ function controls(overrides: Partial<WatchPayload["controls"]> = {}): WatchPaylo
   return {
     pause: control(),
     end: control(),
+    acknowledge: control(),
     resume: control(false, "Resume and recovery confirmation are not implemented in this build."),
     correction: control(false, "Finite correction is not implemented in this build."),
     transfer: control(false, "Watch ownership transfer is not implemented in this build."),
@@ -88,6 +94,39 @@ function task(overrides: Partial<Task> = {}): Task {
   }
 }
 
+function observation(overrides: Partial<Observation> = {}): Observation {
+  return {
+    state: "active",
+    reason: null,
+    observedAt: Date.UTC(2026, 10, 16, 4, 34, 0),
+    baselineAt: Date.UTC(2026, 10, 16, 4, 30, 0),
+    idleSince: null,
+    trusted: true,
+    waits: [],
+    waitsPartial: false,
+    waitsTruncated: false,
+    effective: { idleMs: 120_000, runningSilentMs: 600_000, waitOverdueMs: 1_800_000 },
+    ...overrides,
+  }
+}
+
+function activity(overrides: Partial<Activity> = {}): Activity {
+  return { lastAt: Date.UTC(2026, 10, 16, 4, 32, 0), kind: "text", judgement: "not-judged", ...overrides }
+}
+
+function alertsView(items: readonly Alert[] = [], overrides: Partial<AlertsView> = {}): AlertsView {
+  return {
+    items,
+    unread: items.filter((item) => item.state === "unread").length,
+    total: items.length,
+    active: items.filter((item) => item.resolvedAt === null).length,
+    truncated: false,
+    available: true,
+    reason: null,
+    ...overrides,
+  }
+}
+
 function payload(overrides: Partial<WatchPayload> = {}): WatchPayload {
   return {
     enabled: true,
@@ -95,6 +134,9 @@ function payload(overrides: Partial<WatchPayload> = {}): WatchPayload {
     task: null,
     capability: capability(),
     controls: controls(),
+    observation: observation(),
+    activity: activity(),
+    alerts: alertsView(),
     failure: null,
     ...overrides,
   }
@@ -138,7 +180,7 @@ describe("a watched task", () => {
     expect(valueOf(blocks, "Supervision")).toBe("active")
     expect(valueOf(blocks, "Authorization")).toBe("alert-only (the only mode this build offers)")
     expect(valueOf(blocks, "Actual capability")).toBe(
-      "participant reports only; no automatic stall detection",
+      "observer alerts; partial automatic detection",
     )
     expect(valueOf(blocks, "Owner")).toBe("this plugin instance · generation 1")
     expect(valueOf(blocks, "Attempts")).toBe("0 of 3 used")
@@ -355,7 +397,7 @@ describe("a watched task", () => {
   test("uses the capability reasons rather than one generic unavailable line", () => {
     const notes = content(state({ task: task() })).notes.join("\n")
     expect(notes).toContain(
-      "Automatic detection: unavailable — No supported execution signal is available in this build.",
+      "Automatic detection: partial — Observes local execution lifecycle, target activity and same-location waits; it does not prove goal progress.",
     )
     expect(notes).toContain(
       "Correction: unavailable — Finite correction is not implemented in this build; this watch can only record reports.",

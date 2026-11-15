@@ -15,9 +15,10 @@ const SELF = "ses_self0000"
 function capability(): WatchPayload["capability"] {
   return {
     mode: "alert",
-    monitoring: "participant-reports-only",
-    automaticDetection: "unavailable",
-    automaticDetectionReason: "No supported execution signal is available in this build.",
+    monitoring: "observer-alerts",
+    automaticDetection: "partial",
+    automaticDetectionReason:
+      "Observes local execution lifecycle, target activity and same-location waits.",
     correction: "unavailable",
     correctionReason: "Finite correction is not implemented in this build.",
     delegation: "unavailable",
@@ -40,6 +41,7 @@ function controls(): WatchPayload["controls"] {
   return {
     pause: control(),
     end: control(),
+    acknowledge: control(),
     resume: control(false, "Resume is not implemented in this build."),
     correction: control(false, "Correction is not implemented in this build."),
     transfer: control(false, "Transfer is not implemented in this build."),
@@ -72,6 +74,32 @@ function payload(watchState: "active" | "paused" | "ended" = "active"): WatchPay
     },
     capability: capability(),
     controls: controls(),
+    observation: {
+      state: "active",
+      reason: null,
+      observedAt: Date.UTC(2026, 10, 16, 4, 34, 0),
+      baselineAt: Date.UTC(2026, 10, 16, 4, 30, 0),
+      idleSince: null,
+      trusted: true,
+      waits: [],
+      waitsPartial: false,
+      waitsTruncated: false,
+      effective: { idleMs: 120_000, runningSilentMs: 600_000, waitOverdueMs: 1_800_000 },
+    },
+    activity: {
+      lastAt: Date.UTC(2026, 10, 16, 4, 32, 0),
+      kind: "text",
+      judgement: "not-judged",
+    },
+    alerts: {
+      items: [],
+      unread: 0,
+      total: 0,
+      active: 0,
+      truncated: false,
+      available: true,
+      reason: null,
+    },
     failure: null,
   }
 }
@@ -311,5 +339,62 @@ describe("claims the feed will not make", () => {
     first.resolve(payload())
     await tick(0)
     expect(feed.state()).toEqual({ kind: "loading" })
+  })
+})
+
+describe("the snapshot callback", () => {
+  test("marks the opening snapshot initial, then reports changes as non-initial", async () => {
+    const src = source()
+    const feed = createWatchFeed(src, { refreshMs: 60_000 })
+    const seen: boolean[] = []
+    feed.onSnapshot((_payload, initial) => seen.push(initial))
+
+    feed.open(SELF)
+    await tick(0)
+    expect(seen).toEqual([true])
+
+    src.announce()
+    await tick(0)
+    expect(seen).toEqual([true, false])
+
+    feed.close()
+    src.announce()
+    await tick(0)
+    expect(seen).toEqual([true, false])
+
+    feed.open(SELF)
+    await tick(0)
+    expect(seen).toEqual([true, false, true])
+    feed.dispose()
+  })
+
+  test("a committed control answer is a non-initial snapshot", async () => {
+    const src = source()
+    const feed = createWatchFeed(src, { refreshMs: 60_000 })
+    const seen: boolean[] = []
+    feed.onSnapshot((_payload, initial) => seen.push(initial))
+    feed.open(SELF)
+    await tick(0)
+
+    feed.apply(payload("paused"))
+    expect(seen).toEqual([true, false])
+    feed.dispose()
+  })
+
+  test("dispose stops the callback and removes it", async () => {
+    const src = source()
+    const feed = createWatchFeed(src, { refreshMs: 60_000 })
+    let calls = 0
+    feed.onSnapshot(() => {
+      calls += 1
+    })
+    feed.open(SELF)
+    await tick(0)
+    expect(calls).toBe(1)
+    feed.dispose()
+    feed.open(SELF)
+    src.announce()
+    await tick(0)
+    expect(calls).toBe(1)
   })
 })

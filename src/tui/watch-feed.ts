@@ -29,6 +29,11 @@ const REFRESH_MS = 60_000
 
 export interface WatchFeed {
   readonly state: () => WatchState
+  /**
+   * Called for each payload the feed applies. `initial` marks the first payload
+   * after an opening; it is the seed snapshot, not a new notification.
+   */
+  onSnapshot(listener: (payload: WatchPayload, initial: boolean) => void): () => void
   /** Takes a snapshot and starts the floor; ignored after dispose. */
   open(sessionID: string): void
   /** Reads again now; a same-epoch read in flight becomes one follow-up. */
@@ -55,6 +60,14 @@ export function createWatchFeed(
   /** The epoch of the read in flight, if any. A newer epoch may run beside it. */
   let inFlightEpoch: number | undefined
   let refresh: ReturnType<typeof setInterval> | undefined
+  let initialPending = false
+  const listeners = new Set<(payload: WatchPayload, initial: boolean) => void>()
+
+  const emit = (payload: WatchPayload): void => {
+    const initial = initialPending
+    initialPending = false
+    for (const listener of [...listeners]) listener(payload, initial)
+  }
 
   const read = (): void => {
     if (disposed || !opened || sessionID === undefined) return
@@ -74,6 +87,7 @@ export function createWatchFeed(
         setState(
           payload === undefined ? { kind: "unreadable" } : { kind: "payload", payload },
         )
+        if (payload !== undefined) emit(payload)
       })
       .catch((cause: unknown) => {
         if (disposed || !opened || requestEpoch !== epoch) return
@@ -94,6 +108,12 @@ export function createWatchFeed(
 
   return {
     state,
+    onSnapshot: (listener) => {
+      listeners.add(listener)
+      return () => {
+        listeners.delete(listener)
+      }
+    },
     open: (openedSessionID) => {
       if (disposed) return
       opened = true
@@ -101,6 +121,7 @@ export function createWatchFeed(
       // A read for the previous open is no longer about this panel.
       epoch += 1
       stale = false
+      initialPending = true
       setState({ kind: "loading" })
       read()
       if (refresh === undefined) refresh = setInterval(() => read(), refreshMs)
@@ -112,11 +133,13 @@ export function createWatchFeed(
       epoch += 1
       stale = false
       setState({ kind: "payload", payload })
+      emit(payload)
     },
     close: () => {
       if (disposed) return
       opened = false
       sessionID = undefined
+      initialPending = false
       // A late answer or event now belongs to a panel that is no longer shown.
       epoch += 1
       stale = false
@@ -130,6 +153,8 @@ export function createWatchFeed(
       disposed = true
       opened = false
       sessionID = undefined
+      initialPending = false
+      listeners.clear()
       epoch += 1
       stale = false
       stop()
