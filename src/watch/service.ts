@@ -220,6 +220,9 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
     return state
   }
 
+  const capabilityFor = (task: WatchTaskView | null) =>
+    watchCapability(task?.mode ?? "alert", task?.correction.actual ?? "unavailable")
+
   const alertsFor = (taskID: string): WatchAlertsView => {
     const current = ensure()
     if (current.ledger === undefined) {
@@ -282,7 +285,7 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
       outcome: {
         ok: true,
         task,
-        capability: watchCapability(task?.mode),
+        capability: capabilityFor(task),
         controls: watchControls(task),
         alerts: task === null ? emptyWatchAlerts(true, null) : alertsFor(task.taskID),
         failure: null,
@@ -382,7 +385,7 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
       return {
         ok: true,
         task,
-        capability: watchCapability(task.mode),
+        capability: capabilityFor(task),
         controls: watchControls(task),
         alerts: alertsFor(task.taskID),
         failure: null,
@@ -425,7 +428,7 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
       return {
         ok: true,
         task,
-        capability: watchCapability(task.mode),
+        capability: capabilityFor(task),
         controls: watchControls(task),
         alerts: alertsFor(task.taskID),
         failure: null,
@@ -466,7 +469,7 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
       return {
         ok: true,
         task: built.view,
-        capability: watchCapability(built.view.mode),
+        capability: capabilityFor(built.view),
         controls: watchControls(built.view),
         alerts: alertsFor(shown.value.taskID),
         failure: null,
@@ -538,7 +541,7 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
       return {
         ok: true,
         task,
-        capability: watchCapability(task.mode),
+        capability: capabilityFor(task),
         controls: watchControls(task),
         alerts: alertsFor(task.taskID),
         failure: null,
@@ -574,7 +577,7 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
       return {
         ok: true,
         task,
-        capability: watchCapability(task.mode),
+        capability: capabilityFor(task),
         controls: watchControls(task),
         alerts: alertsFor(task.taskID),
         failure: null,
@@ -614,7 +617,7 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
         ok: true,
         challenge: prepared.value,
         task,
-        capability: watchCapability(task?.mode),
+        capability: capabilityFor(task),
         controls: watchControls(task),
         failure: null,
       }
@@ -653,7 +656,7 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
         ok: true,
         challenge: null,
         task: built.view,
-        capability: watchCapability(built.view.mode),
+        capability: capabilityFor(built.view),
         controls: watchControls(built.view),
         failure: null,
       }
@@ -684,7 +687,7 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
         ok: true,
         challenge: null,
         task: built.view,
-        capability: watchCapability(built.view.mode),
+        capability: capabilityFor(built.view),
         controls: watchControls(built.view),
         failure: null,
       }
@@ -722,7 +725,9 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
       if (!shown.ok || shown.value === null) return undefined
       const task = shown.value
       if (task.watchState === "ended" || task.taskState === "completed") return undefined
-      return protocolNotice(task)
+      const built = taskView(task, current.ledger)
+      if ("failure" in built) return undefined
+      return protocolNotice(built.view)
     },
 
     dispose() {
@@ -734,19 +739,31 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
   }
 }
 
-function protocolNotice(task: { readonly taskID: string; readonly version: number; readonly watchState: string; readonly taskState: string }): string {
+function protocolNotice(task: WatchTaskView): string {
+  const correction = task.correction
+  const stop =
+    correction.stop === null
+      ? ""
+      : ` Stop: ${correction.stop.reason}${correction.stop.missingEvidence === null ? "" : ` (${correction.stop.missingEvidence})`}.`
+  const pending =
+    correction.pending === null
+      ? ""
+      : " If a correction prompt for this task arrived, use its concrete taskID, attemptID and correlation with the `receipt` operation. The correlation is never in this notice or in `show`; a receipt is not recovery."
   return [
     "[session-peers watch]",
     `A watched task is enrolled for this session: ${task.taskID} (state version ${task.version}).`,
-    `Task state: ${task.taskState}. Supervision: ${task.watchState}. Authorization: alert-only.`,
+    `Task state: ${task.taskState}. Supervision: ${task.watchState}. Authorization: ${task.mode === "alert" ? "alert-only" : "limited-correction"}.`,
+    `Automatic correction: ${correction.actual}; ${correction.actualReason}${stop}`,
+    correction.actual === "ready"
+      ? "Only the first permanent attempt may be queued automatically; manual correction, resume and transfer remain unavailable."
+      : "The automatic gate is closed, so no queue is sent; this is a verified-runtime/protocol gate, not a missing code path.",
     "The task goal is not repeated in this system notice; read it with",
     `peers({ action: "watch", watch: { operation: "show", taskID: ${JSON.stringify(task.taskID)} } }) when needed.`,
-    "Automatic correction is unavailable in this build. This notice is not a request to start a new turn.",
-    "If the task is still yours, report only a real state change or new result:",
+    "This notice is not a request to start a new turn. Report only a real state change or new result:",
     `peers({ action: "watch", watch: { operation: "report", taskID: ${JSON.stringify(task.taskID)}, expectedVersion: ${task.version}, reportId: "<new id>", kind: "begin|progress|waiting|blocked|completed", evidence: { ... } } })`,
-    "begin needs no evidence; progress and completed need evidence.summary and evidence.reference; waiting needs evidence.waitKind, evidence.waitFor, evidence.reason and evidence.reference; blocked needs evidence.reason.",
-    "A waiting report may carry evidence.waitID and evidence.waitUntil; a later progress/blocked report clears only the matching wait with evidence.clearsWaitID plus evidence.clearEvidence.",
-    "Reporting completion ends supervision because the task is done. Do not repeat completed side effects to report.",
+    "begin needs no evidence; progress/completed need summary and reference; waiting needs waitKind, waitFor, reason and reference; blocked needs reason.",
+    "A waiting report may add waitID and waitUntil; a later report clears only the named wait with clearsWaitID plus clearEvidence.",
+    "Reporting completion ends supervision because the task is done. Do not repeat completed side effects to report." + pending,
   ].join("\n")
 }
 

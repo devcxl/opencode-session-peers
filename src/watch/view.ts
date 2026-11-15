@@ -11,6 +11,7 @@ import { correctionGate } from "./correction.ts"
 import {
   CORRECTION_UNAVAILABLE_REASON,
   DELEGATION_UNAVAILABLE_REASON,
+  MANUAL_CORRECTION_UNAVAILABLE_REASON,
   RECOVERY_UNAVAILABLE_REASON,
   SAFETY_PAUSE_UNAVAILABLE_REASON,
   TRANSFER_UNAVAILABLE_REASON,
@@ -21,6 +22,7 @@ import {
   type WatchCorrectionAttemptRecord,
   type WatchCorrectionAttemptView,
   type WatchCorrectionSnapshot,
+  type WatchCorrectionActual,
   type WatchCorrectionView,
   type WatchMode,
   type WatchObservationView,
@@ -237,15 +239,21 @@ export function watchAlertView(alert: WatchAlertRecord): WatchAlertView {
   }
 }
 
-export function watchCapability(mode: WatchMode = "alert"): WatchCapability {
+export function watchCapability(
+  mode: WatchMode = "alert",
+  correctionActual: WatchCorrectionActual = "unavailable",
+): WatchCapability {
+  const firstAttempt = correctionActual === "ready"
   return {
     mode,
     monitoring: "observer-alerts",
     automaticDetection: "partial",
     automaticDetectionReason:
       "Observes local execution lifecycle, target activity and same-location waits; it does not prove goal progress or single-host uniqueness.",
-    correction: "unavailable",
-    correctionReason: CORRECTION_UNAVAILABLE_REASON,
+    correction: firstAttempt ? "first-attempt" : "unavailable",
+    correctionReason: firstAttempt
+      ? "The runtime/protocol tuple is verified; only the first permanent attempt may be automatic. Manual correction, resume and transfer remain unavailable."
+      : CORRECTION_UNAVAILABLE_REASON,
     delegation: "unavailable",
     delegationReason: DELEGATION_UNAVAILABLE_REASON,
     transfer: "unavailable",
@@ -264,7 +272,7 @@ export function watchControls(task: WatchTaskView | null): WatchControls {
       end: disabled("no watched task is enrolled for this session"),
       acknowledge: disabled("no watched task is enrolled for this session"),
       resume: disabled(RECOVERY_UNAVAILABLE_REASON),
-      correction: disabled(CORRECTION_UNAVAILABLE_REASON),
+      correction: disabled(MANUAL_CORRECTION_UNAVAILABLE_REASON),
       transfer: disabled(TRANSFER_UNAVAILABLE_REASON),
     }
   }
@@ -277,7 +285,7 @@ export function watchControls(task: WatchTaskView | null): WatchControls {
     // histories; it changes only the unread flag.
     acknowledge: enabled(),
     resume: disabled(RECOVERY_UNAVAILABLE_REASON),
-    correction: disabled(CORRECTION_UNAVAILABLE_REASON),
+    correction: disabled(MANUAL_CORRECTION_UNAVAILABLE_REASON),
     transfer: disabled(TRANSFER_UNAVAILABLE_REASON),
   }
 }

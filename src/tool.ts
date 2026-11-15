@@ -150,7 +150,7 @@ const PEERS_TOOL_INPUT = {
         mode: {
           type: "string",
           enum: ["alert", "correct"],
-          description: `Authorization mode; alert is the only available mode, and correct is an explicit refusal.`,
+          description: `Enrollment mode; alert is the only enrollment mode. Limited correction is granted through the controlled surface, and a model-supplied correct mode is refused.`,
         },
         reportId: {
           type: "string",

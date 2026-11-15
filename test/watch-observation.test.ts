@@ -605,6 +605,26 @@ describeWatch("trusted idle and running observation", () => {
     }
   })
 
+  test("the reader accepts a first-attempt capability only as an enum value", async () => {
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      const at = host.now()
+      settle(host, at)
+      await enroll(host)
+      const payload = await show(host)
+      const mutated = structuredClone(payload) as WatchPayload
+      ;(mutated.capability as { correction: string }).correction = "first-attempt"
+      const read = readWatchPayload(mutated)
+      expect(read?.capability.correction).toBe("first-attempt")
+      const invalid = structuredClone(payload) as { capability: { correction: string } }
+      invalid.capability.correction = "force"
+      expect(readWatchPayload(invalid)).toBeUndefined()
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
   test("a terminal execution plus a sustained idle window forms one persistent alert", async () => {
     const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
     try {
