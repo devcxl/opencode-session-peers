@@ -58,6 +58,7 @@ interface SessionFacts {
   lastObservedAt: number | null
   idleSeenAt: number | null
   idleTicks: number
+  ownReservationBaseline: number | null
   unknownSince: number | null
 }
 
@@ -74,6 +75,8 @@ interface StoredObservation extends TaskObservation {
 
 export interface WatchObserver extends WatchObservationSource {
   start(): void
+  /** The executor's own committed reservation may bump the task version once. */
+  markOwnReservation(taskID: string, fromVersion: number, toVersion: number): void
   dispose(): void
 }
 
@@ -98,6 +101,7 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
   const facts = new Map<SessionID, SessionFacts>()
   const observations = new Map<string, StoredObservation>()
   const sampleQueues = new Map<string, Promise<void>>()
+  const ownVersionBumps = new Map<string, { readonly from: number; readonly to: number }>()
   const taskVersions = new Map<string, number>()
   const sessionRevisions = new Map<string, number>()
   const everSeenSessions = new Set<string>()
@@ -140,6 +144,7 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
       lastObservedAt: null,
       idleSeenAt: null,
       idleTicks: 0,
+      ownReservationBaseline: null,
       unknownSince: null,
     }
     facts.set(sessionID, created)
@@ -167,6 +172,7 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
       value.lastObservedAt = null
       value.idleSeenAt = null
       value.idleTicks = 0
+      value.ownReservationBaseline = null
       value.unknownSince = null
       facts.set(sessionID, value)
     }
@@ -185,6 +191,7 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
     current.invalidatedAt = at
     current.idleSeenAt = null
     current.idleTicks = 0
+    current.ownReservationBaseline = null
     current.unknownSince = current.unknownSince ?? at
     sessionRevisions.set(sessionID, (sessionRevisions.get(sessionID) ?? 0) + 1)
   }
@@ -453,8 +460,19 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
     const sampleRevision = sessionRevisions.get(task.targetSessionID) ?? 0
     const current = fact(task.targetSessionID)
     if (taskVersions.get(task.taskID) !== task.version) {
-      current.idleSeenAt = null
-      current.idleTicks = 0
+      const allowance = ownVersionBumps.get(task.taskID)
+      const own =
+        allowance !== undefined &&
+        allowance.from === taskVersions.get(task.taskID) &&
+        allowance.to === task.version
+      ownVersionBumps.delete(task.taskID)
+      if (own) {
+        current.ownReservationBaseline = current.idleSeenAt ?? task.updatedAt
+      } else {
+        current.idleSeenAt = null
+        current.idleTicks = 0
+        current.ownReservationBaseline = null
+      }
       taskVersions.set(task.taskID, task.version)
     }
     current.lastObservedAt = now
@@ -877,20 +895,31 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
         activity,
       }
     }
-    const baseline = Math.max(
-      task.createdAt,
-      task.updatedAt,
-      current.settledAt ?? task.createdAt,
-      current.lastActivityAt ?? 0,
-      current.invalidatedAt ?? 0,
-      current.observedFrom,
-    )
+    const baseline =
+      current.ownReservationBaseline !== null
+        ? Math.max(
+            task.createdAt,
+            current.ownReservationBaseline,
+            current.settledAt ?? task.createdAt,
+            current.lastActivityAt ?? 0,
+            current.invalidatedAt ?? 0,
+            current.observedFrom,
+          )
+        : Math.max(
+            task.createdAt,
+            task.updatedAt,
+            current.settledAt ?? task.createdAt,
+            current.lastActivityAt ?? 0,
+            current.invalidatedAt ?? 0,
+            current.observedFrom,
+          )
     if (current.idleSeenAt === null) {
       current.idleSeenAt = baseline
       current.idleTicks = 0
     }
     current.idleTicks += 1
     const idleState = now - baseline >= deps.config.idleMs && current.idleTicks >= 2
+    if (idleState) current.ownReservationBaseline = null
     return {
       observation: {
         state: idleState ? "idle-candidate" : "active",
@@ -1236,6 +1265,10 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
       registration = deps.scheduler.every(deps.config.tickMs, requestTick)
     },
 
+    markOwnReservation(taskID, fromVersion, toVersion) {
+      ownVersionBumps.set(taskID, { from: fromVersion, to: toVersion })
+    },
+
     observationFor(taskID) {
       return freshObservation(taskID)?.observation ?? null
     },
@@ -1260,6 +1293,7 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
       registration = undefined
       observations.clear()
       sampleQueues.clear()
+      ownVersionBumps.clear()
       taskVersions.clear()
       sessionRevisions.clear()
       facts.clear()
@@ -1335,6 +1369,7 @@ function markActivity(facts: SessionFacts, at: number, kind: ActivityKind) {
   facts.lastActivityKind = kind
   facts.idleSeenAt = null
   facts.idleTicks = 0
+  facts.ownReservationBaseline = null
   facts.unknownSince = null
   // A target step/text/tool after a retry is evidence that the retry wait ended;
   // a retry-only observer has no snapshot, so this is the matching terminal fact.
