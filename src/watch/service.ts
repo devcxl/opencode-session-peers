@@ -327,7 +327,7 @@ function failureOutcome(failure: WatchFailure): WatchOutcome {
   }
 }
 
-function mapLedgerFailure(code: WatchLedgerErrorCode, detail: string): WatchFailure {
+export function mapLedgerFailure(code: WatchLedgerErrorCode, detail: string): WatchFailure {
   const make = (failureCode: WatchFailureCode, reason: string): WatchFailure => ({ code: failureCode, reason, detail })
   switch (code) {
     case "invalid_input":
@@ -357,6 +357,11 @@ function mapLedgerFailure(code: WatchLedgerErrorCode, detail: string): WatchFail
       return make("E_WATCH_SESSION_BUSY", `A concurrent enrollment or state change won the race; re-read the task. (${detail})`)
     case "lock_timeout":
       return make("E_WATCH_UNAVAILABLE", `The watch ledger is locked by another process; no state was changed. (${detail})`)
+    case "state_unknown":
+      return make(
+        "E_WATCH_UNAVAILABLE",
+        `The watch ledger commit completed, but its files could not be secured afterwards (${detail}). The task state may already have changed; re-read the task before retrying. No automatic retry was attempted.`,
+      )
     default:
       return make(
         "E_WATCH_UNAVAILABLE",
