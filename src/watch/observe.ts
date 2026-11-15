@@ -83,6 +83,8 @@ export interface WatchObserverDeps {
   readonly asks: RecordStore<AskRecord>
   readonly replies: RecordStore<ReplyRecord>
   readonly onChanged?: () => void
+  /** A trusted sample is ready; the correction executor may now gate it. */
+  readonly onSample?: (taskID: string) => void
   readonly warn: (message: string) => void
 }
 
@@ -578,6 +580,11 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
         (wait.status === "cleared" && wait.clearEvidence !== null) ||
         (wait.status === "denied" && wait.denyEvidence !== null)
       if (matched) resolveConditionAlerts(task.taskID, [waitAlertDedupe(wait)], now)
+    }
+    try {
+      deps.onSample?.(task.taskID)
+    } catch {
+      // A scheduler hand-off is not part of the alert commit.
     }
   }
 

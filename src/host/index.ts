@@ -10,6 +10,7 @@
 import type { Plugin } from "@opencode/plugin"
 
 import { commandRegistrar, type CommandRegistrar } from "./commands.ts"
+import { correctionDelivery, type CorrectionDeliveryPort } from "./correction-delivery.ts"
 import { contextInjector, type ContextInjector } from "./context.ts"
 import type { EventSource } from "./events.ts"
 import { sessionGeneration, type Generation } from "./generation.ts"
@@ -37,6 +38,8 @@ export interface Host {
   readonly runtime: HostRuntime
   readonly location: InstanceLocation
   readonly sessions: SessionLookup
+  /** Correction-only queue delivery: admission id, definite refusal, or unknown. */
+  readonly correctionDelivery: CorrectionDeliveryPort
   /** Same-location permission snapshots; a failure is unknown, not empty. */
   readonly permissions: PermissionLookup
   /** Clock and interval seam for the observer. */
@@ -67,6 +70,7 @@ export function createHost(context: Plugin.Context): Host {
       projectID: context.location.project?.id,
     },
     sessions: sessionLookup(context.session),
+    correctionDelivery: correctionDelivery(context.session),
     permissions: permissionLookup(context.permission),
     // The fake host installs a deterministic scheduler on its context; a real
     // host has no such field and gets the process clock.

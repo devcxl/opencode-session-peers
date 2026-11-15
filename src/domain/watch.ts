@@ -227,6 +227,7 @@ export interface WatchCorrectionAttemptRecord {
   readonly receiptAt?: number
   readonly receiptPermitAt?: number
   readonly receiptRefusalReason?: string
+  readonly admissionID?: string
   readonly lastSeenAt?: number
   readonly lastSeenReason?: string
   readonly receiptCallerSessionID?: string

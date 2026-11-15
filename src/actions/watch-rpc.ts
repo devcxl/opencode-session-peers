@@ -43,6 +43,9 @@ export async function watchRpc(deps: WatchRpcDeps, input: unknown): Promise<Watc
       reason: `This location does not serve session "${request.value.sessionID}".`,
     })
   }
+  if (watch.isClosing()) {
+    return failurePayload(deps, { code: "E_WATCH_UNAVAILABLE", reason: "The watch application is closing; no action was taken." })
+  }
   switch (request.value.operation) {
     case "show":
       return payload(deps, watch.show({ sessionID: request.value.sessionID, ...(request.value.taskID === undefined ? {} : { taskID: request.value.taskID }) }))
@@ -243,7 +246,20 @@ function ledgerStatus(deps: WatchRpcDeps): WatchLedgerView {
         platform: null,
         arch: null,
       }
-    : deps.watch.status()
+    : (() => {
+        const status = deps.watch.status()
+        return {
+          available: status.available,
+          reason: status.reason,
+          sqliteVersion: status.sqliteVersion,
+          journalMode: status.journalMode,
+          synchronous: status.synchronous,
+          busyTimeoutMs: status.busyTimeoutMs,
+          appVersion: status.appVersion,
+          platform: status.platform,
+          arch: status.arch,
+        }
+      })()
 }
 
 function unavailableControls(available: boolean, reason: string | null) {

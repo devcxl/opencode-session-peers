@@ -657,14 +657,18 @@ describeSafe("cross-location isolation", () => {
 })
 
 describe("explicit unavailable capabilities", () => {
-  test("correction, delegation, receipt, transfer and recovery are refused, not accepted", async () => {
+  test("correction, delegation, transfer and recovery are refused; receipt is a bounded entry", async () => {
     const { host, unload } = await loaded({ sessions: [CALLER_SESSION_ID, "ses_child"] })
     try {
-      for (const operation of ["grant", "correct", "receipt", "delegate", "transfer", "resume"]) {
+      for (const operation of ["grant", "correct", "delegate", "transfer", "resume"]) {
         const data = watchDetails(await watch(host, { operation }))
         expect(data).toMatchObject({ ok: false, failure: { code: "E_WATCH_UNSUPPORTED" } })
         expect(String((data.failure as Record<string, unknown>)["reason"]).length).toBeGreaterThan(0)
       }
+
+      const missingReceipt = watchDetails(await watch(host, { operation: "receipt" }))
+      expect(missingReceipt).toMatchObject({ ok: false, failure: { code: "E_WATCH_INVALID" } })
+      expect(String((missingReceipt.failure as Record<string, unknown>)["reason"])).toContain("receipt needs")
 
       const correctionMode = watchDetails(
         await watch(host, { operation: "enroll", requestId: "req-correct", goal: "A task", mode: "correct" }),

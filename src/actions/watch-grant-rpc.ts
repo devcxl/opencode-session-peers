@@ -30,6 +30,16 @@ export async function watchGrantRpc(deps: WatchGrantRpcDeps, input: unknown): Pr
     return failure(deps, "E_WATCH_NOT_FOUND", `This location does not serve session "${request.value.sessionID}".`)
   }
   const watch = deps.watch
+  if (watch.isClosing()) {
+    return {
+      ok: false,
+      challenge: null,
+      task: null,
+      capability: watchCapability(),
+      controls: watchControls(null),
+      failure: { code: "E_WATCH_UNAVAILABLE", reason: "The watch application is closing; no grant action was taken.", detail: null },
+    }
+  }
   switch (request.value.operation) {
     case "prepare": {
       if (request.value.deployment === undefined) {

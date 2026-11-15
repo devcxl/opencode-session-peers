@@ -24,6 +24,7 @@ import {
   type WatchTaskRecord,
   type WatchTaskView,
 } from "../domain/watch.ts"
+import type { CorrectionExecutorAuthority } from "./executor.ts"
 import {
   openWatchLedger,
   type CorrectionGrantChallenge,
@@ -52,6 +53,19 @@ export interface WatchObservationSource {
   activityFor(taskID: string): WatchActivityView | null
 }
 
+export interface WatchReceiptOutcome {
+  readonly ok: boolean
+  readonly task: WatchTaskView | null
+  readonly capability: ReturnType<typeof watchCapability>
+  readonly controls: ReturnType<typeof watchControls>
+  readonly alerts: WatchAlertsView
+  readonly failure: WatchFailure | null
+  readonly continuePermit: boolean
+  readonly duplicate: boolean
+  readonly seen: boolean
+  readonly refusalReason: string | null
+}
+
 export interface WatchGrantOutcome {
   readonly ok: boolean
   /** Only the prepare response carries the opaque challenge. */
@@ -71,6 +85,7 @@ export interface WatchLedgerStatus {
   readonly journalMode: string | null
   readonly synchronous: number | null
   readonly busyTimeoutMs: number | null
+  readonly filesystem: string | null
   readonly appVersion: string | null
   readonly platform: string | null
   readonly arch: string | null
@@ -101,6 +116,17 @@ export interface WatchApplication {
     readonly operation: "pause" | "end"
   }): WatchOutcome
   ack(input: { readonly callerSessionID: string; readonly alertID: string }): WatchOutcome
+  /** The executing session's receipt for one known correction attempt. */
+  receipt(input: {
+    readonly callerSessionID: string
+    readonly taskID: string
+    readonly attemptID: string
+    readonly correlation: string
+  }): WatchReceiptOutcome
+  /** The one serial executor's ledger authority; absent when the ledger is unavailable. */
+  correctionAuthority(): CorrectionExecutorAuthority | undefined
+  /** Synchronous closing state for post-await fences. */
+  isClosing(): boolean
   /** Controlled TUI grant review/confirmation; never a model tool path. */
   prepareGrant(input: {
     readonly callerSessionID: string
@@ -159,6 +185,8 @@ export interface WatchApplicationOptions {
    * must not read a machine-wide task from another directory.
    */
   readonly sessionAtLocation?: (sessionID: string) => Promise<boolean>
+  /** The observer's current reading for the gate; absent before the observer starts. */
+  readonly observationFor?: (taskID: string) => WatchObservationView | null
 }
 
 interface LedgerState {
@@ -221,7 +249,8 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
         journalMode: ledger.journalMode,
         synchronous: ledger.synchronous,
         busyTimeoutMs: ledger.busyTimeoutMs,
-      }),
+        filesystem: ledger.filesystem,
+      }, options.observationFor?.(record.taskID) ?? null, closed),
     }
   }
 
@@ -279,6 +308,7 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
           journalMode: null,
           synchronous: null,
           busyTimeoutMs: null,
+          filesystem: null,
           appVersion: options.runtime?.appVersion ?? null,
           platform: options.runtime?.platform ?? null,
           arch: options.runtime?.arch ?? null,
@@ -291,6 +321,7 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
         journalMode: current.ledger.journalMode,
         synchronous: current.ledger.synchronous,
         busyTimeoutMs: current.ledger.busyTimeoutMs,
+        filesystem: current.ledger.filesystem,
         appVersion: options.runtime?.appVersion ?? null,
         platform: options.runtime?.platform ?? null,
         arch: options.runtime?.arch ?? null,
@@ -375,7 +406,12 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
         evidence: input.evidence,
       })
       if (!reported.ok) return failureOutcome(mapLedgerFailure(reported.code, reported.detail))
-      if (!reported.value.duplicate) notify()
+      if (!reported.value.duplicate) {
+        notify()
+        if (input.kind === "progress" && input.evidence.reference !== undefined) {
+          tryRecovery(current.ledger, reported.value.task, caller.value, input.reportID, input.evidence.reference, options.now?.() ?? Date.now(), notify)
+        }
+      }
       const built = taskView(reported.value.task, current.ledger)
       if ("failure" in built) return failureOutcome(built.failure)
       const task = built.view
@@ -390,6 +426,79 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
         duplicate: reported.value.duplicate,
         changed: !reported.value.duplicate,
       }
+    },
+
+    receipt(input) {
+      const caller = readIdentifier(input.callerSessionID, "callerSessionID")
+      if (!caller.ok) return receiptFailure(invalid(caller.reason))
+      const taskID = readIdentifier(input.taskID, "taskID")
+      if (!taskID.ok) return receiptFailure(invalid(taskID.reason))
+      const attemptID = readIdentifier(input.attemptID, "attemptID")
+      if (!attemptID.ok) return receiptFailure(invalid(attemptID.reason))
+      const correlation = readIdentifier(input.correlation, "correlation")
+      if (!correlation.ok) return receiptFailure(invalid(correlation.reason))
+      const current = ensure()
+      if (current.ledger === undefined) {
+        return receiptFailure(mapLedgerFailure(current.failure?.code ?? "ledger_error", current.failure?.detail ?? "unknown"))
+      }
+      const received = current.ledger.recordCorrectionReceipt({
+        taskId: taskID.value,
+        reservationId: attemptID.value,
+        callerSessionId: caller.value,
+        correlation: correlation.value,
+        at: options.now?.() ?? Date.now(),
+      })
+      if (!received.ok) return receiptFailure(mapLedgerFailure(received.code, received.detail))
+      const shown = current.ledger.show({ taskID: taskID.value, sessionID: caller.value })
+      if (!shown.ok) return receiptFailure(mapLedgerFailure(shown.code, shown.detail))
+      if (shown.value === null) return receiptFailure(invalid("the receipt has no visible task"))
+      const built = taskView(shown.value, current.ledger)
+      if ("failure" in built) return receiptFailure(built.failure)
+      return {
+        ok: true,
+        task: built.view,
+        capability: watchCapability(built.view.mode),
+        controls: watchControls(built.view),
+        alerts: alertsFor(shown.value.taskID),
+        failure: null,
+        continuePermit: received.value.continuePermit,
+        duplicate: received.value.duplicate,
+        seen: received.value.seen,
+        refusalReason: received.value.refusalReason,
+      }
+    },
+
+    correctionAuthority() {
+      const current = ensure()
+      const ledger = current.ledger
+      if (ledger === undefined) return undefined
+      return {
+        liveTasks() {
+          const listed = ledger.listActive()
+          return listed.ok ? listed.value : []
+        },
+        snapshot(taskID) {
+          const snapshot = ledger.correction(taskID)
+          return snapshot.ok ? snapshot.value : undefined
+        },
+        reserve(input) {
+          return ledger.reserveCorrection(input)
+        },
+        claim(input) {
+          return ledger.claimCorrection(input)
+        },
+        outcome(input) {
+          return ledger.recordCorrectionOutcome(input)
+        },
+        abort(input) {
+          return ledger.abortCorrection(input)
+        },
+        onChanged: notify,
+      }
+    },
+
+    isClosing() {
+      return closed
     },
 
     control(input) {
@@ -630,6 +739,48 @@ function unsupported(reason: string): WatchFailure {
   return { code: "E_WATCH_UNSUPPORTED", reason }
 }
 
+function receiptFailure(failure: WatchFailure): WatchReceiptOutcome {
+  return {
+    ok: false,
+    task: null,
+    capability: watchCapability(),
+    controls: watchControls(null),
+    alerts: emptyWatchAlerts(false, failure.reason),
+    failure,
+    continuePermit: false,
+    duplicate: false,
+    seen: false,
+    refusalReason: null,
+  }
+}
+
+function tryRecovery(
+  ledger: WatchLedger,
+  task: WatchTaskRecord,
+  callerSessionId: string,
+  reportID: string,
+  reference: string,
+  at: number,
+  notify: () => void,
+): void {
+  const snapshot = ledger.correction(task.taskID)
+  if (!snapshot.ok) return
+  const receipted = snapshot.value.attempts.find(
+    (attempt) => attempt.phase === "receipted" && attempt.receiptPermitAt !== undefined,
+  )
+  if (receipted === undefined) return
+  const recovered = ledger.recordCorrectionRecovery({
+    taskId: task.taskID,
+    reservationId: receipted.reservationID,
+    callerSessionId,
+    progressReportId: reportID,
+    resultReference: reference,
+    generation: task.generation,
+    at,
+  })
+  if (recovered.ok) notify()
+}
+
 function grantFailure(failure: WatchFailure): WatchGrantOutcome {
   return {
     ok: false,
@@ -683,6 +834,8 @@ export function mapLedgerFailure(code: WatchLedgerErrorCode, detail: string): Wa
       return make("E_WATCH_STALE", `A correction grant challenge is already pending; re-read the task. (${detail})`)
     case "grant_expired":
       return make("E_WATCH_STALE", `The correction challenge is expired or already consumed. Prepare a new one. (${detail})`)
+    case "grant_active":
+      return make("E_WATCH_INVALID_TRANSITION", `An active correction grant already exists; downgrade it first. (${detail})`)
     case "attempt_limit":
       return make("E_WATCH_INVALID_TRANSITION", `The task has spent all three permanent correction attempts. (${detail})`)
     case "pending_attempt":
