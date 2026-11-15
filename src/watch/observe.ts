@@ -163,14 +163,36 @@ export function createWatchObserver(deps: WatchObserverDeps): WatchObserver {
     }
   }
 
+  const invalidateTarget = (sessionID: string, at: number) => {
+    const current = facts.get(sessionID)
+    if (current === undefined) return
+    current.lifecycleCovered = false
+    current.execution = "unknown"
+    current.executionAt = null
+    current.startedAt = null
+    current.settledAt = null
+    current.terminalFailure = null
+    current.retry = null
+    current.invalidatedAt = at
+    current.idleSeenAt = null
+    current.idleTicks = 0
+    current.unknownSince = current.unknownSince ?? at
+    sessionRevisions.set(sessionID, (sessionRevisions.get(sessionID) ?? 0) + 1)
+  }
+
   const onEvent = (event: HostEvent) => {
     const eventLocation = (event as { readonly location?: { readonly directory?: unknown } }).location?.directory
-    // Events are live-only and process-wide; without a same-location source
-    // stamp we cannot attribute them to this instance's target.
-    if (typeof eventLocation !== "string" || eventLocation !== deps.directory) return
     const sessionID = sessionOf(event)
     if (sessionID === undefined) return
     const now = deps.scheduler.now()
+    if (typeof eventLocation !== "string") {
+      // A known local target's event without a source stamp is not evidence;
+      // invalidate that target instead of silently dropping a possibly real
+      // execution/form/permission transition.
+      if (facts.has(sessionID)) invalidateTarget(sessionID, now)
+      return
+    }
+    if (eventLocation !== deps.directory) return
     const at = eventAt(event)
     if (at === undefined || at > now) {
       gap = at === undefined ? "event has no trusted timestamp" : "event timestamp is in the future"

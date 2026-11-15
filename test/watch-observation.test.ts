@@ -133,6 +133,98 @@ describeWatch("trusted idle and running observation", () => {
     }
   })
 
+  test("a location-less execution event invalidates a covered target instead of trusting the old terminal", async () => {
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      const at = host.now()
+      settle(host, at)
+      await enroll(host)
+      await host.advance(1_000)
+      await host.advance(1_000)
+      let payload = await show(host)
+      expect(payload.observation).toMatchObject({ state: "idle-candidate", trusted: true })
+      expect(payload.alerts?.items.map((alert) => alert.kind)).toContain("idle")
+
+      // The event is genuinely unstamped: FakeHost omits `location` entirely.
+      host.emit("session.execution.started", { sessionID: CALLER_SESSION_ID }, host.now(), null)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await host.advance(1_000)
+      payload = await show(host)
+      expect(payload.observation).toMatchObject({ state: "unknown", trusted: false, waitsPartial: true })
+      expect(payload.observation?.reason).toContain("predates continuous observation")
+
+      await host.advance(1_000)
+      payload = await show(host)
+      expect(payload.observation?.state).not.toBe("idle-candidate")
+      expect(payload.observation?.trusted).toBe(false)
+      await host.advance(2_000)
+      payload = await show(host)
+      expect(payload.alerts?.items.map((alert) => alert.kind)).toContain("observation-unknown")
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
+  test("a location-less form event also invalidates a covered target", async () => {
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      const at = host.now()
+      settle(host, at)
+      await enroll(host)
+      await host.advance(1_000)
+      host.emit(
+        "form.created",
+        { form: { id: "form-unstamped", sessionID: CALLER_SESSION_ID, title: "T", fields: [] } },
+        host.now(),
+        null,
+      )
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await host.advance(1_000)
+      let payload = await show(host)
+      expect(payload.observation).toMatchObject({ state: "unknown", trusted: false, waitsPartial: true })
+      expect(payload.alerts?.items.map((alert) => alert.kind)).not.toContain("idle")
+
+      await host.advance(2_000)
+      payload = await show(host)
+      expect(payload.observation?.state).toBe("unknown")
+      expect(payload.alerts?.items.map((alert) => alert.kind)).toContain("observation-unknown")
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
+  test("an event from another location does not change the local task or its observation", async () => {
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      const at = host.now()
+      settle(host, at)
+      const taskID = await enroll(host)
+      await host.advance(2_000)
+      const before = await show(host)
+      expect(before.observation).toMatchObject({ state: "idle-candidate", trusted: true })
+      const alertID = before.alerts?.items[0]?.alertID
+
+      host.emit("session.execution.started", { sessionID: CALLER_SESSION_ID }, host.now(), "/tmp/opencode/elsewhere")
+      host.emit(
+        "form.created",
+        { form: { id: "foreign-form", sessionID: CALLER_SESSION_ID, title: "F", fields: [] } },
+        host.now(),
+        "/tmp/opencode/elsewhere",
+      )
+      await host.advance(1_000)
+      const after = await show(host)
+      expect(after.task).toMatchObject({ taskID, version: before.task?.version })
+      expect(after.observation).toMatchObject({ state: "idle-candidate", trusted: true })
+      expect(after.observation?.waits.some((wait) => wait.waitID === "form:foreign-form")).toBe(false)
+      expect(after.alerts?.items[0]?.alertID).toBe(alertID)
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
   test("a terminal execution plus a sustained idle window forms one persistent alert", async () => {
     const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
     try {
@@ -1224,6 +1316,82 @@ describeWatch("alert persistence and availability", () => {
       expectNoAgentCalls(host)
     } finally {
       await unload()
+    }
+  })
+
+  test("tool text reports the real partial capability and alert identity", async () => {
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      const at = host.now()
+      settle(host, at)
+      await enroll(host)
+      await host.advance(2_000)
+      const result = await host.call("peers", { action: "watch", watch: { operation: "show" } })
+      const alert = (result.details as { watch: { alerts: { items: { alertID: string }[] } } }).watch.alerts.items[0]
+      if (alert === undefined) throw new Error("expected an idle alert")
+      expect(result.text).toContain("Actual capability: observer-alerts")
+      expect(result.text).toContain("automatic detection is partial")
+      expect(result.text).toContain("Observes local execution lifecycle")
+      expect(result.text).toContain("Correction: unavailable")
+      expect(result.text).not.toContain("participant reports only")
+      expect(result.text).not.toContain("automatic detection is unavailable")
+      expect(result.text).toContain(alert.alertID)
+      expect(result.text).toContain("[idle, unread]")
+      expect(result.text).toContain("Next:")
+      expect(result.text).toContain("1 active, 1 unread, 1 total")
+
+      const acked = await host.call("peers", { action: "watch", watch: { operation: "ack", alertID: alert.alertID } })
+      expect(acked.text).toContain("[idle, read]")
+      expect(acked.text).toContain("0 unread")
+
+      const missing = await host.call("peers", {
+        action: "watch",
+        watch: { operation: "ack", alertID: "alert-does-not-exist" },
+      })
+      expect(missing.text).toContain("No persistent alert matches")
+      expect(missing.text).toContain("E_WATCH_NOT_FOUND")
+      expect(missing.text).not.toContain("ledger is unavailable")
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
+  test("tool text distinguishes blocked from observation-unknown", async () => {
+    const blockedCase = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      const at = blockedCase.host.now()
+      settle(blockedCase.host, at)
+      await enroll(blockedCase.host)
+      blockedCase.host.emit("session.execution.started", { sessionID: CALLER_SESSION_ID }, at)
+      blockedCase.host.emit("session.execution.failed", { sessionID: CALLER_SESSION_ID }, at)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await blockedCase.host.advance(1_000)
+      const blocked = await blockedCase.host.call("peers", { action: "watch", watch: { operation: "show" } })
+      expect(blocked.text).toContain("[blocked, unread]")
+      expect(blocked.text).not.toContain("[observation-unknown")
+      expect(blocked.text).toContain("not a quiet idle task")
+      expectNoAgentCalls(blockedCase.host)
+    } finally {
+      await blockedCase.unload()
+    }
+
+    const unknownCase = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      const at = unknownCase.host.now()
+      settle(unknownCase.host, at)
+      await enroll(unknownCase.host)
+      await unknownCase.host.advance(2_000)
+      unknownCase.host.emit("session.execution.started", { sessionID: CALLER_SESSION_ID }, unknownCase.host.now(), null)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await unknownCase.host.advance(3_000)
+      const unknown = await unknownCase.host.call("peers", { action: "watch", watch: { operation: "show" } })
+      expect(unknown.text).toContain("[observation-unknown, unread]")
+      expect(unknown.text).not.toContain("[blocked,")
+      expect(unknown.text).toContain("Observation is incomplete")
+      expectNoAgentCalls(unknownCase.host)
+    } finally {
+      await unknownCase.unload()
     }
   })
 
