@@ -50,6 +50,7 @@ describe("the peers skill", () => {
       "cancel",
       "handover",
       "status",
+      "watch",
     ]) {
       expect(skill.content).toContain(`\`${action}\``)
     }
@@ -90,5 +91,25 @@ describe("the peers skill", () => {
     const skill = (await skills()).find((candidate) => candidate.id === "session-peers")!
 
     expect(skill.path).toBe(new URL("../src/skill.ts", import.meta.url).pathname)
+  })
+
+  test("explains explicit self-watch reporting without waking or replaying work", async () => {
+    const skill = (await skills()).find((candidate) => candidate.id === "session-peers")!
+
+    expect(skill.description).toContain("watched task")
+    for (const phrase of [
+      'operation: "enroll"',
+      'operation: "show"',
+      'operation: "report"',
+      "expectedVersion",
+      "alert-only",
+      "normal turn",
+      "completion ends supervision",
+      "E_WATCH_STALE",
+      "E_WATCH_UNAVAILABLE",
+      "E_WATCH_UNSUPPORTED",
+    ]) {
+      expect(skill.content).toContain(phrase)
+    }
   })
 })

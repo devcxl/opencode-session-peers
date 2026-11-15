@@ -142,7 +142,8 @@ Behaviour worth knowing before you rely on it:
 ## Watching a task (alert-only)
 
 A session can explicitly enroll one task for observation. A session being idle is not a watched
-task; the user must give the target session, the real goal and an idempotency key:
+task. This slice targets only the calling session (the open session served at this plugin location in `/peers-watch`),
+with a real goal and an idempotency key; another session cannot yet be enrolled:
 
 ```ts
 peers({ action: "watch", watch: {
@@ -158,8 +159,9 @@ reference and reporting protocol in its next normal model context; no extra turn
 the raw goal is not copied into that system notice (read it with `watch show`). Completion is not
 the same as ending supervision: a `completed` report ends the watch because the business task is
 done, while a manual `end` records that supervision stopped without claiming success. Pausing
-stops new proactive work but leaves the business session untouched, and a paused task still holds
-the session's one live watch slot.
+stops new proactive monitoring reminders and corrections, not the business session or its normal
+reporting protocol. A paused task still holds the session's one live watch slot, and real state
+changes or completion can still be reported in normal turns.
 
 Report only a real state change or new result, with the version read from `watch show`:
 

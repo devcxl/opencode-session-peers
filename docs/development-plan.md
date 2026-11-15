@@ -4,6 +4,14 @@ Status: implemented. Tickets #2–#8 are merged and CI-verified (see the issue t
 publish readiness (#9). This document is the design of record; where a measurement contradicted it, the
 measurement won and the ADR carries an amendment — reconcile the two before trusting a paragraph here.
 
+This plan records the original messaging release. The later watchdog work is governed by
+[spec #58](https://github.com/devcxl/opencode-session-peers/issues/58) and its staged tickets:
+[#59](https://github.com/devcxl/opencode-session-peers/issues/59) adds the host-dialog
+`/peers-watch` panel with explicit enrollment, pause and end controls. Its private ledger
+and observation-only reload policy are recorded in
+[ADR-0008](adr/0008-private-watch-ledger-and-observation-only-reload.md); the original
+roster-only UI scope and module map below are not constraints on that extension.
+
 ## What we are building
 
 An opencode v2 plugin that lets sessions on the same machine message each other: list peers, send,
