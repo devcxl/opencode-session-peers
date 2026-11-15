@@ -28,6 +28,7 @@ export default {
     const db = new Database(dbPath, { create: true, strict: true })
     try {
       db.run("PRAGMA busy_timeout = 500")
+      const busy = db.query("PRAGMA busy_timeout").get() as { timeout?: number }
       const journal = db.query("PRAGMA journal_mode = WAL").get() as { journal_mode?: string }
       db.run("PRAGMA synchronous = FULL")
       const synchronous = db.query("PRAGMA synchronous").get() as { synchronous?: number }
@@ -48,7 +49,7 @@ export default {
         sqliteVersion: sqlite.version ?? null,
         journalMode: journal.journal_mode ?? null,
         synchronous: synchronous.synchronous ?? null,
-        busyTimeoutMs: 500,
+        busyTimeoutMs: busy.timeout ?? null,
         databasePath: dbPath,
         filesystem,
       }

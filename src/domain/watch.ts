@@ -186,6 +186,8 @@ export interface WatchCorrectionRecoveryView {
 export interface WatchCorrectionGrantView {
   readonly mode: WatchMode
   readonly state: WatchCorrectionGrantState
+  /** The explicit deployment declaration, or `unknown` before one is stored. */
+  readonly deployment: "single-host-same-location" | "unknown"
   /** Increments on grant, downgrade or revocation; never resets attempts. */
   readonly version: number
   readonly reviewSummary: string | null
@@ -201,6 +203,7 @@ export interface WatchCorrectionGrantRecord {
   readonly generation: number
   readonly scopeTargetSessionID: string
   readonly reviewSummary: string
+  readonly deployment: "single-host-same-location"
   readonly termsDigest: string
   readonly confirmationID: string
   readonly grantedAt: number
@@ -242,7 +245,7 @@ export interface WatchCorrectionSnapshot {
 }
 
 export const WATCH_CORRECTION_TERMS =
-  "Correction grant terms: the grant covers limited correction with at most three permanent attempts in total; this build's automatic executor may use only the first attempt; automatic sends require one OpenCode service, the same OS user and the same location; any unsupported or uncertain condition means alert-only; a safety pause never stops business work; reading, receipt, recovery, reload, transfer or re-granting never resets spent attempts."
+  "Correction grant terms: limited correction with at most three permanent attempts in total; this build's automatic executor may use only the first attempt; automatic sends require one OpenCode service, the same OS user and the same location; the explicit deployment statement is a declaration, not proof that no other service is running; the controlled RPC is not same-user human authentication; any unsupported or uncertain condition means alert-only; a safety pause never stops business work; reading, receipt, recovery, reload, transfer or re-granting never resets spent attempts."
 
 /**
  * A short-lived challenge returned only to the controlled TUI surface by the
@@ -264,6 +267,8 @@ export type WatchCorrectionGate =
   | "attempts"
   | "pending-attempt"
   | "business-unfinished"
+  | "task-active"
+  | "session-unresolved"
   | "runtime"
   | "single-host"
   | "location"
@@ -539,7 +544,7 @@ export const WATCH_ALERT_SUMMARY_LIMIT = 300
 export const WATCH_ALERT_REASON_LIMIT = 500
 
 export const CORRECTION_UNAVAILABLE_REASON =
-  "Automatic correction is not enabled in this build; the security ledger and attempt contract exist, but no controlled grant confirmation or executor path is open."
+  "Automatic correction is not enabled in this build; the security ledger and controlled grant RPC exist, but the automatic executor and queue path are closed."
 export const DELEGATION_UNAVAILABLE_REASON =
   "Child-task delegation is not open in this build; enroll the calling session itself."
 export const TRANSFER_UNAVAILABLE_REASON =

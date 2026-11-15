@@ -123,7 +123,7 @@ describeWatch("trusted idle and running observation", () => {
       await enroll(host)
       const payload = await show(host)
       expect(payload.task?.correction).toMatchObject({
-        authorization: { mode: "alert", state: "not-granted", version: 1 },
+        authorization: { mode: "alert", state: "not-granted", deployment: "unknown", version: 1 },
         actual: "unavailable",
         attempts: { used: 0, limit: 3 },
         executionPolicy: "first-attempt-only",
@@ -132,7 +132,7 @@ describeWatch("trusted idle and running observation", () => {
         last: null,
         history: [],
         businessCompleted: false,
-        controls: { grant: { enabled: false }, downgrade: { enabled: false } },
+        controls: { grant: { enabled: true }, downgrade: { enabled: false } },
       })
       expect(payload.ledger).toMatchObject({
         available: true,
@@ -144,6 +144,11 @@ describeWatch("trusted idle and running observation", () => {
         arch: process.arch,
       })
       expect(payload.ledger.sqliteVersion).toMatch(/^3\./)
+      expect(payload.task?.correction.gates.find((gate) => gate.gate === "runtime")).toMatchObject({
+        ok: false,
+        observed: expect.stringContaining("sqlite="),
+        reason: expect.stringContaining("not verified"),
+      })
       expect(JSON.stringify(payload)).not.toContain("challenge")
       expectNoAgentCalls(host)
     } finally {
@@ -301,16 +306,19 @@ describeWatch("trusted idle and running observation", () => {
         ownerActivation: "seed-activation",
         expectedVersion: began.value.task.version,
         reviewSummary: "Seeded review",
+        deployment: "single-host-same-location",
         at: clock.value,
       })
       if (!prepared.ok) throw new Error(`${prepared.code}: ${prepared.detail}`)
       const confirmed = seeded.confirmCorrectionGrant({
         challenge: prepared.value.challenge,
         taskId: taskID,
+        callerSessionId: CALLER_SESSION_ID,
         ownerActivation: "seed-activation",
         expectedVersion: prepared.value.expectedVersion,
         generation: prepared.value.generation,
         termsDigest: prepared.value.termsDigest,
+        deployment: "single-host-same-location",
         at: clock.value,
       })
       if (!confirmed.ok) throw new Error(`${confirmed.code}: ${confirmed.detail}`)
@@ -357,6 +365,8 @@ describeWatch("trusted idle and running observation", () => {
         "attempts",
         "pending-attempt",
         "business-unfinished",
+        "task-active",
+        "session-unresolved",
         "runtime",
         "single-host",
         "location",
@@ -394,7 +404,10 @@ describeWatch("trusted idle and running observation", () => {
   })
 
   test("the controlled RPC prepares, confirms once and downgrades a grant", async () => {
-    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
+    const { host, unload } = await loaded({
+      options: { watch: WATCH_OPTIONS },
+      sessions: [CALLER_SESSION_ID, "ses_other"],
+    })
     try {
       const at = host.now()
       settle(host, at)
@@ -422,6 +435,7 @@ describeWatch("trusted idle and running observation", () => {
           sessionID: CALLER_SESSION_ID,
           taskID,
           expectedVersion: payload.task?.version,
+          deployment: "single-host-same-location",
         }),
       )
       expect(prepared?.ok).toBe(true)
@@ -435,6 +449,48 @@ describeWatch("trusted idle and running observation", () => {
       const challenge = prepared?.challenge
       if (challenge === undefined || challenge === null) throw new Error("no challenge")
 
+      const crossField = readWatchGrantPayload(
+        await rpc.call("watchGrant", {
+          operation: "prepare",
+          sessionID: CALLER_SESSION_ID,
+          taskID,
+          expectedVersion: payload.task?.version,
+          deployment: "single-host-same-location",
+          challenge: "not-valid-here",
+        }),
+      )
+      expect(crossField?.ok).toBe(false)
+      expect(crossField?.failure?.code).toBe("E_WATCH_INVALID")
+
+      const wrongCaller = readWatchGrantPayload(
+        await rpc.call("watchGrant", {
+          operation: "confirm",
+          sessionID: "ses_other",
+          taskID,
+          expectedVersion: challenge.expectedVersion,
+          generation: challenge.generation,
+          termsDigest: challenge.termsDigest,
+          challenge: challenge.challenge,
+          deployment: "single-host-same-location",
+        }),
+      )
+      expect(wrongCaller?.ok).toBe(false)
+      expect(wrongCaller?.failure?.code).toBe("E_WATCH_CALLER_MISMATCH")
+
+      const noDeclaration = readWatchGrantPayload(
+        await rpc.call("watchGrant", {
+          operation: "confirm",
+          sessionID: CALLER_SESSION_ID,
+          taskID,
+          expectedVersion: challenge.expectedVersion,
+          generation: challenge.generation,
+          termsDigest: challenge.termsDigest,
+          challenge: challenge.challenge,
+        }),
+      )
+      expect(noDeclaration?.ok).toBe(false)
+      expect(noDeclaration?.failure?.code).toBe("E_WATCH_INVALID")
+
       const wrongTerms = readWatchGrantPayload(
         await rpc.call("watchGrant", {
           operation: "confirm",
@@ -444,6 +500,7 @@ describeWatch("trusted idle and running observation", () => {
           generation: challenge.generation,
           termsDigest: "wrong-terms",
           challenge: challenge.challenge,
+          deployment: "single-host-same-location",
         }),
       )
       expect(wrongTerms?.ok).toBe(false)
@@ -458,6 +515,7 @@ describeWatch("trusted idle and running observation", () => {
           generation: challenge.generation,
           termsDigest: challenge.termsDigest,
           challenge: challenge.challenge,
+          deployment: "single-host-same-location",
         }),
       )
       expect(confirmed?.ok).toBe(true)
@@ -466,8 +524,11 @@ describeWatch("trusted idle and running observation", () => {
       expect(confirmed?.task?.correction.authorization).toMatchObject({
         mode: "limited-correction",
         state: "granted",
+        deployment: "single-host-same-location",
         version: 1,
       })
+      expect(confirmed?.task?.correction.controls.grant.enabled).toBe(false)
+      expect(confirmed?.task?.correction.controls.downgrade.enabled).toBe(true)
       expect(JSON.stringify(await show(host))).not.toContain(challenge.challenge)
 
       const repeated = readWatchGrantPayload(
@@ -479,6 +540,7 @@ describeWatch("trusted idle and running observation", () => {
           generation: challenge.generation,
           termsDigest: challenge.termsDigest,
           challenge: challenge.challenge,
+          deployment: "single-host-same-location",
         }),
       )
       expect(repeated?.ok).toBe(false)
@@ -495,6 +557,8 @@ describeWatch("trusted idle and running observation", () => {
       expect(downgraded?.ok).toBe(true)
       expect(downgraded?.task?.mode).toBe("alert")
       expect(downgraded?.task?.correction.authorization.state).toBe("revoked")
+      expect(downgraded?.task?.correction.controls.grant.enabled).toBe(true)
+      expect(downgraded?.task?.correction.controls.downgrade.enabled).toBe(false)
       expect(downgraded?.task?.attempts.used).toBe(0)
       expectNoAgentCalls(host)
     } finally {

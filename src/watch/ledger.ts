@@ -182,6 +182,8 @@ export interface PrepareCorrectionGrantInput {
   readonly ownerActivation: string
   readonly expectedVersion: number
   readonly reviewSummary: string
+  /** Required explicit deployment declaration; no secret default. */
+  readonly deployment: "single-host-same-location"
   readonly at: number
   /** Short challenge lifetime, bounded by the ledger. */
   readonly ttlMs?: number
@@ -190,10 +192,12 @@ export interface PrepareCorrectionGrantInput {
 export interface ConfirmCorrectionGrantInput {
   readonly challenge: string
   readonly taskId: string
+  readonly callerSessionId: string
   readonly ownerActivation: string
   readonly expectedVersion: number
   readonly generation: number
   readonly termsDigest: string
+  readonly deployment: "single-host-same-location"
   readonly at: number
 }
 
@@ -267,6 +271,7 @@ export interface CorrectionGrantChallenge {
   readonly generation: number
   readonly termsDigest: string
   readonly reviewSummary: string
+  readonly deployment: "single-host-same-location"
   readonly expiresAt: number
 }
 
@@ -414,6 +419,7 @@ interface CorrectionGrantRow {
   readonly generation: number
   readonly scope_target_session_id: string
   readonly review_summary: string
+  readonly deployment_statement: string
   readonly terms_digest: string
   readonly confirmation_id: string
   readonly granted_at: number
@@ -425,7 +431,9 @@ interface CorrectionChallengeRow {
   readonly task_id: string
   readonly expected_version: number
   readonly generation: number
+  readonly caller_session_id: string
   readonly owner_activation: string
+  readonly deployment_statement: string
   readonly terms_digest: string
   readonly review_summary: string
   readonly created_at: number
@@ -578,6 +586,7 @@ CREATE TABLE IF NOT EXISTS watch_correction_grants (
   generation INTEGER NOT NULL CHECK (generation >= 1),
   scope_target_session_id TEXT NOT NULL,
   review_summary TEXT NOT NULL,
+  deployment_statement TEXT NOT NULL CHECK (deployment_statement = 'single-host-same-location'),
   terms_digest TEXT NOT NULL,
   confirmation_id TEXT NOT NULL,
   granted_at INTEGER NOT NULL,
@@ -589,7 +598,9 @@ CREATE TABLE IF NOT EXISTS watch_correction_challenges (
   task_id TEXT NOT NULL REFERENCES watch_tasks(task_id),
   expected_version INTEGER NOT NULL,
   generation INTEGER NOT NULL,
+  caller_session_id TEXT NOT NULL,
   owner_activation TEXT NOT NULL,
+  deployment_statement TEXT NOT NULL CHECK (deployment_statement = 'single-host-same-location'),
   terms_digest TEXT NOT NULL,
   review_summary TEXT NOT NULL,
   created_at INTEGER NOT NULL,
@@ -700,6 +711,7 @@ const REQUIRED_CORRECTION_GRANT_COLUMNS = [
   "generation",
   "scope_target_session_id",
   "review_summary",
+  "deployment_statement",
   "terms_digest",
   "confirmation_id",
   "granted_at",
@@ -710,7 +722,9 @@ const REQUIRED_CORRECTION_CHALLENGE_COLUMNS = [
   "task_id",
   "expected_version",
   "generation",
+  "caller_session_id",
   "owner_activation",
+  "deployment_statement",
   "terms_digest",
   "review_summary",
   "created_at",
@@ -1561,6 +1575,9 @@ class SqliteWatchLedger implements WatchLedger {
       const owner = requiredIdentifier(input.ownerActivation, "ownerActivation")
       const reviewSummary = readBoundedText(input.reviewSummary, "reviewSummary", WATCH_ALERT_REASON_LIMIT)
       if (!reviewSummary.ok) throw new LedgerFailure("invalid_input", reviewSummary.reason)
+      if (input.deployment !== "single-host-same-location") {
+        throw new LedgerFailure("invalid_input", "deployment must be the explicit single-host-same-location declaration")
+      }
       if (!Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 1) {
         throw new LedgerFailure("invalid_input", "expectedVersion must be a positive integer")
       }
@@ -1587,6 +1604,7 @@ class SqliteWatchLedger implements WatchLedger {
         .update(
           canonicalJson([
             WATCH_CORRECTION_TERMS,
+            input.deployment,
             task.initiator_session_id,
             task.target_session_id,
             task.goal,
@@ -1603,16 +1621,18 @@ class SqliteWatchLedger implements WatchLedger {
       this.db
         .query(
           `INSERT INTO watch_correction_challenges (
-            challenge, task_id, expected_version, generation, owner_activation,
-            terms_digest, review_summary, created_at, expires_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            challenge, task_id, expected_version, generation, caller_session_id, owner_activation,
+            deployment_statement, terms_digest, review_summary, created_at, expires_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           challenge,
           taskID,
           task.version,
           task.generation,
+          caller,
           task.owner_activation,
+          input.deployment,
           termsDigest,
           reviewSummary.value,
           input.at,
@@ -1625,6 +1645,7 @@ class SqliteWatchLedger implements WatchLedger {
         generation: task.generation,
         termsDigest,
         reviewSummary: reviewSummary.value,
+        deployment: input.deployment,
         expiresAt,
       }
     })
@@ -1638,14 +1659,21 @@ class SqliteWatchLedger implements WatchLedger {
     return this.immediate(() => {
       const taskID = requiredIdentifier(input.taskId, "taskId")
       const challenge = requiredIdentifier(input.challenge, "challenge")
+      const caller = requiredIdentifier(input.callerSessionId, "callerSessionId")
       const owner = requiredIdentifier(input.ownerActivation, "ownerActivation")
       const termsDigest = requiredIdentifier(input.termsDigest, "termsDigest")
+      if (input.deployment !== "single-host-same-location") {
+        throw new LedgerFailure("invalid_input", "deployment must be the explicit single-host-same-location declaration")
+      }
       if (!Number.isSafeInteger(input.at) || input.at < 0) {
         throw new LedgerFailure("invalid_input", "at must be a non-negative integer")
       }
       const task = this.taskRow(taskID)
       if (task === null) throw new LedgerFailure("unknown_task", taskID)
       this.checkLedger(task)
+      if (task.initiator_session_id !== caller) {
+        throw new LedgerFailure("caller_mismatch", "only the task initiator may confirm a grant")
+      }
       if (task.owner_activation !== owner) {
         throw new LedgerFailure("stale_owner", "the current activation does not own this task")
       }
@@ -1668,7 +1696,9 @@ class SqliteWatchLedger implements WatchLedger {
         row.task_id !== task.task_id ||
         row.expected_version !== input.expectedVersion ||
         row.generation !== input.generation ||
+        row.caller_session_id !== caller ||
         row.owner_activation !== owner ||
+        row.deployment_statement !== input.deployment ||
         row.terms_digest !== termsDigest
       ) {
         throw new LedgerFailure("grant_expired", "the challenge does not match this task, version or terms")
@@ -1685,9 +1715,9 @@ class SqliteWatchLedger implements WatchLedger {
           .query(
             `INSERT INTO watch_correction_grants (
               task_id, grant_id, mode, state, version, generation,
-              scope_target_session_id, review_summary, terms_digest,
+              scope_target_session_id, review_summary, deployment_statement, terms_digest,
               confirmation_id, granted_at
-            ) VALUES (?, ?, 'limited-correction', 'granted', ?, ?, ?, ?, ?, ?, ?)`,
+            ) VALUES (?, ?, 'limited-correction', 'granted', ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             task.task_id,
@@ -1696,6 +1726,7 @@ class SqliteWatchLedger implements WatchLedger {
             task.generation,
             task.target_session_id,
             row.review_summary,
+            row.deployment_statement,
             row.terms_digest,
             row.challenge,
             input.at,
@@ -1706,7 +1737,7 @@ class SqliteWatchLedger implements WatchLedger {
             `UPDATE watch_correction_grants SET
               grant_id = ?, mode = 'limited-correction', state = 'granted', version = ?,
               generation = ?, scope_target_session_id = ?, review_summary = ?,
-              terms_digest = ?, confirmation_id = ?, granted_at = ?, revoked_at = NULL
+              deployment_statement = ?, terms_digest = ?, confirmation_id = ?, granted_at = ?, revoked_at = NULL
              WHERE task_id = ?`,
           )
           .run(
@@ -1715,6 +1746,7 @@ class SqliteWatchLedger implements WatchLedger {
             task.generation,
             task.target_session_id,
             row.review_summary,
+            row.deployment_statement,
             row.terms_digest,
             row.challenge,
             input.at,
@@ -1977,6 +2009,9 @@ class SqliteWatchLedger implements WatchLedger {
       }
       const row = this.correctionAttemptRow(reservationID)
       if (row === null || row.task_id !== taskID) throw new LedgerFailure("unknown_task", reservationID)
+      if (!Number.isSafeInteger(input.at) || input.at < (row.claimed_at ?? row.reserved_at)) {
+        throw new LedgerFailure("invalid_input", "at must be a non-negative, non-decreasing time")
+      }
       if (row.state === "reserved") throw new LedgerFailure("not_claimable", "the attempt was not claimed")
       const phase = row.state as WatchCorrectionAttemptPhase
       if (phase === "aborted") {
@@ -2024,7 +2059,7 @@ class SqliteWatchLedger implements WatchLedger {
       }
       const row = this.correctionAttemptRow(reservationID)
       if (row === null || row.task_id !== taskID) throw new LedgerFailure("unknown_task", reservationID)
-      if (!Number.isSafeInteger(input.at) || input.at < row.reserved_at) {
+      if (!Number.isSafeInteger(input.at) || input.at < (row.claimed_at ?? row.reserved_at)) {
         throw new LedgerFailure("invalid_input", "at must be a non-negative, non-decreasing time")
       }
       if (row.correlation !== correlation) {
@@ -2147,6 +2182,9 @@ class SqliteWatchLedger implements WatchLedger {
       if (row === null || row.task_id !== taskID) throw new LedgerFailure("unknown_task", reservationID)
       if (row.state === "aborted") {
         return { attempt: correctionAttemptFromRow(row), aborted: false }
+      }
+      if (!Number.isSafeInteger(input.at) || input.at < row.reserved_at) {
+        throw new LedgerFailure("invalid_input", "at must be a non-negative, non-decreasing time")
       }
       if (row.state !== "reserved" || row.claimed_at !== null) {
         throw new LedgerFailure("not_claimable", "only an unclaimed reservation can be aborted")
@@ -2520,6 +2558,7 @@ function correctionGrantFromRow(row: CorrectionGrantRow | null): WatchCorrection
     generation: row.generation,
     scopeTargetSessionID: row.scope_target_session_id,
     reviewSummary: row.review_summary,
+    deployment: "single-host-same-location",
     termsDigest: row.terms_digest,
     confirmationID: row.confirmation_id,
     grantedAt: row.granted_at,
