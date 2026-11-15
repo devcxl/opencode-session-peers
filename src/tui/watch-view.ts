@@ -376,7 +376,7 @@ function capabilityNotes(payload: WatchPayload, compact: boolean): string[] {
   if (capability.automaticDetection === "partial") {
     notes.push(
       compact
-        ? "Automatic detection: partial — local execution, activity and same-location waits only."
+        ? "Automatic detection: partial — local execution/activity/waits only."
         : `Automatic detection: partial — ${ensurePeriod(capability.automaticDetectionReason)}`,
     )
   }
@@ -441,10 +441,14 @@ function taskRows(
     fact("Actual capability", capabilityText(payload.capability)),
     fact("Owner", ownerText(task.ownership, task.generation)),
     fact("Attempts", attemptsText(task.attempts)),
-    fact("Protocol", protocolText(task.participation)),
-    fact("Last report", lastReportText(task.lastReport)),
-    fact("Result", resultText(task)),
   ]
+  if (!compact || task.participation === "not-seen") {
+    rows.push(fact("Protocol", protocolText(task.participation)))
+  }
+  if (!(compact && task.lastReport === null && task.taskState !== "completed")) {
+    rows.push(fact("Last report", lastReportText(task.lastReport)))
+    rows.push(fact("Result", resultText(task)))
+  }
   if (!compact) rows.push(fact("Alerts", alertsSummary(payload.alerts)))
   return rows
 }
