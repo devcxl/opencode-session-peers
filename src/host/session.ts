@@ -22,6 +22,10 @@ export interface SessionRecord {
   readonly parentID?: SessionID
   /** The model id the session runs, if one is selected. */
   readonly modelID?: string
+  /** The host's last terminal time, when it reports one. Not a current-idle proof by itself. */
+  readonly idleAt?: number
+  /** The outcome of the last completed execution, as the host reports it. */
+  readonly outcome?: string
 }
 
 /** One message handed to a session, and when its reader should get it. */
@@ -62,6 +66,8 @@ export function sessionLookup(
         projectID: record.projectID,
         parentID: record.parentID,
         modelID: record.model?.id,
+        ...(record.time?.idle === undefined ? {} : { idleAt: record.time.idle }),
+        ...(record.outcome === undefined ? {} : { outcome: record.outcome }),
       }
     },
 

@@ -12,25 +12,43 @@ import {
   DELEGATION_UNAVAILABLE_REASON,
   readGoal,
   readIdentifier,
+  type WatchActivityView,
+  type WatchAlertRecord,
+  type WatchAlertView,
   type WatchEvidence,
+  type WatchObservationView,
   type WatchFailure,
   type WatchFailureCode,
   type WatchMode,
   type WatchReportKind,
+  type WatchTaskRecord,
   type WatchTaskView,
 } from "../domain/watch.ts"
-import { openWatchLedger, type WatchLedger, type WatchLedgerErrorCode } from "./ledger.ts"
-import { watchCapability, watchControls, watchTaskView } from "./view.ts"
+import {
+  openWatchLedger,
+  type UpsertWatchAlertInput,
+  type WatchLedger,
+  type WatchLedgerErrorCode,
+} from "./ledger.ts"
+import { watchAlertView, watchCapability, watchControls, watchTaskView } from "./view.ts"
 
 export interface WatchOutcome {
   readonly ok: boolean
   readonly task: WatchTaskView | null
   readonly capability: ReturnType<typeof watchCapability>
   readonly controls: ReturnType<typeof watchControls>
+  /** Active alerts for the task; a read failure is surfaced by the payload's alert availability. */
+  readonly alerts: readonly WatchAlertView[]
   readonly failure: WatchFailure | null
   readonly created: boolean
   readonly duplicate: boolean
   readonly changed: boolean
+}
+
+/** The observer's current reading, injected into the public payload. */
+export interface WatchObservationSource {
+  observationFor(taskID: string): WatchObservationView | null
+  activityFor(taskID: string): WatchActivityView | null
 }
 
 export interface WatchLedgerStatus {
@@ -63,6 +81,13 @@ export interface WatchApplication {
     readonly expectedVersion: number
     readonly operation: "pause" | "end"
   }): WatchOutcome
+  ack(input: { readonly callerSessionID: string; readonly alertID: string }): WatchOutcome
+  /** Tasks the observer may sample; empty when the ledger is unavailable. */
+  liveTasks(): readonly WatchTaskRecord[]
+  upsertAlert(input: UpsertWatchAlertInput): { readonly alert: WatchAlertRecord; readonly created: boolean; readonly escalated: boolean } | undefined
+  resolveAlert(input: { readonly taskId: string; readonly dedupeKey: string; readonly at: number }): boolean
+  /** Active alerts for one task; empty when none or the ledger cannot answer. */
+  alertsFor(taskID: string): readonly WatchAlertView[]
   /**
    * The line to append to a normal model context, or `undefined` when this
    * session has no local task that should hear from the watchdog. This never
@@ -115,6 +140,13 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
     return state
   }
 
+  const alertsFor = (taskID: string): readonly WatchAlertView[] => {
+    const current = ensure()
+    if (current.ledger === undefined) return []
+    const listed = current.ledger.alerts(taskID)
+    return listed.ok ? listed.value.map(watchAlertView) : []
+  }
+
   const view = (sessionID: string, taskID?: string): { outcome: WatchOutcome; ledger?: WatchLedger } => {
     const current = ensure()
     if (current.ledger === undefined) {
@@ -135,6 +167,7 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
         task,
         capability: watchCapability(),
         controls: watchControls(task),
+        alerts: task === null ? [] : alertsFor(task.taskID),
         failure: null,
         created: false,
         duplicate: false,
@@ -208,6 +241,7 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
         task,
         capability: watchCapability(),
         controls: watchControls(task),
+        alerts: alertsFor(task.taskID),
         failure: null,
         created: enrolled.value.created,
         duplicate: false,
@@ -242,6 +276,7 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
         task,
         capability: watchCapability(),
         controls: watchControls(task),
+        alerts: alertsFor(task.taskID),
         failure: null,
         created: false,
         duplicate: reported.value.duplicate,
@@ -272,12 +307,69 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
         task,
         capability: watchCapability(),
         controls: watchControls(task),
+        alerts: alertsFor(task.taskID),
         failure: null,
         created: false,
         duplicate: false,
         changed: controlled.value.changed,
       }
     },
+
+    ack(input) {
+      const caller = readIdentifier(input.callerSessionID, "callerSessionID")
+      if (!caller.ok) return failureOutcome(invalid(caller.reason))
+      const alertID = readIdentifier(input.alertID, "alertID")
+      if (!alertID.ok) return failureOutcome(invalid(alertID.reason))
+      const current = ensure()
+      if (current.ledger === undefined) {
+        return failureOutcome(mapLedgerFailure(current.failure?.code ?? "ledger_error", current.failure?.detail ?? "unknown"))
+      }
+      const acked = current.ledger.ackAlert({
+        alertID: alertID.value,
+        callerSessionId: caller.value,
+        at: options.now?.() ?? Date.now(),
+      })
+      if (!acked.ok) return failureOutcome(mapLedgerFailure(acked.code, acked.detail))
+      if (acked.value.changed) notify()
+      const shown = current.ledger.show({ taskID: acked.value.alert.taskID, sessionID: caller.value })
+      if (!shown.ok) return failureOutcome(mapLedgerFailure(shown.code, shown.detail))
+      if (shown.value === null) return failureOutcome(invalid("the alert has no visible task"))
+      const task = watchTaskView(shown.value, options.activationID)
+      return {
+        ok: true,
+        task,
+        capability: watchCapability(),
+        controls: watchControls(task),
+        alerts: alertsFor(task.taskID),
+        failure: null,
+        created: false,
+        duplicate: false,
+        changed: acked.value.changed,
+      }
+    },
+
+    liveTasks() {
+      const current = ensure()
+      if (current.ledger === undefined) return []
+      const listed = current.ledger.listActive()
+      return listed.ok ? listed.value : []
+    },
+
+    upsertAlert(input) {
+      const current = ensure()
+      if (current.ledger === undefined) return undefined
+      const result = current.ledger.upsertAlert(input)
+      return result.ok ? result.value : undefined
+    },
+
+    resolveAlert(input) {
+      const current = ensure()
+      if (current.ledger === undefined) return false
+      const result = current.ledger.resolveAlert(input)
+      return result.ok ? result.value.changed : false
+    },
+
+    alertsFor,
 
     async notificationFor(sessionID) {
       if (options.sessionAtLocation === undefined) return undefined
@@ -328,6 +420,7 @@ function failureOutcome(failure: WatchFailure): WatchOutcome {
     task: null,
     capability: watchCapability(),
     controls: watchControls(null),
+    alerts: [],
     failure,
     created: false,
     duplicate: false,

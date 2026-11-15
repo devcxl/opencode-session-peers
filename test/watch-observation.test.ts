@@ -1,0 +1,360 @@
+/**
+ * Observation and persistent alerts through the real plugin entry.
+ *
+ * Execution lifecycle is emitted as host events, the clock is advanced through
+ * the fake scheduler, and permission/form waits are deterministic fixtures.
+ * The assertions are on the RPC/view a user receives and on the absence of
+ * prompts, generations or interrupts — never on an internal function.
+ */
+
+import { afterEach, describe, expect, test } from "bun:test"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+
+import plugin from "../src/index.ts"
+import { WATCH_STATE_DIR_ENV } from "../src/host/watch.ts"
+import { readWatchPayload, type WatchPayload } from "../src/rpc.ts"
+import { CALLER_SESSION_ID, fakeHost, type FakeHost, type FakeHostOptions } from "./fake-host.ts"
+
+const scratch: string[] = []
+afterEach(() => {
+  for (const directory of scratch.splice(0)) rmSync(directory, { recursive: true, force: true })
+})
+
+function stateDirectory(): string {
+  const directory = mkdtempSync(join(tmpdir(), "session-peers-observe-state-"))
+  scratch.push(directory)
+  return directory
+}
+
+const WATCH_OPTIONS = {
+  idleMs: 2_000,
+  runningSilentMs: 10_000,
+  waitOverdueMs: 60_000,
+  tickMs: 1_000,
+}
+
+async function loaded(options: FakeHostOptions = {}, state = stateDirectory()) {
+  const host = fakeHost(options)
+  const previous = process.env[WATCH_STATE_DIR_ENV]
+  process.env[WATCH_STATE_DIR_ENV] = state
+  let dispose: (() => Promise<void> | void) | undefined
+  try {
+    dispose = await plugin.setup(host.context)
+  } finally {
+    if (previous === undefined) delete process.env[WATCH_STATE_DIR_ENV]
+    else process.env[WATCH_STATE_DIR_ENV] = previous
+  }
+  return {
+    host,
+    state,
+    async unload() {
+      await dispose?.()
+    },
+  }
+}
+
+async function enroll(host: FakeHost, requestId = "observe-req") {
+  const result = await host.call("peers", {
+    action: "watch",
+    watch: { operation: "enroll", requestId, goal: "Observe this task" },
+  })
+  const task = (result.details as { watch: { task: { taskID: string } } }).watch.task
+  return task.taskID
+}
+
+async function show(host: FakeHost): Promise<WatchPayload> {
+  const rpc = host.rpcs[0]
+  if (rpc === undefined) throw new Error("no RPC surface")
+  const payload = readWatchPayload(await rpc.call("watch", { operation: "show", sessionID: CALLER_SESSION_ID }))
+  if (payload === undefined) throw new Error("the watch answer is not understood")
+  return payload
+}
+
+function settle(host: FakeHost, at: number) {
+  host.emit("session.execution.started", { sessionID: CALLER_SESSION_ID }, at)
+  host.emit("session.execution.succeeded", { sessionID: CALLER_SESSION_ID }, at)
+  host.setIdle(CALLER_SESSION_ID, at)
+}
+
+function expectNoAgentCalls(host: FakeHost): void {
+  expect(host.prompts).toEqual([])
+  expect(host.generations).toEqual([])
+  expect(host.interrupts).toEqual([])
+}
+
+describe("trusted idle and running observation", () => {
+  test("a terminal execution plus a sustained idle window forms one persistent alert", async () => {
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      const at = host.now()
+      settle(host, at)
+      const taskID = await enroll(host)
+      await host.advance(1_000)
+      let payload = await show(host)
+      expect(payload.observation).toMatchObject({ state: "active", trusted: true, idleSince: at })
+      expect(payload.alerts?.items).toEqual([])
+
+      await host.advance(1_000)
+      payload = await show(host)
+      expect(payload.observation).toMatchObject({
+        state: "idle-candidate",
+        trusted: true,
+        effective: { idleMs: 2_000, runningSilentMs: 10_000, waitOverdueMs: 60_000 },
+      })
+      expect(payload.alerts?.items).toHaveLength(1)
+      expect(payload.alerts?.items[0]).toMatchObject({
+        taskID,
+        kind: "idle",
+        state: "unread",
+        summary: expect.any(String),
+      })
+      expect(payload.alerts?.unread).toBe(1)
+      expect(JSON.stringify(payload.alerts)).not.toContain("Observe this task")
+      expectNoAgentCalls(host)
+
+      // The same continuing problem updates the same alert rather than adding
+      // another one; a second observation tick supplies the one escalation fact.
+      await host.advance(1_000)
+      const updated = await show(host)
+      expect(updated.alerts?.items).toHaveLength(1)
+      expect(updated.alerts?.items[0]?.alertID).toBe(payload.alerts?.items[0]?.alertID)
+      expect(updated.alerts?.items[0]?.escalatedAt).toBeNumber()
+
+      const rpc = host.rpcs[0]
+      if (rpc === undefined) throw new Error("no RPC surface")
+      const acked = readWatchPayload(
+        await rpc.call("watch", {
+          operation: "ack",
+          sessionID: CALLER_SESSION_ID,
+          alertID: payload.alerts?.items[0]?.alertID,
+        }),
+      )
+      expect(acked?.alerts?.items[0]).toMatchObject({ state: "read", readAt: expect.any(Number) })
+      expect(acked?.alerts?.items[0]?.alertID).toBe(payload.alerts?.items[0]?.alertID)
+      expect(acked?.task?.version).toBe(payload.task?.version)
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
+  test("running without target activity alerts but never becomes an idle candidate", async () => {
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      const at = host.now()
+      host.emit("session.execution.started", { sessionID: CALLER_SESSION_ID }, at)
+      await enroll(host)
+      await host.advance(9_000)
+      let payload = await show(host)
+      expect(payload.observation).toMatchObject({ state: "active", trusted: true })
+      expect(payload.alerts?.items ?? []).toEqual([])
+
+      await host.advance(1_000)
+      payload = await show(host)
+      expect(payload.observation).toMatchObject({ state: "running-silence", trusted: true })
+      expect(payload.alerts?.items.map((alert) => alert.kind)).toEqual(["running-silent"])
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
+  test("title and inbox admission do not refresh the activity clock", async () => {
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      const at = host.now()
+      settle(host, at)
+      await enroll(host)
+      await host.advance(1_000)
+      host.emit("session.renamed", { sessionID: CALLER_SESSION_ID }, at + 1_000)
+      host.emit("session.inbox.enqueued", { sessionID: CALLER_SESSION_ID }, at + 1_000)
+      await host.advance(1_000)
+      const payload = await show(host)
+      expect(payload.observation?.state).not.toBe("idle-candidate")
+      expect(payload.alerts?.items ?? []).toEqual([])
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+})
+
+describe("normal waits", () => {
+  test("a same-location permission wait suppresses idle and only alerts after its window", async () => {
+    const { host, unload } = await loaded({
+      options: { watch: WATCH_OPTIONS },
+      permissions: {
+        [CALLER_SESSION_ID]: [{ id: "perm-1", action: "bash", resources: ["echo ok"] }],
+      },
+    })
+    try {
+      const at = host.now()
+      settle(host, at)
+      await enroll(host)
+      await host.advance(3_000)
+      let payload = await show(host)
+      expect(payload.observation).toMatchObject({ state: "normal-waiting", trusted: false })
+      expect(payload.observation?.waits).toHaveLength(1)
+      expect(payload.observation?.waits[0]).toMatchObject({
+        source: "permission",
+        object: "permission:bash",
+        status: "active",
+      })
+      expect(payload.alerts?.items ?? []).toEqual([])
+
+      await host.advance(60_000)
+      payload = await show(host)
+      expect(payload.observation?.state).toBe("normal-waiting")
+      expect(payload.alerts?.items.map((alert) => alert.kind)).toEqual(["wait-overdue"])
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
+  test("a form response clears only the matching form wait", async () => {
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      const at = host.now()
+      host.emit("session.execution.started", { sessionID: CALLER_SESSION_ID }, at)
+      host.emit("session.execution.succeeded", { sessionID: CALLER_SESSION_ID }, at)
+      host.setIdle(CALLER_SESSION_ID, at)
+      host.emit(
+        "form.created",
+        { form: { id: "form-a", sessionID: CALLER_SESSION_ID, title: "A", fields: [] } },
+        at,
+      )
+      host.emit(
+        "form.created",
+        { form: { id: "form-b", sessionID: CALLER_SESSION_ID, title: "B", fields: [] } },
+        at,
+      )
+      await enroll(host)
+      await host.advance(1_000)
+      host.emit("form.replied", { id: "form-a", sessionID: CALLER_SESSION_ID, answer: {} }, host.now())
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await host.advance(1_000)
+      const payload = await show(host)
+      expect(payload.observation?.state).toBe("normal-waiting")
+      expect(payload.observation?.waits).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ waitID: "form:form-a", status: "cleared", clearEvidence: "form replied" }),
+          expect.objectContaining({ waitID: "form:form-b", status: "active" }),
+        ]),
+      )
+      expect(payload.alerts?.items ?? []).toEqual([])
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+})
+
+describe("unknown observation and reloads", () => {
+  test("missing execution evidence is unknown, not idle, and does not create an idle alert", async () => {
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      await enroll(host)
+      await host.advance(3_000)
+      const payload = await show(host)
+      expect(payload.observation).toMatchObject({ state: "unknown", trusted: false })
+      expect(payload.observation?.reason).toContain("no local terminal")
+      expect(payload.alerts?.items.map((alert) => alert.kind)).not.toContain("idle")
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
+  test("an event gap resets the baseline and cannot turn old silence into a candidate", async () => {
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
+    try {
+      const at = host.now()
+      settle(host, at)
+      await enroll(host)
+      await host.advance(1_000)
+      host.endEvents()
+      await host.advance(10_000)
+      const payload = await show(host)
+      expect(payload.observation?.state).toBe("unknown")
+      expect(payload.alerts?.items.map((alert) => alert.kind)).not.toContain("idle")
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+
+  test("reload starts a new baseline and does not reuse the old quiet period", async () => {
+    const state = stateDirectory()
+    const first = await loaded({ options: { watch: WATCH_OPTIONS } }, state)
+    const at = first.host.now()
+    settle(first.host, at)
+    await enroll(first.host)
+    await first.host.advance(1_000)
+    await first.unload()
+
+    const second = await loaded({ options: { watch: WATCH_OPTIONS } }, state)
+    try {
+      await second.host.advance(1_000)
+      const payload = await show(second.host)
+      expect(payload.observation?.state).toBe("unknown")
+      expect(payload.alerts?.items ?? []).toEqual([])
+      expectNoAgentCalls(second.host)
+    } finally {
+      await second.unload()
+    }
+  })
+})
+
+describe("alert persistence and availability", () => {
+  test("alerts are durable, reconnect without toast state, and ack only changes read state", async () => {
+    const state = stateDirectory()
+    const first = await loaded({ options: { watch: WATCH_OPTIONS } }, state)
+    const at = first.host.now()
+    settle(first.host, at)
+    await enroll(first.host)
+    await first.host.advance(2_000)
+    const before = await show(first.host)
+    const alertID = before.alerts?.items[0]?.alertID
+    expect(alertID).toBeString()
+    await first.unload()
+
+    const second = await loaded({ options: { watch: WATCH_OPTIONS } }, state)
+    try {
+      const reconnected = await show(second.host)
+      expect(reconnected.alerts?.items[0]).toMatchObject({ alertID, state: "unread" })
+      expect(reconnected.alerts?.unread).toBe(1)
+      const rpc = second.host.rpcs[0]
+      if (rpc === undefined) throw new Error("no RPC surface")
+      const acked = readWatchPayload(
+        await rpc.call("watch", { operation: "ack", sessionID: CALLER_SESSION_ID, alertID }),
+      )
+      expect(acked?.alerts?.items[0]).toMatchObject({ alertID, state: "read" })
+      expect(acked?.alerts?.unread).toBe(0)
+      expectNoAgentCalls(second.host)
+    } finally {
+      await second.unload()
+    }
+  })
+
+  test("a permission snapshot failure is partial/unknown, never an empty wait list", async () => {
+    const { host, unload } = await loaded({
+      options: { watch: WATCH_OPTIONS },
+      permissionsError: true,
+    })
+    try {
+      const at = host.now()
+      settle(host, at)
+      await enroll(host)
+      await host.advance(3_000)
+      const payload = await show(host)
+      expect(payload.observation).toMatchObject({ state: "unknown", waitsPartial: true, trusted: false })
+      expect(payload.alerts?.items.map((alert) => alert.kind)).not.toContain("idle")
+      expectNoAgentCalls(host)
+    } finally {
+      await unload()
+    }
+  })
+})

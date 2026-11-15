@@ -58,6 +58,10 @@ export interface FakeSession {
   readonly directory?: string
   readonly parentID?: string
   readonly model?: string
+  /** Last terminal time the host reports; absent until a terminal execution. */
+  readonly idleAt?: number
+  /** Outcome of the last completed execution. */
+  readonly outcome?: "succeeded" | "failed" | "interrupted"
   /** The tool calls this session's transcript shows, oldest first. */
   readonly toolCalls?: readonly FakeToolCall[]
 }
@@ -122,6 +126,12 @@ export interface FakeHostOptions {
   readonly generate?: string | Error
   /** The branch this host knows for a directory; a lookup for anything else is a directory with no repository. */
   readonly vcsBranch?: Readonly<Record<string, string>>
+  /** Pending permission requests per session; a session with no entry has an empty snapshot. */
+  readonly permissions?: Readonly<Record<string, readonly { readonly id: string; readonly action: string; readonly resources: readonly string[]; readonly message?: string }[]>>
+  /** Make the permission snapshot fail, as a cross-location/unknown source would. */
+  readonly permissionsError?: boolean
+  /** Initial controlled clock. */
+  readonly now?: number
 }
 
 export interface FakeHost {
@@ -150,7 +160,17 @@ export interface FakeHost {
   /** The storage the plugin wrote to; the same object the host was given. */
   readonly storage: FakeStorage
   /** Delivers an event to the plugin's subscription, as the host would. */
-  emit(type: string, data: Readonly<Record<string, unknown>>): void
+  emit(type: string, data: Readonly<Record<string, unknown>>, at?: number): void
+  /** The controlled clock. */
+  now(): number
+  /** Advance the controlled scheduler, awaiting callbacks at each due tick. */
+  advance(ms: number): Promise<void>
+  /** End all live event subscriptions, as a host shutdown would. */
+  endEvents(): void
+  /** Set the host's last terminal time for a session. */
+  setIdle(sessionID: string, idleAt: number): void
+  /** Replace the pending permission snapshot for one session. */
+  setPermissions(sessionID: string, requests: readonly { readonly id: string; readonly action: string; readonly resources: readonly string[]; readonly message?: string }[]): void
   /** Live event subscriptions; zero once the plugin has unsubscribed. */
   subscribers(): number
   /**
@@ -197,6 +217,9 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
   const refused = new Set(options.promptRefuses ?? [])
   const unreadable = new Set(options.contextRefuses ?? [])
   const subscriptions = new Set<FakeSubscription>()
+  const idleOverrides = new Map<string, number>()
+  const permissionOverrides = new Map<string, readonly { readonly id: string; readonly action: string; readonly resources: readonly string[]; readonly message?: string }[]>()
+  const scheduler = new FakeScheduler(options.now ?? 1_000_000)
   let eventCounter = 0
 
   const editor: ToolEditor = {
@@ -235,6 +258,14 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
           location: { directory: session.directory ?? location },
           ...(session.parentID === undefined ? {} : { parentID: session.parentID }),
           ...(session.model === undefined ? {} : { model: { id: session.model, providerID: "fake" } }),
+          time: {
+            created: 0,
+            updated: 0,
+            ...(idleOverrides.get(input.sessionID) === undefined && session.idleAt === undefined
+              ? {}
+              : { idle: idleOverrides.get(input.sessionID) ?? session.idleAt }),
+          },
+          ...(session.outcome === undefined ? {} : { outcome: session.outcome }),
         }
       },
       prompt: async (input: {
@@ -306,6 +337,18 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
       },
     },
     storage,
+    permission: {
+      list: async (input: { readonly sessionID: string }) => {
+        if (options.permissionsError === true) throw new Error("Permission.Unavailable")
+        return [...(permissionOverrides.get(input.sessionID) ?? options.permissions?.[input.sessionID] ?? [])].map((request) => ({
+          id: request.id,
+          action: request.action,
+          resources: [...request.resources],
+          ...(request.message === undefined ? {} : { message: request.message }),
+        }))
+      },
+    },
+    scheduler,
     event: {
       subscribe: (subscribeOptions: { readonly signal?: AbortSignal }) => {
         const subscription = new FakeSubscription()
@@ -357,10 +400,22 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
     },
     interrupts,
     storage,
-    emit(type, data) {
+    now: () => scheduler.now(),
+    emit(type, data, at = scheduler.now()) {
       eventCounter += 1
-      const event = { id: `evt_fake_${eventCounter}`, created: Date.now(), type, data }
+      const event = { id: `evt_fake_${eventCounter}`, created: at, type, data }
       for (const subscription of [...subscriptions]) subscription.push(event as unknown as HostEvent)
+    },
+    advance: (ms) => scheduler.advance(ms),
+    endEvents() {
+      for (const subscription of [...subscriptions]) subscription.close()
+      subscriptions.clear()
+    },
+    setIdle(sessionID, idleAt) {
+      idleOverrides.set(sessionID, idleAt)
+    },
+    setPermissions(sessionID, requests) {
+      permissionOverrides.set(sessionID, requests)
     },
     subscribers: () => subscriptions.size,
     async modelContext(sessionID = caller) {
@@ -400,6 +455,52 @@ function rejectUndefined(value: unknown, path: string): void {
   }
   if (typeof value === "object" && value !== null) {
     for (const [key, entry] of Object.entries(value)) rejectUndefined(entry, `${path}.${key}`)
+  }
+}
+
+/** A deterministic interval scheduler for observation tests. */
+class FakeScheduler {
+  private current: number
+  private nextID = 1
+  private readonly intervals = new Map<number, { due: number; readonly step: number; readonly callback: () => void | Promise<void> }>()
+
+  constructor(start: number) {
+    this.current = start
+  }
+
+  now(): number {
+    return this.current
+  }
+
+  every(intervalMs: number, callback: () => void | Promise<void>): { dispose(): void } {
+    const id = this.nextID++
+    this.intervals.set(id, {
+      due: this.current + intervalMs,
+      step: intervalMs,
+      callback,
+    })
+    return { dispose: () => this.intervals.delete(id) }
+  }
+
+  async advance(ms: number): Promise<void> {
+    const target = this.current + ms
+    for (;;) {
+      let nextID: number | undefined
+      let nextDue = Number.POSITIVE_INFINITY
+      for (const [id, interval] of this.intervals) {
+        if (interval.due < nextDue) {
+          nextDue = interval.due
+          nextID = id
+        }
+      }
+      if (nextID === undefined || nextDue > target) break
+      this.current = nextDue
+      const interval = this.intervals.get(nextID)
+      if (interval === undefined) continue
+      interval.due += interval.step
+      await interval.callback()
+    }
+    this.current = target
   }
 }
 

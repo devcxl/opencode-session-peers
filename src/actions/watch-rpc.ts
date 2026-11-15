@@ -11,7 +11,7 @@
 import { DELEGATION_UNAVAILABLE_REASON, type WatchFailure } from "../domain/watch.ts"
 import type { SessionLookup } from "../host/session.ts"
 import { sessionAtLocation } from "../watch/access.ts"
-import type { WatchApplication, WatchOutcome } from "../watch/service.ts"
+import type { WatchApplication, WatchObservationSource, WatchOutcome } from "../watch/service.ts"
 import { watchCapability, watchControls } from "../watch/view.ts"
 import type { WatchFailureView, WatchPayload } from "../watch/contract.ts"
 
@@ -19,6 +19,8 @@ export interface WatchRpcDeps {
   readonly enabled: boolean
   /** Absent exactly when the plugin is disabled at this location. */
   readonly watch?: WatchApplication
+  /** The observer's current reading; absent before the observer starts. */
+  readonly observe?: WatchObservationSource
   readonly sessions: SessionLookup
   readonly directory: string
 }
@@ -62,6 +64,16 @@ export async function watchRpc(deps: WatchRpcDeps, input: unknown): Promise<Watc
       )
     }
 
+    case "ack": {
+      if (request.value.alertID === undefined) {
+        return failurePayload(deps, { code: "E_WATCH_INVALID", reason: "ack needs alertID" })
+      }
+      return payload(
+        deps,
+        watch.ack({ callerSessionID: request.value.sessionID, alertID: request.value.alertID }),
+      )
+    }
+
     case "pause":
     case "end": {
       if (request.value.taskID === undefined || request.value.expectedVersion === undefined) {
@@ -84,9 +96,10 @@ export async function watchRpc(deps: WatchRpcDeps, input: unknown): Promise<Watc
 }
 
 interface WatchRpcRequest {
-  readonly operation: "show" | "enroll" | "pause" | "end"
+  readonly operation: "show" | "enroll" | "pause" | "end" | "ack"
   readonly sessionID: string
   readonly taskID?: string
+  readonly alertID?: string
   readonly expectedVersion?: number
   readonly requestId?: string
   readonly goal?: string
@@ -102,12 +115,19 @@ function readRequest(input: unknown):
   }
   const record = input as Record<string, unknown>
   const operation = record["operation"]
-  if (operation !== "show" && operation !== "enroll" && operation !== "pause" && operation !== "end") {
-    return { ok: false, reason: "operation must be show, enroll, pause or end" }
+  if (
+    operation !== "show" &&
+    operation !== "enroll" &&
+    operation !== "pause" &&
+    operation !== "end" &&
+    operation !== "ack"
+  ) {
+    return { ok: false, reason: "operation must be show, enroll, pause, end or ack" }
   }
   const sessionID = readString(record["sessionID"])
   if (sessionID === undefined) return { ok: false, reason: "sessionID must be a non-empty string" }
   const taskID = readString(record["taskID"])
+  const alertID = readString(record["alertID"])
   const requestId = readString(record["requestId"])
   const goal = readString(record["goal"])
   const targetSessionID = readString(record["targetSessionID"])
@@ -128,6 +148,7 @@ function readRequest(input: unknown):
       operation,
       sessionID,
       ...(taskID === undefined ? {} : { taskID }),
+      ...(alertID === undefined ? {} : { alertID }),
       ...(expectedVersion === undefined ? {} : { expectedVersion }),
       ...(requestId === undefined ? {} : { requestId }),
       ...(goal === undefined ? {} : { goal }),
@@ -144,26 +165,51 @@ function readString(value: unknown): string | undefined {
 }
 
 function payload(deps: WatchRpcDeps, outcome: WatchOutcome): WatchPayload {
-  const status = deps.watch === undefined ? { available: false, reason: "the plugin is disabled at this location" } : deps.watch.status()
+  const status = ledgerStatus(deps)
+  const taskID = outcome.task?.taskID
   return {
     enabled: deps.enabled,
     ledger: status,
     task: outcome.task,
     capability: outcome.capability,
     controls: outcome.controls,
+    observation: taskID === undefined ? null : deps.observe?.observationFor(taskID) ?? null,
+    activity: taskID === undefined ? null : deps.observe?.activityFor(taskID) ?? null,
+    alerts: alertsView(outcome, status.available, status.reason),
     failure: outcome.failure === null ? null : failureView(outcome.failure),
   }
 }
 
 function failurePayload(deps: WatchRpcDeps, failure: WatchFailure): WatchPayload {
-  const status = deps.watch === undefined ? { available: false, reason: "the plugin is disabled at this location" } : deps.watch.status()
+  const status = ledgerStatus(deps)
   return {
     enabled: deps.enabled,
     ledger: status,
     task: null,
     capability: watchCapability(),
     controls: watchControls(null),
+    observation: null,
+    activity: null,
+    alerts: alertsView(null, status.available, status.reason),
     failure: failureView(failure),
+  }
+}
+
+function ledgerStatus(deps: WatchRpcDeps): { available: boolean; reason: string | null } {
+  return deps.watch === undefined
+    ? { available: false, reason: "the plugin is disabled at this location" }
+    : deps.watch.status()
+}
+
+function alertsView(outcome: WatchOutcome | null, available: boolean, reason: string | null) {
+  const items = outcome?.alerts ?? []
+  return {
+    items,
+    unread: items.filter((alert) => alert.state === "unread").length,
+    total: items.length,
+    truncated: false,
+    available,
+    reason: available ? null : reason,
   }
 }
 

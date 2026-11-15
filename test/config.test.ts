@@ -30,6 +30,7 @@ describe("parseConfig", () => {
       askTimeoutMs: 1_000,
       rosterTtlMs: 5_000,
       inbound: { trigger: "replies", busyDelivery: "queue" },
+      watch: DEFAULT_CONFIG.watch,
     })
     expect(warnings).toEqual([])
   })
@@ -62,6 +63,23 @@ describe("parseConfig", () => {
     const { config, warnings } = parseConfig("nope")
     expect(config.inbound).toEqual({ ...DEFAULT_CONFIG.inbound, trigger: "never" })
     expect(warnings).toHaveLength(1)
+  })
+
+  test("watch windows are bounded and invalid values fall back with a warning", () => {
+    const valid = parseConfig({
+      watch: { idleMs: 120_000, runningSilentMs: 600_000, waitOverdueMs: 1_800_000, tickMs: 15_000 },
+    })
+    expect(valid.config.watch).toEqual({
+      idleMs: 120_000,
+      runningSilentMs: 600_000,
+      waitOverdueMs: 1_800_000,
+      tickMs: 15_000,
+    })
+    expect(valid.warnings).toEqual([])
+
+    const invalid = parseConfig({ watch: { idleMs: 1, runningSilentMs: -1, waitOverdueMs: 1.5, tickMs: "fast" } })
+    expect(invalid.config.watch).toEqual(DEFAULT_CONFIG.watch)
+    expect(invalid.warnings).toHaveLength(4)
   })
 
   test("a non-boolean switch is reported and keeps its default", () => {

@@ -126,8 +126,8 @@ describeSafe("watch enrollment and reading", () => {
       })
       expect(data.capability).toMatchObject({
         mode: "alert",
-        monitoring: "participant-reports-only",
-        automaticDetection: "unavailable",
+        monitoring: "observer-alerts",
+        automaticDetection: "partial",
         automaticDetectionReason: expect.any(String),
         correction: "unavailable",
         correctionReason: expect.any(String),

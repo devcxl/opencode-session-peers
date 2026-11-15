@@ -114,6 +114,121 @@ export interface WatchReportView {
   readonly version: number
 }
 
+/** A persistent observation problem; one row per task and continuing problem. */
+export type WatchAlertKind =
+  | "idle"
+  | "running-silent"
+  | "wait-overdue"
+  | "observation-unknown"
+  | "approval-rejected"
+
+export type WatchAlertState = "unread" | "read"
+
+export interface WatchAlertRecord {
+  readonly alertID: string
+  readonly taskID: string
+  readonly dedupeKey: string
+  readonly kind: WatchAlertKind
+  readonly state: WatchAlertState
+  readonly summary: string
+  readonly reason: string
+  readonly firstAt: number
+  readonly updatedAt: number
+  readonly readAt?: number
+  readonly escalatedAt?: number
+  readonly resolvedAt?: number
+}
+
+export interface WatchAlertView {
+  readonly alertID: string
+  readonly taskID: string
+  readonly kind: WatchAlertKind
+  readonly state: WatchAlertState
+  /** Short, redacted diagnostic; never the goal, raw output or credentials. */
+  readonly summary: string
+  readonly reason: string
+  /** A safe user action; this build only offers inspection/ack, never correction. */
+  readonly nextStep: string
+  readonly plainText: string
+  readonly firstAt: number
+  readonly updatedAt: number
+  readonly readAt: number | null
+  readonly escalatedAt: number | null
+  readonly resolvedAt: number | null
+}
+
+/** One wait that is (or was) suppressing idle detection. */
+export type WatchWaitSource = "permission" | "form" | "retry" | "ask" | "reported"
+
+export type WatchWaitStatus = "active" | "overdue" | "cleared" | "denied" | "unknown"
+
+export interface WatchWaitView {
+  readonly waitID: string
+  readonly source: WatchWaitSource
+  readonly object: string
+  readonly reason: string
+  readonly reference: string | null
+  readonly startedAt: number
+  readonly deadline: number | null
+  readonly status: WatchWaitStatus
+  readonly clearEvidence: string | null
+  readonly denyEvidence: string | null
+}
+
+/** What the observer currently knows about a task's execution, not its business success. */
+export type WatchObservationState =
+  | "active"
+  | "idle-candidate"
+  | "running-silence"
+  | "normal-waiting"
+  | "blocked"
+  | "unknown"
+  | "unavailable"
+
+export interface WatchEffectiveThresholds {
+  readonly idleMs: number
+  readonly runningSilentMs: number
+  readonly waitOverdueMs: number
+}
+
+export interface WatchObservationView {
+  readonly state: WatchObservationState
+  /** Why the observation is unknown/degraded; `null` when the state is trusted. */
+  readonly reason: string | null
+  /** The last observation sample. */
+  readonly observedAt: number | null
+  /** When the current continuous idle/running period began, according to this observer. */
+  readonly baselineAt: number | null
+  /** The last terminal execution observed; never a claim about pre-observation history. */
+  readonly idleSince: number | null
+  /** True only when local execution evidence and all required snapshots are present. */
+  readonly trusted: boolean
+  readonly waits: readonly WatchWaitView[]
+  /** A permission/form/ask source was incomplete, so absence of a wait is not proof. */
+  readonly waitsPartial: boolean
+  /** The bounded wait list dropped entries. */
+  readonly waitsTruncated: boolean
+  readonly effective: WatchEffectiveThresholds
+}
+
+export interface WatchActivityView {
+  /** When this target last produced its own output, step or tool activity. */
+  readonly lastAt: number | null
+  readonly kind: "text" | "reasoning" | "step" | "tool" | "shell" | "execution" | null
+  /** Continuous activity is not evidence of goal progress; this build never judges it. */
+  readonly judgement: "not-judged"
+}
+
+export interface WatchAlertsView {
+  readonly items: readonly WatchAlertView[]
+  readonly unread: number
+  readonly total: number
+  /** The bounded list dropped active alerts. */
+  readonly truncated: boolean
+  readonly available: boolean
+  readonly reason: string | null
+}
+
 /**
  * What this build can actually do, as distinct from the mode the user chose.
  * There is no automatic stall detection and no correction: the panel must say
@@ -121,8 +236,9 @@ export interface WatchReportView {
  */
 export interface WatchCapability {
   readonly mode: WatchMode
-  readonly monitoring: "participant-reports-only"
-  readonly automaticDetection: "unavailable"
+  /** Old builds reported participant-reports-only; new builds report observer-alerts. */
+  readonly monitoring: "participant-reports-only" | "observer-alerts"
+  readonly automaticDetection: "unavailable" | "partial"
   readonly automaticDetectionReason: string
   readonly correction: "unavailable"
   readonly correctionReason: string
@@ -182,6 +298,8 @@ export const WATCH_LIMITS = {
 
 /** The hard cap the parent specification fixes for one watched task. */
 export const WATCH_CORRECTION_LIMIT = 3
+export const WATCH_ALERT_SUMMARY_LIMIT = 300
+export const WATCH_ALERT_REASON_LIMIT = 500
 
 export const CORRECTION_UNAVAILABLE_REASON =
   "Finite correction is not implemented in this build; this watch can only record reports."
@@ -313,6 +431,27 @@ function optionalText(value: unknown, field: string, maximum: number): Checked<s
   if (typeof value !== "string") return { ok: false, reason: `${field} must be a string` }
   const trimmed = value.trim()
   if (trimmed.length === 0) return { ok: true, value: undefined }
+  if (trimmed.length > maximum) return { ok: false, reason: `${field} must be at most ${maximum} characters` }
+  return { ok: true, value: trimmed }
+}
+
+export function readAlertKind(value: unknown): Checked<WatchAlertKind> {
+  if (
+    value === "idle" ||
+    value === "running-silent" ||
+    value === "wait-overdue" ||
+    value === "observation-unknown" ||
+    value === "approval-rejected"
+  ) {
+    return { ok: true, value }
+  }
+  return { ok: false, reason: "alert kind is not supported" }
+}
+
+export function readBoundedText(value: unknown, field: string, maximum: number): Checked<string> {
+  if (typeof value !== "string") return { ok: false, reason: `${field} must be a string` }
+  const trimmed = value.trim()
+  if (trimmed.length === 0) return { ok: false, reason: `${field} must not be empty` }
   if (trimmed.length > maximum) return { ok: false, reason: `${field} must be at most ${maximum} characters` }
   return { ok: true, value: trimmed }
 }

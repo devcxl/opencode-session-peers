@@ -25,7 +25,7 @@ import type { PluginStorage } from "./host/storage.ts"
 import type { ToolSpec } from "./host/tools.ts"
 import type { Roster } from "./peers/roster.ts"
 import type { LocalAskWaits } from "./ask/handshake.ts"
-import type { WatchApplication } from "./watch/service.ts"
+import type { WatchApplication, WatchObservationSource } from "./watch/service.ts"
 
 export const PEERS_TOOL_NAME = "peers"
 
@@ -119,6 +119,7 @@ const PEERS_TOOL_INPUT = {
             "report",
             "pause",
             "end",
+            "ack",
             "grant",
             "correct",
             "receipt",
@@ -131,6 +132,7 @@ const PEERS_TOOL_INPUT = {
             `"pause" or "end" supervision. The remaining operations are explicit unavailable refusals in this build.`,
         },
         taskID: { type: "string", description: `The watched task id for show, report, pause or end.` },
+        alertID: { type: "string", description: `The persistent alert id for ack; it only marks the alert read.` },
         expectedVersion: {
           type: "integer",
           description: `The state version read from show; report, pause and end reject a stale value.`,
@@ -193,6 +195,8 @@ export interface PeersToolDeps {
   readonly handover: HandoverSupport
   /** The watchdog application; absent exactly when the plugin is disabled. */
   readonly watch?: WatchApplication
+  /** The observer's current reading, for tool results that include it. */
+  readonly observe?: WatchObservationSource
   /** The directory this instance serves; watch enrollment is limited to it. */
   readonly directory: string
 }

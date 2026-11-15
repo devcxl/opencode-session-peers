@@ -32,11 +32,18 @@ import {
   canonicalJson,
   enrollmentFingerprint,
   nextTaskState,
+  readAlertKind,
+  readBoundedText,
   readEvidence,
   readGoal,
   readIdentifier,
   readReportKind,
+  WATCH_ALERT_REASON_LIMIT,
+  WATCH_ALERT_SUMMARY_LIMIT,
   WATCH_CORRECTION_LIMIT,
+  type WatchAlertKind,
+  type WatchAlertRecord,
+  type WatchAlertState,
   type WatchEvidence,
   type WatchMode,
   type WatchReportKind,
@@ -45,7 +52,7 @@ import {
   type WatchedTaskState,
 } from "../domain/watch.ts"
 
-export const WATCH_LEDGER_SCHEMA_VERSION = 3
+export const WATCH_LEDGER_SCHEMA_VERSION = 4
 export const WATCH_LEDGER_PROTOCOL_VERSION = 1
 export const WATCH_MIN_SQLITE = "3.51.3"
 
@@ -65,6 +72,7 @@ export type WatchLedgerErrorCode =
   | "session_conflict"
   | "request_conflict"
   | "unknown_task"
+  | "unknown_alert"
   | "caller_mismatch"
   | "stale_version"
   | "report_conflict"
@@ -120,6 +128,23 @@ export interface ControlWatchTaskInput {
   readonly operation: "pause" | "end"
 }
 
+export interface UpsertWatchAlertInput {
+  readonly taskId: string
+  readonly dedupeKey: string
+  readonly kind: WatchAlertKind
+  readonly summary: string
+  readonly reason: string
+  readonly at: number
+  /** The observer may request the one bounded escalation for this problem. */
+  readonly escalate?: boolean
+}
+
+export interface WatchAlertAckInput {
+  readonly alertID: string
+  readonly callerSessionId: string
+  readonly at: number
+}
+
 export interface WatchLedger {
   readonly ledgerId: string
   readonly path: string
@@ -129,6 +154,20 @@ export interface WatchLedger {
   show(input: { readonly taskID?: string; readonly sessionID: string }): LedgerResult<WatchTaskRecord | null>
   report(input: ReportWatchTaskInput): LedgerResult<{ readonly task: WatchTaskRecord; readonly duplicate: boolean }>
   control(input: ControlWatchTaskInput): LedgerResult<{ readonly task: WatchTaskRecord; readonly changed: boolean }>
+  /** Active tasks the observer may sample; paused tasks create no new alerts. */
+  listActive(): LedgerResult<readonly WatchTaskRecord[]>
+  alerts(taskID: string): LedgerResult<readonly WatchAlertRecord[]>
+  upsertAlert(input: UpsertWatchAlertInput): LedgerResult<{
+    readonly alert: WatchAlertRecord
+    readonly created: boolean
+    readonly escalated: boolean
+  }>
+  resolveAlert(input: {
+    readonly taskId: string
+    readonly dedupeKey: string
+    readonly at: number
+  }): LedgerResult<{ readonly changed: boolean }>
+  ackAlert(input: WatchAlertAckInput): LedgerResult<{ readonly alert: WatchAlertRecord; readonly changed: boolean }>
   close(): void
 }
 
@@ -172,6 +211,21 @@ interface ReportRow {
   readonly evidence: string
   readonly created_at: number
   readonly version: number
+}
+
+interface AlertRow {
+  readonly alert_id: string
+  readonly task_id: string
+  readonly dedupe_key: string
+  readonly kind: string
+  readonly state: string
+  readonly summary: string
+  readonly reason: string
+  readonly first_at: number
+  readonly updated_at: number
+  readonly read_at: number | null
+  readonly escalated_at: number | null
+  readonly resolved_at: number | null
 }
 
 const DDL = `
@@ -228,9 +282,25 @@ CREATE TABLE IF NOT EXISTS watch_reports (
   created_at INTEGER NOT NULL,
   PRIMARY KEY (task_id, report_id)
 );
+
+CREATE TABLE IF NOT EXISTS watch_alerts (
+  alert_id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES watch_tasks(task_id),
+  dedupe_key TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('idle','running-silent','wait-overdue','observation-unknown','approval-rejected')),
+  state TEXT NOT NULL CHECK (state IN ('unread','read')),
+  summary TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  first_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  read_at INTEGER,
+  escalated_at INTEGER,
+  resolved_at INTEGER,
+  UNIQUE (task_id, dedupe_key)
+);
 `
 
-const REQUIRED_TABLES = ["meta", "watch_tasks", "enrollment_requests", "watch_reports"]
+const REQUIRED_TABLES = ["meta", "watch_tasks", "enrollment_requests", "watch_reports", "watch_alerts"]
 const REQUIRED_TASK_COLUMNS = [
   "task_id",
   "ledger_id",
@@ -257,6 +327,20 @@ const REQUIRED_TASK_COLUMNS = [
   "ended_at",
 ]
 const REQUIRED_REPORT_COLUMNS = ["task_id", "report_id", "kind", "evidence", "version", "created_at"]
+const REQUIRED_ALERT_COLUMNS = [
+  "alert_id",
+  "task_id",
+  "dedupe_key",
+  "kind",
+  "state",
+  "summary",
+  "reason",
+  "first_at",
+  "updated_at",
+  "read_at",
+  "escalated_at",
+  "resolved_at",
+]
 const REQUIRED_ENROLLMENT_COLUMNS = [
   "initiator_session_id",
   "request_id",
@@ -464,6 +548,7 @@ function openOnce(options: OpenWatchLedgerOptions): OpenWatchLedgerResult {
       assertColumns(db, "watch_tasks", REQUIRED_TASK_COLUMNS)
       assertColumns(db, "watch_reports", REQUIRED_REPORT_COLUMNS)
       assertColumns(db, "enrollment_requests", REQUIRED_ENROLLMENT_COLUMNS)
+      assertColumns(db, "watch_alerts", REQUIRED_ALERT_COLUMNS)
     }
 
     const metadata = readMetadata(db)
@@ -856,6 +941,140 @@ class SqliteWatchLedger implements WatchLedger {
     })
   }
 
+  listActive(): LedgerResult<readonly WatchTaskRecord[]> {
+    return this.read(() => {
+      const rows = this.db
+        .query("SELECT * FROM watch_tasks WHERE watch_state IN ('active','paused') ORDER BY created_at")
+        .all() as TaskRow[]
+      return rows.map(taskFromRow)
+    })
+  }
+
+  alerts(taskID: string): LedgerResult<readonly WatchAlertRecord[]> {
+    const id = requiredIdentifier(taskID, "taskID")
+    return this.read(() => {
+      const rows = this.db
+        .query(
+          "SELECT * FROM watch_alerts WHERE task_id = ? AND resolved_at IS NULL ORDER BY first_at, alert_id",
+        )
+        .all(id) as AlertRow[]
+      return rows.map(alertFromRow)
+    })
+  }
+
+  upsertAlert(input: UpsertWatchAlertInput): LedgerResult<{
+    readonly alert: WatchAlertRecord
+    readonly created: boolean
+    readonly escalated: boolean
+  }> {
+    return this.immediate(() => {
+      const taskID = requiredIdentifier(input.taskId, "taskId")
+      const dedupeKey = requiredIdentifier(input.dedupeKey, "dedupeKey")
+      const kind = readAlertKind(input.kind)
+      if (!kind.ok) throw new LedgerFailure("invalid_input", kind.reason)
+      const summary = readBoundedText(input.summary, "summary", WATCH_ALERT_SUMMARY_LIMIT)
+      if (!summary.ok) throw new LedgerFailure("invalid_input", summary.reason)
+      const reason = readBoundedText(input.reason, "reason", WATCH_ALERT_REASON_LIMIT)
+      if (!reason.ok) throw new LedgerFailure("invalid_input", reason.reason)
+      if (!Number.isSafeInteger(input.at) || input.at < 0) {
+        throw new LedgerFailure("invalid_input", "alert time must be a non-negative integer")
+      }
+
+      const task = this.taskRow(taskID)
+      if (task === null) throw new LedgerFailure("unknown_task", taskID)
+      this.checkLedger(task)
+
+      const existing = this.db
+        .query("SELECT * FROM watch_alerts WHERE task_id = ? AND dedupe_key = ?")
+        .get(taskID, dedupeKey) as AlertRow | null
+      if (existing === null) {
+        const alertID = randomUUID()
+        this.db
+          .query(
+            `INSERT INTO watch_alerts (
+              alert_id, task_id, dedupe_key, kind, state, summary, reason,
+              first_at, updated_at, read_at, escalated_at, resolved_at
+            ) VALUES (?, ?, ?, ?, 'unread', ?, ?, ?, ?, NULL, ?, NULL)`,
+          )
+          .run(
+            alertID,
+            taskID,
+            dedupeKey,
+            kind.value,
+            summary.value,
+            reason.value,
+            input.at,
+            input.at,
+            null,
+          )
+        return { alert: this.alert(alertID), created: true, escalated: false }
+      }
+
+      const reopened = existing.resolved_at !== null
+      const escalated = input.escalate === true && existing.escalated_at === null
+      this.db
+        .query(
+          `UPDATE watch_alerts SET
+            state = ?, summary = ?, reason = ?, updated_at = ?,
+            read_at = ?, escalated_at = ?, resolved_at = NULL
+           WHERE alert_id = ?`,
+        )
+        .run(
+          reopened ? "unread" : existing.state,
+          summary.value,
+          reason.value,
+          input.at,
+          reopened ? null : existing.read_at,
+          escalated ? input.at : existing.escalated_at,
+          existing.alert_id,
+        )
+      return { alert: this.alert(existing.alert_id), created: false, escalated }
+    })
+  }
+
+  resolveAlert(input: {
+    readonly taskId: string
+    readonly dedupeKey: string
+    readonly at: number
+  }): LedgerResult<{ readonly changed: boolean }> {
+    return this.immediate(() => {
+      const taskID = requiredIdentifier(input.taskId, "taskId")
+      const dedupeKey = requiredIdentifier(input.dedupeKey, "dedupeKey")
+      const result = this.db
+        .query(
+          "UPDATE watch_alerts SET resolved_at = ?, updated_at = ? WHERE task_id = ? AND dedupe_key = ? AND resolved_at IS NULL",
+        )
+        .run(input.at, input.at, taskID, dedupeKey)
+      return { changed: result.changes > 0 }
+    })
+  }
+
+  ackAlert(input: WatchAlertAckInput): LedgerResult<{ readonly alert: WatchAlertRecord; readonly changed: boolean }> {
+    return this.immediate(() => {
+      const alertID = requiredIdentifier(input.alertID, "alertID")
+      const caller = requiredIdentifier(input.callerSessionId, "callerSessionId")
+      const row = this.db.query("SELECT * FROM watch_alerts WHERE alert_id = ?").get(alertID) as AlertRow | null
+      if (row === null) throw new LedgerFailure("unknown_alert", alertID)
+      const task = this.taskRow(row.task_id)
+      if (task === null) throw new LedgerFailure("unknown_task", row.task_id)
+      this.checkLedger(task)
+      if (task.initiator_session_id !== caller) {
+        throw new LedgerFailure("caller_mismatch", "only the task initiator may acknowledge this alert")
+      }
+      if (row.state === "read") return { alert: alertFromRow(row), changed: false }
+      this.db
+        .query("UPDATE watch_alerts SET state = 'read', read_at = ?, updated_at = ? WHERE alert_id = ?")
+        .run(input.at, input.at, alertID)
+      return { alert: this.alert(alertID), changed: true }
+    })
+  }
+
+  private alert(alertID: string): WatchAlertRecord {
+    const row = this.db.query("SELECT * FROM watch_alerts WHERE alert_id = ?").get(alertID) as AlertRow | null
+    if (row === null) throw new LedgerFailure("unknown_alert", alertID)
+    return alertFromRow(row)
+  }
+
   secureFiles(): void {
     const targets = [this.path, `${this.path}-wal`, `${this.path}-shm`, anchorPathFor(this.path)]
     for (const target of targets) {
@@ -948,6 +1167,31 @@ function taskFromRow(row: TaskRow): WatchTaskRecord {
     ...(row.completed_at === null ? {} : { completedAt: row.completed_at }),
     ...(row.ended_at === null ? {} : { endedAt: row.ended_at }),
   }
+}
+
+function alertFromRow(row: AlertRow): WatchAlertRecord {
+  const kind = readAlertKind(row.kind)
+  if (!kind.ok) throw new LedgerFailure("corrupt", "stored alert kind is not supported")
+  const state = parseAlertState(row.state)
+  return {
+    alertID: row.alert_id,
+    taskID: row.task_id,
+    dedupeKey: row.dedupe_key,
+    kind: kind.value,
+    state,
+    summary: row.summary,
+    reason: row.reason,
+    firstAt: row.first_at,
+    updatedAt: row.updated_at,
+    ...(row.read_at === null ? {} : { readAt: row.read_at }),
+    ...(row.escalated_at === null ? {} : { escalatedAt: row.escalated_at }),
+    ...(row.resolved_at === null ? {} : { resolvedAt: row.resolved_at }),
+  }
+}
+
+function parseAlertState(value: string): WatchAlertState {
+  if (value === "unread" || value === "read") return value
+  throw new LedgerFailure("corrupt", `unknown alert state ${value}`)
 }
 
 function parseAttemptsUsed(value: unknown): number {

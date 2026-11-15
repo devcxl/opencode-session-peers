@@ -9,15 +9,20 @@
  */
 
 import type {
+  WatchActivityView,
+  WatchAlertView,
+  WatchAlertsView,
   WatchCapability,
   WatchControl,
   WatchControls,
   WatchEvidence,
   WatchFailureCode,
+  WatchObservationView,
   WatchReportKind,
   WatchReportView,
   WatchTaskView,
   WatchWaitKind,
+  WatchWaitView,
 } from "../domain/watch.ts"
 
 export interface WatchLedgerView {
@@ -45,6 +50,11 @@ export interface WatchPayload {
   readonly task: WatchTaskView | null
   readonly capability: WatchCapability
   readonly controls: WatchControls
+  /** Current observer reading; `null` when no task is enrolled or no sample exists. */
+  readonly observation?: WatchObservationView | null
+  /** The target's last own activity; continuous activity is never judged as progress. */
+  readonly activity?: WatchActivityView | null
+  readonly alerts?: WatchAlertsView
   readonly failure: WatchFailureView | null
 }
 
@@ -153,8 +163,8 @@ const capabilitySchema = {
   additionalProperties: false,
   properties: {
     mode: { type: "string", enum: ["alert"] },
-    monitoring: { type: "string", enum: ["participant-reports-only"] },
-    automaticDetection: { type: "string", enum: ["unavailable"] },
+    monitoring: { type: "string", enum: ["participant-reports-only", "observer-alerts"] },
+    automaticDetection: { type: "string", enum: ["unavailable", "partial"] },
     automaticDetectionReason: { type: "string" },
     correction: { type: "string", enum: ["unavailable"] },
     correctionReason: { type: "string" },
@@ -219,14 +229,150 @@ const failureSchema = {
   required: ["code", "reason", "detail"],
 } as const
 
+const waitSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    waitID: { type: "string" },
+    source: { type: "string", enum: ["permission", "form", "retry", "ask", "reported"] },
+    object: { type: "string" },
+    reason: { type: "string" },
+    reference: { type: ["string", "null"] },
+    startedAt: { type: "number" },
+    deadline: { type: ["number", "null"] },
+    status: { type: "string", enum: ["active", "overdue", "cleared", "denied", "unknown"] },
+    clearEvidence: { type: ["string", "null"] },
+    denyEvidence: { type: ["string", "null"] },
+  },
+  required: [
+    "waitID",
+    "source",
+    "object",
+    "reason",
+    "reference",
+    "startedAt",
+    "deadline",
+    "status",
+    "clearEvidence",
+    "denyEvidence",
+  ],
+} as const
+
+const thresholdsSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    idleMs: { type: "number" },
+    runningSilentMs: { type: "number" },
+    waitOverdueMs: { type: "number" },
+  },
+  required: ["idleMs", "runningSilentMs", "waitOverdueMs"],
+} as const
+
+const observationSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    state: {
+      type: "string",
+      enum: ["active", "idle-candidate", "running-silence", "normal-waiting", "blocked", "unknown", "unavailable"],
+    },
+    reason: { type: ["string", "null"] },
+    observedAt: { type: ["number", "null"] },
+    baselineAt: { type: ["number", "null"] },
+    idleSince: { type: ["number", "null"] },
+    trusted: { type: "boolean" },
+    waits: { type: "array", items: waitSchema },
+    waitsPartial: { type: "boolean" },
+    waitsTruncated: { type: "boolean" },
+    effective: thresholdsSchema,
+  },
+  required: [
+    "state",
+    "reason",
+    "observedAt",
+    "baselineAt",
+    "idleSince",
+    "trusted",
+    "waits",
+    "waitsPartial",
+    "waitsTruncated",
+    "effective",
+  ],
+} as const
+
+const activitySchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    lastAt: { type: ["number", "null"] },
+    kind: { type: ["string", "null"] },
+    judgement: { type: "string", enum: ["not-judged"] },
+  },
+  required: ["lastAt", "kind", "judgement"],
+} as const
+
+const alertSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    alertID: { type: "string" },
+    taskID: { type: "string" },
+    kind: {
+      type: "string",
+      enum: ["idle", "running-silent", "wait-overdue", "observation-unknown", "approval-rejected"],
+    },
+    state: { type: "string", enum: ["unread", "read"] },
+    summary: { type: "string" },
+    reason: { type: "string" },
+    nextStep: { type: "string" },
+    plainText: { type: "string" },
+    firstAt: { type: "number" },
+    updatedAt: { type: "number" },
+    readAt: { type: ["number", "null"] },
+    escalatedAt: { type: ["number", "null"] },
+    resolvedAt: { type: ["number", "null"] },
+  },
+  required: [
+    "alertID",
+    "taskID",
+    "kind",
+    "state",
+    "summary",
+    "reason",
+    "nextStep",
+    "plainText",
+    "firstAt",
+    "updatedAt",
+    "readAt",
+    "escalatedAt",
+    "resolvedAt",
+  ],
+} as const
+
+const alertsSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    items: { type: "array", items: alertSchema },
+    unread: { type: "number" },
+    total: { type: "number" },
+    truncated: { type: "boolean" },
+    available: { type: "boolean" },
+    reason: { type: ["string", "null"] },
+  },
+  required: ["items", "unread", "total", "truncated", "available", "reason"],
+} as const
+
 export const watchRpcMethod = {
   input: {
     type: "object",
     additionalProperties: false,
     properties: {
-      operation: { type: "string", enum: ["show", "enroll", "pause", "end"] },
+      operation: { type: "string", enum: ["show", "enroll", "pause", "end", "ack"] },
       sessionID: { type: "string", minLength: 1 },
       taskID: { type: "string", minLength: 1 },
+      alertID: { type: "string", minLength: 1 },
       expectedVersion: { type: "integer", minimum: 1 },
       requestId: { type: "string", minLength: 1 },
       goal: { type: "string", minLength: 1 },
@@ -244,9 +390,12 @@ export const watchRpcMethod = {
       task: { ...watchTaskSchema, type: ["object", "null"] },
       capability: capabilitySchema,
       controls: controlsSchema,
+      observation: { ...observationSchema, type: ["object", "null"] },
+      activity: { ...activitySchema, type: ["object", "null"] },
+      alerts: alertsSchema,
       failure: { ...failureSchema, type: ["object", "null"] },
     },
-    required: ["enabled", "ledger", "task", "capability", "controls", "failure"],
+    required: ["enabled", "ledger", "task", "capability", "controls", "observation", "activity", "alerts", "failure"],
   },
 } as const
 
@@ -271,10 +420,228 @@ export function readWatchPayload(value: unknown): WatchPayload | undefined {
   const task = payload["task"] === null ? null : readTask(payload["task"])
   const capability = readCapability(payload["capability"])
   const controls = readControls(payload["controls"])
+  const observation = payload["observation"] === null ? null : readObservation(payload["observation"])
+  const activity = payload["activity"] === null ? null : readActivity(payload["activity"])
+  const alerts = readAlerts(payload["alerts"])
   const failure = payload["failure"] === null ? null : readFailure(payload["failure"])
   if (typeof enabled !== "boolean" || ledger === undefined || task === undefined) return undefined
-  if (capability === undefined || controls === undefined || failure === undefined) return undefined
-  return { enabled, ledger, task, capability, controls, failure }
+  if (capability === undefined || controls === undefined || observation === undefined) return undefined
+  if (activity === undefined || alerts === undefined || failure === undefined) return undefined
+  return { enabled, ledger, task, capability, controls, observation, activity, alerts, failure }
+}
+
+function readObservation(value: unknown): WatchObservationView | undefined {
+  const record = asRecord(value)
+  if (record === undefined) return undefined
+  const state = record["state"]
+  const reason = record["reason"]
+  const observedAt = record["observedAt"]
+  const baselineAt = record["baselineAt"]
+  const idleSince = record["idleSince"]
+  const trusted = record["trusted"]
+  const waitsPartial = record["waitsPartial"]
+  const waitsTruncated = record["waitsTruncated"]
+  const effective = readThresholds(record["effective"])
+  if (!isObservationState(state) || !isStringOrNull(reason) || !isNumberOrNull(observedAt)) return undefined
+  if (!isNumberOrNull(baselineAt) || !isNumberOrNull(idleSince) || typeof trusted !== "boolean") return undefined
+  if (typeof waitsPartial !== "boolean" || typeof waitsTruncated !== "boolean" || effective === undefined) {
+    return undefined
+  }
+  if (!Array.isArray(record["waits"])) return undefined
+  const waits: WatchWaitView[] = []
+  for (const candidate of record["waits"]) {
+    const wait = readWait(candidate)
+    if (wait === undefined) return undefined
+    waits.push(wait)
+  }
+  return {
+    state,
+    reason,
+    observedAt,
+    baselineAt,
+    idleSince,
+    trusted,
+    waits,
+    waitsPartial,
+    waitsTruncated,
+    effective,
+  }
+}
+
+function readWait(value: unknown): WatchWaitView | undefined {
+  const record = asRecord(value)
+  if (record === undefined) return undefined
+  const source = record["source"]
+  const status = record["status"]
+  if (
+    (source !== "permission" && source !== "form" && source !== "retry" && source !== "ask" && source !== "reported") ||
+    (status !== "active" && status !== "overdue" && status !== "cleared" && status !== "denied" && status !== "unknown")
+  ) {
+    return undefined
+  }
+  const waitID = record["waitID"]
+  const object = record["object"]
+  const reason = record["reason"]
+  const reference = record["reference"]
+  const startedAt = record["startedAt"]
+  const deadline = record["deadline"]
+  const clearEvidence = record["clearEvidence"]
+  const denyEvidence = record["denyEvidence"]
+  if (
+    typeof waitID !== "string" ||
+    typeof object !== "string" ||
+    typeof reason !== "string" ||
+    !isStringOrNull(reference) ||
+    typeof startedAt !== "number" ||
+    !isNumberOrNull(deadline) ||
+    !isStringOrNull(clearEvidence) ||
+    !isStringOrNull(denyEvidence)
+  ) {
+    return undefined
+  }
+  return {
+    waitID,
+    source,
+    object,
+    reason,
+    reference,
+    startedAt,
+    deadline,
+    status,
+    clearEvidence,
+    denyEvidence,
+  }
+}
+
+function readThresholds(value: unknown): { idleMs: number; runningSilentMs: number; waitOverdueMs: number } | undefined {
+  const record = asRecord(value)
+  if (record === undefined) return undefined
+  const idleMs = record["idleMs"]
+  const runningSilentMs = record["runningSilentMs"]
+  const waitOverdueMs = record["waitOverdueMs"]
+  if (typeof idleMs !== "number" || typeof runningSilentMs !== "number" || typeof waitOverdueMs !== "number") {
+    return undefined
+  }
+  return { idleMs, runningSilentMs, waitOverdueMs }
+}
+
+function readActivity(value: unknown): WatchActivityView | undefined {
+  const record = asRecord(value)
+  if (record === undefined) return undefined
+  const lastAt = record["lastAt"]
+  const kind = record["kind"]
+  const judgement = record["judgement"]
+  if (!isNumberOrNull(lastAt)) return undefined
+  if (
+    kind !== null &&
+    kind !== "text" &&
+    kind !== "reasoning" &&
+    kind !== "step" &&
+    kind !== "tool" &&
+    kind !== "shell" &&
+    kind !== "execution"
+  ) {
+    return undefined
+  }
+  if (judgement !== "not-judged") return undefined
+  return { lastAt, kind, judgement }
+}
+
+function readAlerts(value: unknown): WatchAlertsView | undefined {
+  const record = asRecord(value)
+  if (record === undefined) return undefined
+  const unread = record["unread"]
+  const total = record["total"]
+  const truncated = record["truncated"]
+  const available = record["available"]
+  const reason = record["reason"]
+  if (
+    typeof unread !== "number" ||
+    typeof total !== "number" ||
+    typeof truncated !== "boolean" ||
+    typeof available !== "boolean" ||
+    !isStringOrNull(reason) ||
+    !Array.isArray(record["items"])
+  ) {
+    return undefined
+  }
+  const items: WatchAlertView[] = []
+  for (const candidate of record["items"]) {
+    const alert = readAlert(candidate)
+    if (alert === undefined) return undefined
+    items.push(alert)
+  }
+  return { items, unread, total, truncated, available, reason }
+}
+
+function readAlert(value: unknown): WatchAlertView | undefined {
+  const record = asRecord(value)
+  if (record === undefined) return undefined
+  const kind = record["kind"]
+  const state = record["state"]
+  if (
+    (kind !== "idle" &&
+      kind !== "running-silent" &&
+      kind !== "wait-overdue" &&
+      kind !== "observation-unknown" &&
+      kind !== "approval-rejected") ||
+    (state !== "unread" && state !== "read")
+  ) {
+    return undefined
+  }
+  const alertID = record["alertID"]
+  const taskID = record["taskID"]
+  const summary = record["summary"]
+  const reason = record["reason"]
+  const nextStep = record["nextStep"]
+  const plainText = record["plainText"]
+  const firstAt = record["firstAt"]
+  const updatedAt = record["updatedAt"]
+  const readAt = record["readAt"]
+  const escalatedAt = record["escalatedAt"]
+  const resolvedAt = record["resolvedAt"]
+  if (
+    typeof alertID !== "string" ||
+    typeof taskID !== "string" ||
+    typeof summary !== "string" ||
+    typeof reason !== "string" ||
+    typeof nextStep !== "string" ||
+    typeof plainText !== "string" ||
+    typeof firstAt !== "number" ||
+    typeof updatedAt !== "number" ||
+    !isNumberOrNull(readAt) ||
+    !isNumberOrNull(escalatedAt) ||
+    !isNumberOrNull(resolvedAt)
+  ) {
+    return undefined
+  }
+  return {
+    alertID,
+    taskID,
+    kind,
+    state,
+    summary,
+    reason,
+    nextStep,
+    plainText,
+    firstAt,
+    updatedAt,
+    readAt,
+    escalatedAt,
+    resolvedAt,
+  }
+}
+
+function isObservationState(value: unknown): value is WatchObservationView["state"] {
+  return (
+    value === "active" ||
+    value === "idle-candidate" ||
+    value === "running-silence" ||
+    value === "normal-waiting" ||
+    value === "blocked" ||
+    value === "unknown" ||
+    value === "unavailable"
+  )
 }
 
 function readLedger(value: unknown): WatchLedgerView | undefined {
@@ -429,8 +796,8 @@ function readCapability(value: unknown): WatchCapability | undefined {
   } = record
   if (
     mode !== "alert" ||
-    monitoring !== "participant-reports-only" ||
-    automaticDetection !== "unavailable" ||
+    (monitoring !== "observer-alerts" && monitoring !== "participant-reports-only") ||
+    (automaticDetection !== "partial" && automaticDetection !== "unavailable") ||
     typeof automaticDetectionReason !== "string" ||
     correction !== "unavailable" ||
     typeof correctionReason !== "string" ||

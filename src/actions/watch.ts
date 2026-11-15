@@ -21,12 +21,13 @@ import type { ActionResult } from "../domain/types.ts"
 import type { SessionLookup } from "../host/session.ts"
 import type { ToolCall } from "../host/tools.ts"
 import { sessionAtLocation } from "../watch/access.ts"
-import type { WatchApplication, WatchOutcome } from "../watch/service.ts"
+import type { WatchApplication, WatchObservationSource, WatchOutcome } from "../watch/service.ts"
 import { watchCapability, watchControls } from "../watch/view.ts"
 
 export interface WatchActionDeps {
   /** Absent exactly when the plugin is disabled at this location. */
   readonly watch?: WatchApplication
+  readonly observe?: WatchObservationSource
   readonly sessions: SessionLookup
   /** The directory this instance serves; enrollment is limited to it. */
   readonly directory: string
@@ -38,6 +39,7 @@ const OPERATIONS = [
   "report",
   "pause",
   "end",
+  "ack",
   "grant",
   "correct",
   "receipt",
@@ -49,7 +51,7 @@ const OPERATIONS = [
 type Operation = (typeof OPERATIONS)[number]
 
 /** Operations that read or mutate the ledger, and therefore need a local session. */
-const LOCAL_OPERATIONS: readonly Operation[] = ["show", "enroll", "report", "pause", "end"]
+const LOCAL_OPERATIONS: readonly Operation[] = ["show", "enroll", "report", "pause", "end", "ack"]
 
 export async function watchAction(deps: WatchActionDeps, call: ToolCall, input: unknown): Promise<ActionResult> {
   if (deps.watch === undefined) return outcomeResult(failure("E_WATCH_DISABLED", "Session peers is disabled by configuration."))
@@ -126,6 +128,12 @@ export async function watchAction(deps: WatchActionDeps, call: ToolCall, input: 
         }),
       )
     }
+    case "ack": {
+      if (request.alertID === undefined) {
+        return outcomeResult(failure("E_WATCH_INVALID", "ack needs an alertID"))
+      }
+      return outcomeResult(deps.watch.ack({ callerSessionID: call.sessionID, alertID: request.alertID }))
+    }
     case "pause":
     case "end": {
       if (request.taskID === undefined || request.expectedVersion === undefined) {
@@ -146,6 +154,7 @@ export async function watchAction(deps: WatchActionDeps, call: ToolCall, input: 
 interface WatchRequest {
   readonly operation: Operation
   readonly taskID?: string
+  readonly alertID?: string
   readonly expectedVersion?: number
   readonly requestID?: string
   readonly goal?: string
@@ -175,6 +184,8 @@ function readWatchInput(input: unknown): Parsed {
 
   const taskID = optionalString(fields, "taskID")
   if (!taskID.ok) return taskID
+  const alertID = optionalString(fields, "alertID")
+  if (!alertID.ok) return alertID
   const requestID = optionalString(fields, "requestId")
   if (!requestID.ok) return requestID
   const goal = optionalString(fields, "goal")
@@ -204,6 +215,7 @@ function readWatchInput(input: unknown): Parsed {
     value: {
       operation: operation as Operation,
       ...(taskID.value === undefined ? {} : { taskID: taskID.value }),
+      ...(alertID.value === undefined ? {} : { alertID: alertID.value }),
       ...(requestID.value === undefined ? {} : { requestID: requestID.value }),
       ...(goal.value === undefined ? {} : { goal: goal.value }),
       ...(targetSessionID.value === undefined ? {} : { targetSessionID: targetSessionID.value }),
@@ -253,6 +265,7 @@ function failure(code: WatchFailure["code"], reason: string): WatchOutcome {
     task: null,
     capability: watchCapability(),
     controls: watchControls(null),
+    alerts: [],
     failure: { code, reason },
     created: false,
     duplicate: false,
@@ -269,6 +282,7 @@ function outcomeResult(outcome: WatchOutcome): ActionResult {
         task: outcome.task,
         capability: outcome.capability,
         controls: outcome.controls,
+        alerts: outcome.alerts,
         failure: outcome.failure,
         created: outcome.created,
         duplicate: outcome.duplicate,

@@ -8,13 +8,14 @@
  */
 
 import {
-  AUTOMATIC_DETECTION_UNAVAILABLE_REASON,
   CORRECTION_UNAVAILABLE_REASON,
   DELEGATION_UNAVAILABLE_REASON,
   RECOVERY_UNAVAILABLE_REASON,
   SAFETY_PAUSE_UNAVAILABLE_REASON,
   TRANSFER_UNAVAILABLE_REASON,
   WATCH_CORRECTION_LIMIT,
+  type WatchAlertRecord,
+  type WatchAlertView,
   type WatchCapability,
   type WatchControl,
   type WatchControls,
@@ -50,12 +51,32 @@ export function watchTaskView(task: WatchTaskRecord, activationID: string): Watc
   }
 }
 
+export function watchAlertView(alert: WatchAlertRecord): WatchAlertView {
+  const nextStep = "Inspect the task and its evidence; acknowledge the alert after reading it. This build cannot correct or resume the task for you."
+  return {
+    alertID: alert.alertID,
+    taskID: alert.taskID,
+    kind: alert.kind,
+    state: alert.state,
+    summary: alert.summary,
+    reason: alert.reason,
+    nextStep,
+    plainText: `${alert.summary} ${alert.reason}`,
+    firstAt: alert.firstAt,
+    updatedAt: alert.updatedAt,
+    readAt: alert.readAt ?? null,
+    escalatedAt: alert.escalatedAt ?? null,
+    resolvedAt: alert.resolvedAt ?? null,
+  }
+}
+
 export function watchCapability(): WatchCapability {
   return {
     mode: "alert",
-    monitoring: "participant-reports-only",
-    automaticDetection: "unavailable",
-    automaticDetectionReason: AUTOMATIC_DETECTION_UNAVAILABLE_REASON,
+    monitoring: "observer-alerts",
+    automaticDetection: "partial",
+    automaticDetectionReason:
+      "Observes local execution lifecycle, target activity and same-location waits; it does not prove goal progress or single-host uniqueness.",
     correction: "unavailable",
     correctionReason: CORRECTION_UNAVAILABLE_REASON,
     delegation: "unavailable",

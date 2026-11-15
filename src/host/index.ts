@@ -13,7 +13,9 @@ import { commandRegistrar, type CommandRegistrar } from "./commands.ts"
 import { contextInjector, type ContextInjector } from "./context.ts"
 import type { EventSource } from "./events.ts"
 import { sessionGeneration, type Generation } from "./generation.ts"
+import { permissionLookup, type PermissionLookup } from "./permission.ts"
 import { rpcRegistrar, type RpcRegistrar } from "./rpc.ts"
+import { systemScheduler, type Scheduler } from "./scheduler.ts"
 import { sessionLookup, type SessionLookup } from "./session.ts"
 import { skillRegistrar, type SkillRegistrar } from "./skills.ts"
 import { pluginStorage, type PluginStorage } from "./storage.ts"
@@ -32,6 +34,10 @@ export interface Host {
   readonly options: unknown
   readonly location: InstanceLocation
   readonly sessions: SessionLookup
+  /** Same-location permission snapshots; a failure is unknown, not empty. */
+  readonly permissions: PermissionLookup
+  /** Clock and interval seam for the observer. */
+  readonly scheduler: Scheduler
   /** The sending session's own model, asked to write a handover. */
   readonly generation: Generation
   /** What the host knows about a directory's version control, and what it does not. */
@@ -57,6 +63,11 @@ export function createHost(context: Plugin.Context): Host {
       projectID: context.location.project?.id,
     },
     sessions: sessionLookup(context.session),
+    permissions: permissionLookup(context.permission),
+    // The fake host installs a deterministic scheduler on its context; a real
+    // host has no such field and gets the process clock.
+    scheduler:
+      (context as unknown as { scheduler?: Scheduler }).scheduler ?? systemScheduler(),
     generation: sessionGeneration(context.session),
     versionControl: versionControl(context.vcs),
     storage: pluginStorage(context.storage),

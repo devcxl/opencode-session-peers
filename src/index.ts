@@ -27,6 +27,7 @@ import { PEERS_SKILL, SUPERVISOR_SKILL } from "./skill.ts"
 import { rosterPayload } from "./surface.ts"
 import { peersTool } from "./tool.ts"
 import { sessionAtLocation } from "./watch/access.ts"
+import { createWatchObserver } from "./watch/observe.ts"
 import { createWatchApplication } from "./watch/service.ts"
 
 export const PLUGIN_ID = "session-peers"
@@ -50,6 +51,7 @@ export default {
       ? createWatchApplication({
           ledgerPath: watchLedgerPath(),
           activationID: randomUUID(),
+          now: () => host.scheduler.now(),
           onChanged: () => announceWatch?.(),
           sessionAtLocation: (sessionID) =>
             sessionAtLocation(host.sessions, sessionID, host.location.directory),
@@ -107,7 +109,13 @@ export default {
       },
       watch: (input) =>
         watchRpc(
-          { enabled: config.enabled, watch, sessions: host.sessions, directory: host.location.directory },
+          {
+            enabled: config.enabled,
+            watch,
+            observe: observer,
+            sessions: host.sessions,
+            directory: host.location.directory,
+          },
           input,
         ),
     })
@@ -119,6 +127,26 @@ export default {
         .emit("watchChanged", { at: Date.now() })
         .catch((error) => warn(`could not announce a watch change: ${describeError(error)}`))
     }
+
+    // Observation is started only after the RPC surface exists, so an alert
+    // commit can nudge the panel. It uses the host's scheduler and event stream;
+    // it never prompts or generates text.
+    const observer =
+      watch === undefined
+        ? undefined
+        : createWatchObserver({
+            config: config.watch,
+            directory: host.location.directory,
+            sessions: host.sessions,
+            permissions: host.permissions,
+            events: host.events,
+            scheduler: host.scheduler,
+            store: watch,
+            asks: host.storage.asks,
+            onChanged: () => announceWatch?.(),
+            warn,
+          })
+    observer?.start()
 
     // The executing session meets its task in the next normal model request.
     // This hook only appends system text; it never starts a turn. A host without
@@ -145,6 +173,7 @@ export default {
           senderDirectory: host.location.directory,
         },
         watch,
+        observe: observer,
         directory: host.location.directory,
       }),
     )
@@ -176,6 +205,7 @@ export default {
     return async () => {
       await surface.dispose()
       await contextInjection?.dispose()
+      observer?.dispose()
       watch?.dispose()
       await roster.dispose()
     }
