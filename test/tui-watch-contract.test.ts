@@ -7,8 +7,16 @@
 
 import { describe, expect, test } from "bun:test"
 
-import { readWatchPayload } from "../src/rpc.ts"
-import { alert, alertsView, observation, payload, wait } from "./tui-watch-fake.ts"
+import { readWatchGrantPayload, readWatchPayload } from "../src/rpc.ts"
+import {
+  alert,
+  alertsView,
+  grantChallenge,
+  grantPayload,
+  observation,
+  payload,
+  wait,
+} from "./tui-watch-fake.ts"
 
 describe("the watch fixtures", () => {
   test("the shared payload is a valid WatchPayload", () => {
@@ -32,6 +40,25 @@ describe("the watch fixtures", () => {
         }),
       ),
     ).toBeDefined()
+  })
+
+  test("the grant fixtures are valid WatchGrantPayloads and malformed challenges are rejected", () => {
+    expect(readWatchGrantPayload(grantPayload())).toBeDefined()
+    expect(
+      readWatchGrantPayload(grantPayload({ challenge: grantChallenge() })),
+    ).toBeDefined()
+
+    const missingDigest: unknown = {
+      ...grantPayload(),
+      challenge: { ...grantChallenge(), termsDigest: undefined },
+    }
+    expect(readWatchGrantPayload(missingDigest)).toBeUndefined()
+
+    const wrongDeployment: unknown = {
+      ...grantPayload(),
+      challenge: { ...grantChallenge(), deployment: "other" },
+    }
+    expect(readWatchGrantPayload(wrongDeployment)).toBeUndefined()
   })
 
   test("rejects unknown observation and activity enums", () => {

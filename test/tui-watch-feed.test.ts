@@ -7,6 +7,7 @@
 import { describe, expect, test } from "bun:test"
 
 import type { WatchPayload } from "../src/rpc.ts"
+import { correction, ledger } from "./tui-watch-fake.ts"
 import type { WatchReadRequest, WatchSource } from "../src/host/tui.ts"
 import { createWatchFeed } from "../src/tui/watch-feed.ts"
 
@@ -51,7 +52,7 @@ function controls(): WatchPayload["controls"] {
 function payload(watchState: "active" | "paused" | "ended" = "active"): WatchPayload {
   return {
     enabled: true,
-    ledger: { available: true, reason: null },
+    ledger: ledger(),
     task: {
       taskID: "task_0001",
       initiatorSessionID: SELF,
@@ -65,6 +66,7 @@ function payload(watchState: "active" | "paused" | "ended" = "active"): WatchPay
       ownership: "this-instance",
       participation: "seen",
       attempts: { used: 0, limit: 3 },
+      correction: correction(),
       pause: watchState === "paused" ? { kind: "manual", reason: "paused by the user" } : null,
       lastReport: null,
       createdAt: Date.UTC(2026, 10, 16, 4, 0, 0),
