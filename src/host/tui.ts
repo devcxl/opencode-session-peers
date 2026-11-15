@@ -61,6 +61,23 @@ export interface WatchCallRequest {
   readonly mode?: "alert"
 }
 
+/** The controlled TUI-only grant channel; never the model tool. */
+export interface WatchGrantCallRequest {
+  readonly operation: "prepare" | "confirm" | "downgrade"
+  readonly sessionID: string
+  readonly taskID: string
+  readonly expectedVersion: number
+  readonly challenge?: string
+  readonly generation?: number
+  readonly termsDigest?: string
+  readonly deployment?: "single-host-same-location"
+}
+
+export interface WatchGrantSource {
+  /** One explicit prepare, confirm or downgrade. Resolves with the raw answer. */
+  call(request: WatchGrantCallRequest): Promise<unknown>
+}
+
 /** The watch state, as the plugin at this location answers for it. */
 export interface WatchSource {
   /** One read-only snapshot. Resolves with the raw answer. */
@@ -93,6 +110,8 @@ export interface TuiPort {
   readonly roster: RosterSource
   /** The watched task at this TUI's own location. */
   readonly watch: WatchSource
+  /** The controlled grant review channel at this TUI's own location. */
+  readonly watchGrant: WatchGrantSource
   /** Moves the session into a scope and reports the applied one. */
   setScope(sessionID: string, scope: string): Promise<unknown>
   /** A short message in the host's toast area, for a command with no dialog. */
@@ -176,6 +195,23 @@ export function createTuiPort(context: Plugin.Context): TuiPort {
           call(),
         ),
       onChange: (listener) => client.events.on("watchChanged", () => listener()),
+    },
+
+    watchGrant: {
+      call: (request) =>
+        client.watchGrant(
+          {
+            operation: request.operation,
+            sessionID: request.sessionID,
+            taskID: request.taskID,
+            expectedVersion: request.expectedVersion,
+            ...(request.challenge === undefined ? {} : { challenge: request.challenge }),
+            ...(request.generation === undefined ? {} : { generation: request.generation }),
+            ...(request.termsDigest === undefined ? {} : { termsDigest: request.termsDigest }),
+            ...(request.deployment === undefined ? {} : { deployment: request.deployment }),
+          },
+          call(),
+        ),
     },
 
     setScope: (sessionID, scope) => client.setScope({ sessionID, scope }, call()),

@@ -24,6 +24,7 @@ import { readWatchPayload, type WatchPayload } from "../rpc.ts"
 import { alertItems } from "./watch-alerts.ts"
 import { failureText } from "./feed.ts"
 import { WatchDialog } from "./watch-dialog.tsx"
+import { createGrantFlow } from "./watch-grant-flow.ts"
 import { createWatchFeed } from "./watch-feed.ts"
 
 const USAGE =
@@ -112,12 +113,20 @@ export function installWatch(port: TuiPort, options: WatchCommandOptions = {}): 
    * is only allowed to touch the panel epoch it was requested from.
    */
   let lifecycleEpoch = 0
+  const grant = createGrantFlow({
+    port,
+    feed,
+    isDisposed: () => disposed,
+    panel: () => ({ sessionID: panelSessionID, open: panelOpen }),
+    epoch: () => lifecycleEpoch,
+  })
 
   const open = (sessionID: string): void => {
     if (disposed) return
     const openedEpoch = ++lifecycleEpoch
     panelSessionID = sessionID
     panelOpen = true
+    grant.clear()
     notificationSeeding = true
     notificationReadyAt = undefined
     seenEscalations.clear()
@@ -141,6 +150,19 @@ export function installWatch(port: TuiPort, options: WatchCommandOptions = {}): 
             if (disposed || openedEpoch !== lifecycleEpoch || panelSessionID !== sessionID) return
             await acknowledge(alertID)
           }}
+          onGrantPrepare={async () => {
+            if (disposed || openedEpoch !== lifecycleEpoch || panelSessionID !== sessionID) return undefined
+            return grant.prepare()
+          }}
+          onGrantConfirm={async () => {
+            if (disposed || openedEpoch !== lifecycleEpoch || panelSessionID !== sessionID) return
+            await grant.confirm()
+          }}
+          onGrantCancel={() => grant.cancel()}
+          onDowngrade={async () => {
+            if (disposed || openedEpoch !== lifecycleEpoch || panelSessionID !== sessionID) return
+            await grant.downgrade()
+          }}
         />
       ),
       // A close from an older panel must not act for the one on screen now.
@@ -148,6 +170,7 @@ export function installWatch(port: TuiPort, options: WatchCommandOptions = {}): 
         if (disposed || openedEpoch !== lifecycleEpoch) return
         panelOpen = false
         panelSessionID = undefined
+        grant.clear()
         lifecycleEpoch += 1
         feed.close()
       },
@@ -392,10 +415,15 @@ export function installWatch(port: TuiPort, options: WatchCommandOptions = {}): 
           )
           return
         case "grant":
+          port.toast(
+            "Open /peers-watch, then c: correction and g: review grant; this command cannot grant.",
+            "warning",
+          )
+          return
         case "correct":
         case "receipt":
           port.toast(
-            "Finite correction and correction receipts are unavailable in this build; this watch records reports only.",
+            "Sending a correction and submitting a receipt are model-tool paths; this panel cannot do either.",
             "warning",
           )
           return
@@ -416,6 +444,7 @@ export function installWatch(port: TuiPort, options: WatchCommandOptions = {}): 
     disposed = true
     panelOpen = false
     panelSessionID = undefined
+    grant.clear()
     lifecycleEpoch += 1
     feed.dispose()
   }

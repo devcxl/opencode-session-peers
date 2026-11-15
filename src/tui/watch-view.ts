@@ -21,11 +21,18 @@ import {
   alertRows,
   selectedAlert,
 } from "./watch-alerts.ts"
+import { correctionRows } from "./watch-correction.ts"
 import { observationRows } from "./watch-observation.ts"
+import {
+  authorizationText,
+  capabilityNotes,
+  capabilityText,
+  modeName,
+} from "./watch-capability.ts"
 import { cell, ensurePeriod, fact, formatWatchTime, join } from "./watch-format.ts"
 import { foldSessionID, type TableCell, type Tone } from "./view.ts"
 
-export type WatchPane = "task" | "alerts"
+export type WatchPane = "task" | "alerts" | "correction"
 
 export type WatchState =
   | { readonly kind: "loading" }
@@ -46,6 +53,8 @@ export interface WatchViewInput {
   /** Wait page in the task pane; the dialog clamps it from the answer. */
   readonly waitPage?: number
   readonly waitPageSize?: number
+  readonly gatePage?: number
+  readonly gatePageSize?: number
   /** Keep the task pane within a short terminal by compressing legacy capability notes. */
   readonly compact?: boolean
 }
@@ -125,6 +134,7 @@ export function watchContent(input: WatchViewInput): WatchContent {
           noteTone: "error",
         }
       }
+      if (pane === "correction") return correctionContent(payload, input.sessionID, input)
       return pane === "alerts"
         ? alertsContent(payload, input.sessionID, input)
         : taskContent(
@@ -233,6 +243,29 @@ function alertsContent(
     rows,
     notes,
     noteTone: payload.alerts.available ? "muted" : "error",
+  }
+}
+
+function correctionContent(
+  payload: WatchPayload,
+  sessionID: string,
+  input: WatchViewInput,
+): WatchContent {
+  const task = payload.task
+  const contextLines =
+    task === null ? [targetLine(sessionID, sessionID)] : taskContextLines(task, sessionID)
+  const content = correctionRows(payload, {
+    gatePage: input.gatePage ?? 0,
+    gatePageSize: input.gatePageSize ?? 4,
+  })
+  return {
+    pane: "correction",
+    title: "Session watch — correction",
+    contextLines,
+    columns: WATCH_COLUMNS,
+    rows: content.rows,
+    notes: content.notes,
+    noteTone: "muted",
   }
 }
 
@@ -365,54 +398,6 @@ function goalText(goal: string): string {
   return `${goal.slice(0, GOAL_DISPLAY_LIMIT).trimEnd()}${GOAL_SHORTENED}`
 }
 
-function authorizationText(mode: WatchPayload["capability"]["mode"]): string {
-  return `${modeName(mode)} (the only mode this build offers)`
-}
-
-function modeName(mode: WatchPayload["capability"]["mode"]): string {
-  switch (mode) {
-    case "alert":
-      return "alert-only"
-  }
-}
-
-function capabilityText(capability: WatchPayload["capability"]): string {
-  const monitoring = capability.monitoring === "observer-alerts" ? "observer alerts" : capability.monitoring
-  const automatic =
-    capability.automaticDetection === "partial"
-      ? "partial automatic detection"
-      : `automatic detection ${capability.automaticDetection}`
-  return `${monitoring}; ${automatic}`
-}
-
-function capabilityNotes(payload: WatchPayload, compact: boolean): string[] {
-  const notes: string[] = []
-  const capability = payload.capability
-  if (capability.automaticDetection === "partial") {
-    notes.push(
-      compact
-        ? "Automatic detection: partial — local execution/activity/waits only."
-        : `Automatic detection: partial — ${ensurePeriod(capability.automaticDetectionReason)}`,
-    )
-  }
-  if (compact) return notes
-  if (capability.correction === "unavailable") {
-    notes.push(`Correction: unavailable — ${ensurePeriod(capability.correctionReason)}`)
-  }
-  if (capability.delegation === "unavailable") {
-    notes.push(`Child-task enrollment: unavailable — ${ensurePeriod(capability.delegationReason)}`)
-  }
-  if (capability.transfer === "unavailable" || capability.recovery === "unavailable") {
-    notes.push(
-      `Ownership transfer and recovery: unavailable — ${ensurePeriod(capability.transferReason)} / ${ensurePeriod(capability.recoveryReason)}`,
-    )
-  }
-  if (capability.safetyPause === "unavailable") {
-    notes.push(`Safety pause: unavailable — ${ensurePeriod(capability.safetyPauseReason)}`)
-  }
-  return notes
-}
-
 function footerFor(
   payload: WatchPayload,
   ended: boolean,
@@ -424,18 +409,19 @@ function footerFor(
       ? `v: alerts (${payload.alerts.unread} unread)`
       : "v: alerts"
   const alerts = canViewAlerts ? ` · ${alertLabel}` : ""
-  if (ended) return `this watch has ended${alerts} · esc: close`
+  if (ended) return `this watch has ended · c: correction${alerts} · esc: close`
   if (payload.task === null) return "enroll: /peers-watch enroll <goal> · esc: close"
   const pause = payload.controls.pause.enabled
   const end = payload.controls.end.enabled
   if (payload.task.watchState === "paused") {
     return end
-      ? `x: end watch · resume unavailable in this build${alerts} · esc: close`
-      : `read-only: ${payload.controls.pause.reason ?? "no control is available"}${alerts} · esc: close`
+      ? `x: end watch · resume unavailable in this build · c: correction${alerts} · esc: close`
+      : `read-only: ${payload.controls.pause.reason ?? "no control is available"} · c: correction${alerts} · esc: close`
   }
   const parts: string[] = []
   if (pause) parts.push("p: pause watch")
   if (end) parts.push("x: end watch")
+  parts.push("c: correction")
   if (canViewAlerts) parts.push(alertLabel)
   parts.push("esc: close")
   return parts.join(" · ")

@@ -10,13 +10,14 @@
 import { RGBA } from "@opentui/core"
 import { testRender } from "@opentui/solid"
 
-import type { WatchPayload } from "../src/rpc.ts"
+import type { WatchGrantChallengeView, WatchGrantPayload, WatchPayload } from "../src/rpc.ts"
 import type {
   TuiCommand,
   TuiPalette,
   TuiPort,
   ToastVariant,
   WatchCallRequest,
+  WatchGrantCallRequest,
   WatchReadRequest,
 } from "../src/host/tui.ts"
 
@@ -29,6 +30,9 @@ export const palette: TuiPalette = {
 }
 
 type Task = NonNullable<WatchPayload["task"]>
+type Correction = Task["correction"]
+export type Attempt = Correction["history"][number]
+export type Gate = Correction["gates"][number]
 export type Observation = NonNullable<WatchPayload["observation"]>
 export type Activity = NonNullable<WatchPayload["activity"]>
 export type Alert = WatchPayload["alerts"]["items"][number]
@@ -72,8 +76,82 @@ export function controls(overrides: Partial<WatchPayload["controls"]> = {}): Wat
   }
 }
 
-export function task(overrides: Partial<Task> = {}): Task {
+export function ledger(overrides: Partial<WatchPayload["ledger"]> = {}): WatchPayload["ledger"] {
   return {
+    available: true,
+    reason: null,
+    sqliteVersion: "3.51.3",
+    journalMode: "wal",
+    synchronous: 2,
+    busyTimeoutMs: 1_000,
+    appVersion: "2.3.0",
+    platform: "linux",
+    arch: "x64",
+    ...overrides,
+  }
+}
+
+export function attempt(overrides: Partial<Attempt> = {}): Attempt {
+  return {
+    attemptID: "attempt_0001",
+    ordinal: 1,
+    phase: "reserved",
+    reservedAt: Date.UTC(2026, 10, 16, 4, 30, 0),
+    claimedAt: null,
+    acceptedAt: null,
+    rejectedAt: null,
+    unknownAt: null,
+    abortedAt: null,
+    seen: null,
+    receipt: null,
+    recovery: null,
+    stopReason: null,
+    ...overrides,
+  }
+}
+
+export function gate(overrides: Partial<Gate> = {}): Gate {
+  return {
+    gate: "grant",
+    ok: false,
+    reason: "the grant is not active",
+    observed: null,
+    required: "an explicit limited-correction grant",
+    ...overrides,
+  }
+}
+
+export function correction(overrides: Partial<Correction> = {}): Correction {
+  return {
+    authorization: {
+      mode: "alert",
+      state: "not-granted",
+      deployment: "unknown",
+      version: 1,
+      reviewSummary: null,
+      grantedAt: null,
+    },
+    actual: "unavailable",
+    actualReason: "The automatic executor is not enabled in this build.",
+    attempts: { used: 0, limit: 3 },
+    executionPolicy: "first-attempt-only",
+    phase: "idle",
+    pending: null,
+    last: null,
+    history: [],
+    stop: null,
+    gates: [],
+    businessCompleted: false,
+    controls: {
+      grant: control(true),
+      downgrade: control(false, "no correction grant is active"),
+    },
+    ...overrides,
+  }
+}
+
+export function task(overrides: Partial<Task> = {}): Task {
+  const base: Task = {
     taskID: "task_0001",
     initiatorSessionID: SELF,
     targetSessionID: SELF,
@@ -86,14 +164,21 @@ export function task(overrides: Partial<Task> = {}): Task {
     ownership: "this-instance",
     participation: "seen",
     attempts: { used: 0, limit: 3 },
+    correction: correction(),
     pause: null,
     lastReport: null,
     createdAt: Date.UTC(2026, 10, 16, 4, 0, 0),
     updatedAt: Date.UTC(2026, 10, 16, 4, 30, 0),
     completedAt: null,
     endedAt: null,
-    ...overrides,
   }
+  const merged: { -readonly [K in keyof Task]: Task[K] } = { ...base, ...overrides }
+  if (overrides.mode === undefined) merged.mode = merged.correction.authorization.mode
+  if (overrides.attempts === undefined) merged.attempts = merged.correction.attempts
+  if (overrides.taskState === undefined && merged.correction.businessCompleted) {
+    merged.taskState = "completed"
+  }
+  return merged
 }
 
 export function observation(overrides: Partial<Observation> = {}): Observation {
@@ -175,10 +260,38 @@ export function alertsView(
   }
 }
 
+export function grantChallenge(
+  overrides: Partial<WatchGrantChallengeView> = {},
+): WatchGrantChallengeView {
+  return {
+    challenge: "challenge-once",
+    taskID: "task_0001",
+    expectedVersion: 3,
+    generation: 1,
+    termsDigest: "terms-digest",
+    reviewSummary: "Reviewed limited correction terms.",
+    deployment: "single-host-same-location",
+    expiresAt: Date.UTC(2026, 10, 16, 4, 45, 0),
+    ...overrides,
+  }
+}
+
+export function grantPayload(overrides: Partial<WatchGrantPayload> = {}): WatchGrantPayload {
+  return {
+    ok: true,
+    challenge: null,
+    task: task(),
+    capability: capability(),
+    controls: controls(),
+    failure: null,
+    ...overrides,
+  }
+}
+
 export function payload(overrides: Partial<WatchPayload> = {}): WatchPayload {
   return {
     enabled: true,
-    ledger: { available: true, reason: null },
+    ledger: ledger(),
     task: task(),
     capability: capability(),
     controls: controls(),
@@ -212,11 +325,13 @@ export interface FakeOptions {
   readonly sessionID?: string | undefined
   readonly read?: (request: WatchReadRequest) => Promise<unknown>
   readonly call?: (request: WatchCallRequest) => Promise<unknown>
+  readonly grant?: (request: WatchGrantCallRequest) => Promise<unknown>
 }
 
 export function fakePort(options: FakeOptions = {}) {
   const reads: WatchReadRequest[] = []
   const calls: WatchCallRequest[] = []
+  const grantCalls: WatchGrantCallRequest[] = []
   const toasts: { message: string; variant: ToastVariant | undefined }[] = []
   const commands: TuiCommand[] = []
   const dialogSets: { size: string; centered: boolean }[] = []
@@ -254,6 +369,12 @@ export function fakePort(options: FakeOptions = {}) {
         }
       },
     },
+    watchGrant: {
+      call: (request) => {
+        grantCalls.push(request)
+        return options.grant?.(request) ?? Promise.resolve({})
+      },
+    },
     setScope: async () => ({}),
     toast: (message, variant) => {
       toasts.push({ message, variant })
@@ -281,6 +402,7 @@ export function fakePort(options: FakeOptions = {}) {
     port,
     reads,
     calls,
+    grantCalls,
     toasts,
     commands,
     dialogSets,

@@ -12,6 +12,7 @@
 import { describe, expect, test } from "bun:test"
 
 import type { WatchPayload } from "../src/rpc.ts"
+import { correction } from "./tui-watch-fake.ts"
 import { WATCH_COLUMNS, watchContent, type WatchContent, type WatchState } from "../src/tui/watch-view.ts"
 
 const SELF = "ses_self0000"
@@ -78,6 +79,7 @@ function task(overrides: Partial<Task> = {}): Task {
     ownership: "this-instance",
     participation: "seen",
     attempts: { used: 0, limit: 3 },
+    correction: correction(),
     pause: null,
     lastReport: {
       reportID: "report_1",
@@ -130,7 +132,17 @@ function alertsView(items: readonly Alert[] = [], overrides: Partial<AlertsView>
 function payload(overrides: Partial<WatchPayload> = {}): WatchPayload {
   return {
     enabled: true,
-    ledger: { available: true, reason: null },
+    ledger: {
+      available: true,
+      reason: null,
+      sqliteVersion: "3.51.3",
+      journalMode: "wal",
+      synchronous: 2,
+      busyTimeoutMs: 1_000,
+      appVersion: "2.3.0",
+      platform: "linux",
+      arch: "x64",
+    },
     task: null,
     capability: capability(),
     controls: controls(),
@@ -344,7 +356,7 @@ describe("a watched task", () => {
 
   test("advertises only the controls that are enabled", () => {
     const active = content(state({ task: task() }))
-    expect(active.notes.join("\n")).toContain("p: pause watch · x: end watch · esc: close")
+    expect(active.notes.join("\n")).toContain("p: pause watch · x: end watch · c: correction · esc: close")
 
     const paused = content(
       state({
@@ -356,7 +368,7 @@ describe("a watched task", () => {
       }),
     )
     expect(paused.notes.join("\n")).toContain(
-      "x: end watch · resume unavailable in this build · esc: close",
+      "x: end watch · resume unavailable in this build · c: correction · esc: close",
     )
     expect(paused.notes.join("\n")).not.toContain("p: pause watch")
 
@@ -369,7 +381,7 @@ describe("a watched task", () => {
         }),
       }),
     )
-    expect(ended.notes.join("\n")).toContain("this watch has ended · esc: close")
+    expect(ended.notes.join("\n")).toContain("this watch has ended · c: correction · esc: close")
   })
 
   test("shows a safety pause with its reason, separate from a manual pause", () => {
@@ -446,7 +458,21 @@ describe("unavailable states", () => {
   })
 
   test("a failed ledger never reads as no task", () => {
-    const blocks = content(state({ ledger: { available: false, reason: "the ledger is locked" } }))
+    const blocks = content(
+      state({
+        ledger: {
+          available: false,
+          reason: "the ledger is locked",
+          sqliteVersion: null,
+          journalMode: null,
+          synchronous: null,
+          busyTimeoutMs: null,
+          appVersion: null,
+          platform: null,
+          arch: null,
+        },
+      }),
+    )
     expect(blocks.title).toBe("Session watch is unavailable")
     const notes = blocks.notes.join("\n")
     expect(notes).toContain(

@@ -21,7 +21,9 @@ import {
   alertPageSizeFor,
   selectedAlert,
 } from "./watch-alerts.ts"
+import { GRANT_TERMS, gatePageOf, gatePageSizeFor } from "./watch-correction.ts"
 import { waitPageOf, waitPageSizeFor } from "./watch-observation.ts"
+import { formatWatchTime } from "./watch-format.ts"
 import { watchContent, type WatchPane, type WatchState } from "./watch-view.ts"
 import type { Tone } from "./view.ts"
 import { colourFor, tableStyle } from "./table.ts"
@@ -39,7 +41,19 @@ export interface WatchDialogProps {
   readonly onEnd: (taskID: string, version: number) => Promise<void>
   /** Mark one alert read; this must not touch task controls or quota. */
   readonly onAck: (alertID: string) => Promise<void>
+  /** Prepare a controlled grant challenge after the explicit review. */
+  readonly onGrantPrepare: () => Promise<
+    { readonly reviewSummary: string; readonly expiresAt: number } | undefined
+  >
+  /** Confirm the prepared challenge; the challenge itself stays in the controller. */
+  readonly onGrantConfirm: () => Promise<void>
+  /** Discard a prepared challenge without any RPC. */
+  readonly onGrantCancel: () => void
+  /** Downgrade an existing grant to alert-only. */
+  readonly onDowngrade: () => Promise<void>
 }
+
+type GrantStage = "review" | "confirm" | "downgrade"
 
 type Pending = "pause" | "end"
 
@@ -50,9 +64,14 @@ export function WatchDialog(props: WatchDialogProps) {
   const [selectedAlertID, setSelectedAlertID] = createSignal<string | undefined>()
   const [alertPage, setAlertPage] = createSignal(0)
   const [waitPage, setWaitPage] = createSignal(0)
+  const [gatePage, setGatePage] = createSignal(0)
+  const [grantStage, setGrantStage] = createSignal<GrantStage | undefined>()
+  const [grantSummary, setGrantSummary] = createSignal<string | undefined>()
+  const [grantExpiresAt, setGrantExpiresAt] = createSignal<number | undefined>()
   const dimensions = useTerminalDimensions()
   const alertPageSize = createMemo(() => alertPageSizeFor(dimensions().height))
   const waitPageSize = createMemo(() => waitPageSizeFor(dimensions().height))
+  const gatePageSize = createMemo(() => gatePageSizeFor(dimensions().height))
 
   const payload = createMemo(() => {
     const state = props.state()
@@ -74,9 +93,12 @@ export function WatchDialog(props: WatchDialogProps) {
   })
 
   // A newer snapshot invalidates a question asked about an older version.
+  // It also discards a prepared grant challenge, which is version-bound.
   createEffect(() => {
     props.state()
     setPending(undefined)
+    setGrantStage(undefined)
+    props.onGrantCancel()
   })
 
   // Keep selection and page on a real alert id as the bounded list changes.
@@ -111,6 +133,16 @@ export function WatchDialog(props: WatchDialogProps) {
     if (page.index !== waitPage()) setWaitPage(page.index)
   })
 
+  createEffect(() => {
+    const current = payload()
+    if (current === undefined) {
+      if (gatePage() !== 0) setGatePage(0)
+      return
+    }
+    const page = gatePageOf(current, gatePage(), gatePageSize())
+    if (page.index !== gatePage()) setGatePage(page.index)
+  })
+
   const content = createMemo(() =>
     watchContent({
       state: props.state(),
@@ -121,6 +153,8 @@ export function WatchDialog(props: WatchDialogProps) {
       alertPageSize: alertPageSize(),
       waitPage: waitPage(),
       waitPageSize: waitPageSize(),
+      gatePage: gatePage(),
+      gatePageSize: gatePageSize(),
       compact: dimensions().height < 52,
     }),
   )
@@ -129,6 +163,24 @@ export function WatchDialog(props: WatchDialogProps) {
     () => pane() === "task" && controlEnabled(props.state(), "pause"),
   )
   const canEnd = createMemo(() => pane() === "task" && controlEnabled(props.state(), "end"))
+  const canGrant = createMemo(() => {
+    const current = payload()
+    return (
+      pane() === "correction" &&
+      current?.task !== undefined &&
+      current.task !== null &&
+      current.task.correction.controls.grant.enabled
+    )
+  })
+  const canDowngrade = createMemo(() => {
+    const current = payload()
+    return (
+      pane() === "correction" &&
+      current?.task !== undefined &&
+      current.task !== null &&
+      current.task.correction.controls.downgrade.enabled
+    )
+  })
   const canAck = createMemo(() => {
     if (pane() !== "alerts") return false
     const current = payload()
@@ -154,9 +206,42 @@ export function WatchDialog(props: WatchDialogProps) {
       setPending(undefined)
       return
     }
-    if (key.name === "v" && canViewAlerts()) {
+    const stage = grantStage()
+    if (stage !== undefined) {
+      if (key.name === "y") {
+        void actGrant(stage)
+        return
+      }
+      setGrantStage(undefined)
+      props.onGrantCancel()
+      return
+    }
+    if (key.name === "c" && payload()?.task != null) {
+      setPane((current) => (current === "correction" ? "task" : "correction"))
+      setPending(undefined)
+      return
+    }
+    if (key.name === "v" && canViewAlerts() && pane() !== "correction") {
       setPane((current) => (current === "task" ? "alerts" : "task"))
       setPending(undefined)
+      return
+    }
+    if (pane() === "correction") {
+      if (key.name === "left" || key.name === "pageup") {
+        moveGatePage(-1)
+        return
+      }
+      if (key.name === "right" || key.name === "pagedown") {
+        moveGatePage(1)
+        return
+      }
+      if (key.name === "g" && canGrant()) {
+        setGrantStage("review")
+        return
+      }
+      if (key.name === "d" && canDowngrade()) {
+        setGrantStage("downgrade")
+      }
       return
     }
     if (pane() === "task") {
@@ -221,6 +306,14 @@ export function WatchDialog(props: WatchDialogProps) {
     if (next !== waitPage()) setWaitPage(next)
   }
 
+  function moveGatePage(delta: number): void {
+    const current = payload()
+    if (current === undefined) return
+    const page = gatePageOf(current, gatePage(), gatePageSize())
+    const next = Math.max(0, Math.min(page.count - 1, page.index + delta))
+    if (next !== gatePage()) setGatePage(next)
+  }
+
   function movePage(delta: number): void {
     const list = items()
     if (list.length === 0) return
@@ -232,6 +325,28 @@ export function WatchDialog(props: WatchDialogProps) {
     const next = pageItems.find((alert) => alert.state === "unread") ?? pageItems[0]
     if (next !== undefined) setSelectedAlertID(next.alertID)
     setAlertPage(page)
+  }
+
+  async function actGrant(stage: GrantStage): Promise<void> {
+    setBusy(true)
+    try {
+      if (stage === "review") {
+        const prepared = await props.onGrantPrepare()
+        if (prepared === undefined) {
+          setGrantStage(undefined)
+          return
+        }
+        setGrantSummary(prepared.reviewSummary)
+        setGrantExpiresAt(prepared.expiresAt)
+        setGrantStage("confirm")
+        return
+      }
+      if (stage === "confirm") await props.onGrantConfirm()
+      else await props.onDowngrade()
+      setGrantStage(undefined)
+    } finally {
+      setBusy(false)
+    }
   }
 
   async function act(operation: Pending): Promise<void> {
@@ -255,6 +370,20 @@ export function WatchDialog(props: WatchDialogProps) {
 
   const confirmation = createMemo(() => {
     if (busy()) return "Working…"
+    switch (grantStage()) {
+      case "review":
+        return `${GRANT_TERMS}\ny: prepare challenge · n: cancel`
+      case "confirm": {
+        const summary = grantSummary()
+        const expires = grantExpiresAt()
+        const prepared = summary === undefined ? "Challenge prepared." : `Challenge prepared · ${summary}`
+        return `${prepared}${expires === undefined ? "" : ` · expires ${formatWatchTime(expires)}`}\ny: confirm · n: cancel`
+      }
+      case "downgrade":
+        return "Downgrade to alert-only? y: downgrade · n: cancel — business work continues; used attempts are not reset."
+      case undefined:
+        break
+    }
     switch (pending()) {
       case "pause":
         return "Pause supervision? y: yes · n: cancel — the business session keeps running."

@@ -10,6 +10,7 @@ import {
   alertsView,
   control,
   controls,
+  correction,
   observation,
   palette,
   payload,
@@ -24,6 +25,12 @@ async function rendered(
     readonly onPause?: (taskID: string, version: number) => Promise<void>
     readonly onEnd?: (taskID: string, version: number) => Promise<void>
     readonly onAck?: (alertID: string) => Promise<void>
+    readonly onGrantPrepare?: () => Promise<
+      { readonly reviewSummary: string; readonly expiresAt: number } | undefined
+    >
+    readonly onGrantConfirm?: () => Promise<void>
+    readonly onGrantCancel?: () => void
+    readonly onDowngrade?: () => Promise<void>
   } = {},
 ) {
   const [state, setState] = createSignal<WatchState>(initial)
@@ -36,6 +43,10 @@ async function rendered(
         onPause={options.onPause ?? (async () => {})}
         onEnd={options.onEnd ?? (async () => {})}
         onAck={options.onAck ?? (async () => {})}
+        onGrantPrepare={options.onGrantPrepare ?? (async () => undefined)}
+        onGrantConfirm={options.onGrantConfirm ?? (async () => {})}
+        onGrantCancel={options.onGrantCancel ?? (() => {})}
+        onDowngrade={options.onDowngrade ?? (async () => {})}
       />
     ),
     { width: 100, height: options.height ?? 60 },
@@ -568,5 +579,209 @@ describe("the bounded wait capacity on a short terminal", () => {
     await setup.flush()
     expect(text()).toContain("showing waits 11–12 of 12")
     expect(text()).toContain("denied — the approval was refused")
+  })
+})
+
+describe("the correction pane and controlled grant review", () => {
+  test("c opens correction read-only and shows authorization separately from actual capability", async () => {
+    let prepares = 0
+    const { setup, text } = await rendered(
+      {
+        kind: "payload",
+        payload: payload({
+          task: task({
+            correction: correction({
+              authorization: {
+                ...payload().task!.correction.authorization,
+                deployment: "single-host-same-location",
+              },
+            }),
+          }),
+        }),
+      },
+      {
+        onGrantPrepare: async () => {
+          prepares += 1
+          return undefined
+        },
+      },
+    )
+    setup.mockInput.pressKey("c")
+    await setup.flush()
+    expect(text()).toContain("Session watch — correction")
+    expect(text()).toContain("Authorization")
+    expect(text()).toContain("Actual capability")
+    expect(text()).toContain("declaration, not proof")
+    expect(text()).toContain("g: review correction grant")
+    expect(prepares).toBe(0)
+    expect(text()).not.toContain("challenge-once")
+  })
+
+  test("g shows the terms before preparing; n cancels without a write", async () => {
+    let prepares = 0
+    let cancels = 0
+    const { setup, text } = await rendered(
+      { kind: "payload", payload: payload() },
+      {
+        onGrantPrepare: async () => {
+          prepares += 1
+          return { reviewSummary: "Reviewed terms.", expiresAt: 10_000 }
+        },
+        onGrantCancel: () => {
+          cancels += 1
+        },
+      },
+    )
+    setup.mockInput.pressKey("c")
+    setup.mockInput.pressKey("g")
+    await setup.flush()
+    const review = text()
+    expect(review).toContain("3 permanent attempts")
+    expect(review).toContain("only the first attempt")
+    expect(review).toContain("same OS user and location")
+    expect(review).toContain("not same-OS-user authentication")
+    expect(review).toContain("not proof that no other service is running")
+    expect(review).toContain("does not stop business work or reset used attempts")
+    expect(prepares).toBe(0)
+
+    setup.mockInput.pressKey("n")
+    await setup.flush()
+    expect(prepares).toBe(0)
+    expect(cancels).toBeGreaterThan(0)
+    expect(text()).not.toContain("3 permanent attempts")
+  })
+
+  test("y prepares a challenge, y confirms it, and the nonce never reaches the screen", async () => {
+    let prepares = 0
+    let confirms = 0
+    const { setup, text } = await rendered(
+      { kind: "payload", payload: payload() },
+      {
+        onGrantPrepare: async () => {
+          prepares += 1
+          return { reviewSummary: "Reviewed terms.", expiresAt: 10_000 }
+        },
+        onGrantConfirm: async () => {
+          confirms += 1
+        },
+      },
+    )
+    setup.mockInput.pressKey("c")
+    setup.mockInput.pressKey("g")
+    setup.mockInput.pressKey("y")
+    await setup.flush()
+    expect(prepares).toBe(1)
+    expect(text()).toContain("Challenge prepared")
+    expect(text()).toContain("Reviewed terms.")
+    expect(text()).not.toContain("challenge-once")
+
+    setup.mockInput.pressKey("y")
+    await setup.flush()
+    expect(confirms).toBe(1)
+  })
+
+  test("a server-disabled grant is not armed, even when global detection is partial", async () => {
+    let prepares = 0
+    const { setup, text } = await rendered(
+      {
+        kind: "payload",
+        payload: payload({
+          task: task({
+            correction: {
+              ...payload().task!.correction,
+              controls: {
+                grant: control(false, "the current activation does not own this task"),
+                downgrade: control(false, "no grant is active"),
+              },
+            },
+          }),
+        }),
+      },
+      {
+        onGrantPrepare: async () => {
+          prepares += 1
+          return undefined
+        },
+      },
+    )
+    setup.mockInput.pressKey("c")
+    setup.mockInput.pressKey("g")
+    await setup.flush()
+    expect(prepares).toBe(0)
+    expect(text()).toContain("Correction grant unavailable: the current activation does not own this task")
+    expect(text()).not.toContain("3 permanent attempts")
+  })
+
+  test("downgrade asks first and only y calls the server", async () => {
+    let downgrades = 0
+    const { setup, text } = await rendered(
+      {
+        kind: "payload",
+        payload: payload({
+          task: task({
+            correction: {
+              ...payload().task!.correction,
+              controls: {
+                grant: control(false, "grant is recorded"),
+                downgrade: control(true),
+              },
+            },
+          }),
+        }),
+      },
+      {
+        onDowngrade: async () => {
+          downgrades += 1
+        },
+      },
+    )
+    setup.mockInput.pressKey("c")
+    setup.mockInput.pressKey("d")
+    await setup.flush()
+    expect(text()).toContain("Downgrade to alert-only?")
+    expect(downgrades).toBe(0)
+
+    setup.mockInput.pressKey("y")
+    await setup.flush()
+    expect(downgrades).toBe(1)
+  })
+
+  test("a state refresh discards a prepared grant challenge", async () => {
+    let cancels = 0
+    const { setup, text, setState } = await rendered(
+      { kind: "payload", payload: payload() },
+      {
+        onGrantPrepare: async () => ({ reviewSummary: "Reviewed terms.", expiresAt: 10_000 }),
+        onGrantConfirm: async () => {},
+        onGrantCancel: () => {
+          cancels += 1
+        },
+      },
+    )
+    setup.mockInput.pressKey("c")
+    setup.mockInput.pressKey("g")
+    setup.mockInput.pressKey("y")
+    await setup.flush()
+    expect(text()).toContain("Challenge prepared")
+
+    setState({ kind: "payload", payload: payload({ task: task({ version: 4 }) }) })
+    await setup.flush()
+    expect(text()).not.toContain("Challenge prepared")
+    expect(cancels).toBeGreaterThan(0)
+  })
+})
+
+describe("the correction pane on a short terminal", () => {
+  test("keeps authorization, actual capability and the back hint visible", async () => {
+    const { setup, text } = await rendered(
+      { kind: "payload", payload: payload() },
+      { height: 40 },
+    )
+    setup.mockInput.pressKey("c")
+    await setup.flush()
+    expect(text()).toContain("Session watch — correction")
+    expect(text()).toContain("Authorization")
+    expect(text()).toContain("Actual capability")
+    expect(text()).toContain("c: task")
   })
 })
