@@ -166,7 +166,8 @@ export interface FakeHost {
   /** The storage the plugin wrote to; the same object the host was given. */
   readonly storage: FakeStorage
   /** Delivers an event to the plugin's subscription, as the host would. */
-  emit(type: string, data: Readonly<Record<string, unknown>>, at?: number, sourceLocation?: string): void
+  /** `sourceLocation: null` omits the location stamp entirely, as an unknown source would. */
+  emit(type: string, data: Readonly<Record<string, unknown>>, at?: number, sourceLocation?: string | null): void
   /** The controlled clock. */
   now(): number
   /** Jump the controlled clock without running interval callbacks (sleep/suspend). */
@@ -436,7 +437,7 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
         created: at,
         type,
         data,
-        location: { directory: sourceLocation },
+        ...(sourceLocation === null ? {} : { location: { directory: sourceLocation } }),
       }
       for (const subscription of [...subscriptions]) subscription.push(event as unknown as HostEvent)
     },

@@ -13,6 +13,8 @@ import {
   DELEGATION_UNAVAILABLE_REASON,
   RECOVERY_UNAVAILABLE_REASON,
   TRANSFER_UNAVAILABLE_REASON,
+  type WatchAlertsView,
+  type WatchCapability,
   type WatchEvidence,
   type WatchFailure,
   type WatchReportKind,
@@ -301,8 +303,8 @@ function watchText(outcome: WatchOutcome): string {
   if (task === null) {
     return [
       "**Watched task:** none enrolled for this session.",
-      "Authorization: alert-only (the only mode this build offers).",
-      "Actual capability: participant reports only; automatic detection and correction are unavailable.",
+      ...capabilityLines(outcome.capability),
+      ...alertsLines(outcome.alerts),
     ].join("\n")
   }
   const lines = [
@@ -310,8 +312,7 @@ function watchText(outcome: WatchOutcome): string {
     `Goal: ${task.goal}`,
     `Task state: ${task.taskState}`,
     `Supervision: ${task.watchState}${task.pause === null ? "" : ` (${task.pause.kind}: ${task.pause.reason})`}`,
-    `Authorization: ${task.mode === "alert" ? "alert-only" : task.mode}`,
-    "Actual capability: participant reports only; automatic detection is unavailable; correction is unavailable.",
+    ...capabilityLines(outcome.capability),
     `Correction attempts: ${task.attempts.used}/${task.attempts.limit} (correction itself is unavailable).`,
     `Protocol participation: ${task.participation === "seen" ? "seen (a report has been recorded)" : "not seen (no report yet)"}`,
     `Ownership: ${task.ownership === "this-instance" ? "this plugin instance" : "another activation (read-only observation; no takeover)"}`,
@@ -344,5 +345,30 @@ function watchText(outcome: WatchOutcome): string {
   } else if (outcome.changed) {
     lines.push("No prompt, model generation or interrupt was sent.")
   }
+  lines.push(...alertsLines(outcome.alerts))
   return lines.join("\n")
+}
+
+/** The real capability, not the mode the user selected. */
+function capabilityLines(capability: WatchCapability): readonly string[] {
+  return [
+    `Authorization: ${capability.mode === "alert" ? "alert-only (the only mode this build offers)" : capability.mode}`,
+    `Actual capability: ${capability.monitoring}; automatic detection is ${capability.automaticDetection} — ${capability.automaticDetectionReason}`,
+    `Correction: ${capability.correction} — ${capability.correctionReason}`,
+  ]
+}
+
+/** Bounded alert list plus the real availability/count/truncation facts. */
+function alertsLines(alerts: WatchAlertsView): readonly string[] {
+  if (!alerts.available) {
+    return [`**Alerts:** unavailable${alerts.reason === null ? "" : ` — ${alerts.reason}`}.`]
+  }
+  const lines = [
+    `**Alerts:** ${alerts.active} active, ${alerts.unread} unread, ${alerts.total} total; showing ${alerts.items.length}${alerts.truncated ? " (truncated; older stored alerts are not listed)" : ""}.`,
+  ]
+  for (const alert of alerts.items) {
+    const resolved = alert.resolvedAt === null ? "" : ", resolved"
+    lines.push(`- ${alert.alertID} [${alert.kind}, ${alert.state}${resolved}] ${alert.summary} Next: ${alert.nextStep}`)
+  }
+  return lines
 }
