@@ -118,11 +118,16 @@ export default {
     }
 
     // The executing session meets its task in the next normal model request.
-    // This hook only appends system text; it never starts a turn.
-    const contextInjection =
-      watch === undefined
-        ? undefined
-        : await host.sessionContext.register((sessionID) => watch.notificationFor(sessionID))
+    // This hook only appends system text; it never starts a turn. A host without
+    // the hook still keeps the peers surface and the ledger usable.
+    let contextInjection: { dispose(): Promise<void> } | undefined
+    if (watch !== undefined) {
+      try {
+        contextInjection = await host.sessionContext.register((sessionID) => watch.notificationFor(sessionID))
+      } catch (error) {
+        warn(`the watch context hook is unavailable: ${describeError(error)}`)
+      }
+    }
 
     await host.tools.register(
       peersTool({

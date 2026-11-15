@@ -36,6 +36,12 @@ export interface WatchPayload {
   /** False when the plugin is off at the answering location. */
   readonly enabled: boolean
   readonly ledger: WatchLedgerView
+  /**
+   * The current task, or `null` when none is enrolled. A `failure` with
+   * `task: null` does not mean the task disappeared: it means this call did not
+   * return a fresh snapshot. The panel should report the failure and re-read
+   * rather than clearing what it already shows.
+   */
   readonly task: WatchTaskView | null
   readonly capability: WatchCapability
   readonly controls: WatchControls
@@ -52,6 +58,26 @@ const evidenceSchema = {
     waitFor: { type: "string" },
     reason: { type: "string" },
   },
+} as const
+
+const attemptsSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    used: { type: "number" },
+    limit: { type: "number" },
+  },
+  required: ["used", "limit"],
+} as const
+
+const pauseSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    kind: { type: "string", enum: ["manual", "safety"] },
+    reason: { type: "string" },
+  },
+  required: ["kind", "reason"],
 } as const
 
 const reportViewSchema = {
@@ -82,6 +108,8 @@ export const watchTaskSchema = {
     generation: { type: "number" },
     ownership: { type: "string", enum: ["this-instance", "another-activation"] },
     participation: { type: "string", enum: ["not-seen", "seen"] },
+    attempts: attemptsSchema,
+    pause: { ...pauseSchema, type: ["object", "null"] },
     lastReport: { ...reportViewSchema, type: ["object", "null"] },
     createdAt: { type: "number" },
     updatedAt: { type: "number" },
@@ -100,6 +128,8 @@ export const watchTaskSchema = {
     "generation",
     "ownership",
     "participation",
+    "attempts",
+    "pause",
     "lastReport",
     "createdAt",
     "updatedAt",
@@ -125,21 +155,29 @@ const capabilitySchema = {
     mode: { type: "string", enum: ["alert"] },
     monitoring: { type: "string", enum: ["participant-reports-only"] },
     automaticDetection: { type: "string", enum: ["unavailable"] },
+    automaticDetectionReason: { type: "string" },
     correction: { type: "string", enum: ["unavailable"] },
     correctionReason: { type: "string" },
     delegation: { type: "string", enum: ["unavailable"] },
+    delegationReason: { type: "string" },
     transfer: { type: "string", enum: ["unavailable"] },
+    transferReason: { type: "string" },
     recovery: { type: "string", enum: ["unavailable"] },
+    recoveryReason: { type: "string" },
   },
   required: [
     "mode",
     "monitoring",
     "automaticDetection",
+    "automaticDetectionReason",
     "correction",
     "correctionReason",
     "delegation",
+    "delegationReason",
     "transfer",
+    "transferReason",
     "recovery",
+    "recoveryReason",
   ],
 } as const
 
@@ -258,6 +296,8 @@ function readTask(value: unknown): WatchTaskView | undefined {
   const generation = record["generation"]
   const ownership = record["ownership"]
   const participation = record["participation"]
+  const attempts = readAttempts(record["attempts"])
+  const pause = record["pause"] === null ? null : readPause(record["pause"])
   const createdAt = record["createdAt"]
   const updatedAt = record["updatedAt"]
   const completedAt = record["completedAt"]
@@ -274,6 +314,8 @@ function readTask(value: unknown): WatchTaskView | undefined {
     typeof generation !== "number" ||
     (ownership !== "this-instance" && ownership !== "another-activation") ||
     (participation !== "not-seen" && participation !== "seen") ||
+    attempts === undefined ||
+    pause === undefined ||
     typeof createdAt !== "number" ||
     typeof updatedAt !== "number" ||
     !isNumberOrNull(completedAt) ||
@@ -295,12 +337,32 @@ function readTask(value: unknown): WatchTaskView | undefined {
     generation,
     ownership,
     participation,
+    attempts,
+    pause,
     lastReport,
     createdAt,
     updatedAt,
     completedAt,
     endedAt,
   }
+}
+
+function readAttempts(value: unknown): { readonly used: number; readonly limit: number } | undefined {
+  const record = asRecord(value)
+  if (record === undefined) return undefined
+  const used = record["used"]
+  const limit = record["limit"]
+  if (typeof used !== "number" || typeof limit !== "number") return undefined
+  return { used, limit }
+}
+
+function readPause(value: unknown): { readonly kind: "manual" | "safety"; readonly reason: string } | undefined {
+  const record = asRecord(value)
+  if (record === undefined) return undefined
+  const kind = record["kind"]
+  const reason = record["reason"]
+  if ((kind !== "manual" && kind !== "safety") || typeof reason !== "string") return undefined
+  return { kind, reason }
 }
 
 function readReport(value: unknown): WatchReportView | undefined {
@@ -349,21 +411,29 @@ function readCapability(value: unknown): WatchCapability | undefined {
     mode,
     monitoring,
     automaticDetection,
+    automaticDetectionReason,
     correction,
     correctionReason,
     delegation,
+    delegationReason,
     transfer,
+    transferReason,
     recovery,
+    recoveryReason,
   } = record
   if (
     mode !== "alert" ||
     monitoring !== "participant-reports-only" ||
     automaticDetection !== "unavailable" ||
+    typeof automaticDetectionReason !== "string" ||
     correction !== "unavailable" ||
     typeof correctionReason !== "string" ||
     delegation !== "unavailable" ||
+    typeof delegationReason !== "string" ||
     transfer !== "unavailable" ||
-    recovery !== "unavailable"
+    typeof transferReason !== "string" ||
+    recovery !== "unavailable" ||
+    typeof recoveryReason !== "string"
   ) {
     return undefined
   }
@@ -371,11 +441,15 @@ function readCapability(value: unknown): WatchCapability | undefined {
     mode,
     monitoring,
     automaticDetection,
+    automaticDetectionReason,
     correction,
     correctionReason,
     delegation,
+    delegationReason,
     transfer,
+    transferReason,
     recovery,
+    recoveryReason,
   }
 }
 

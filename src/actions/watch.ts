@@ -294,9 +294,10 @@ function watchText(outcome: WatchOutcome): string {
     `**Watched task:** ${task.taskID}`,
     `Goal: ${task.goal}`,
     `Task state: ${task.taskState}`,
-    `Supervision: ${task.watchState}`,
+    `Supervision: ${task.watchState}${task.pause === null ? "" : ` (${task.pause.kind}: ${task.pause.reason})`}`,
     `Authorization: ${task.mode === "alert" ? "alert-only" : task.mode}`,
     "Actual capability: participant reports only; automatic detection is unavailable; correction is unavailable.",
+    `Correction attempts: ${task.attempts.used}/${task.attempts.limit} (correction itself is unavailable).`,
     `Protocol participation: ${task.participation === "seen" ? "seen (a report has been recorded)" : "not seen (no report yet)"}`,
     `Ownership: ${task.ownership === "this-instance" ? "this plugin instance" : "another activation (read-only observation; no takeover)"}`,
     `State version: ${task.version}; generation: ${task.generation}`,
@@ -313,8 +314,13 @@ function watchText(outcome: WatchOutcome): string {
       .join("; ")
     lines.push(`Last report: ${report.kind} at ${new Date(report.at).toISOString()}${evidence.length === 0 ? "" : ` — ${evidence}`}`)
   }
-  if (task.completedAt !== null) lines.push(`Business completion recorded at ${new Date(task.completedAt).toISOString()}.`)
-  if (task.endedAt !== null) lines.push(`Supervision ended at ${new Date(task.endedAt).toISOString()}; this is not a business success.`)
+  if (task.completedAt !== null) {
+    lines.push(
+      `Business completion recorded at ${new Date(task.completedAt).toISOString()}; supervision ended because the task completed.`,
+    )
+  } else if (task.endedAt !== null) {
+    lines.push(`Supervision ended at ${new Date(task.endedAt).toISOString()}; this is not a business success.`)
+  }
 
   if (outcome.created) {
     lines.push("Enrollment recorded. No prompt was sent; the task appears in the target's next normal model context without a wakeup.")

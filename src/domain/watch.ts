@@ -70,6 +70,18 @@ export type WatchOwnership = "this-instance" | "another-activation"
  */
 export type WatchParticipation = "not-seen" | "seen"
 
+/** How many corrective attempts the task has spent, and its hard cap. */
+export interface WatchAttempts {
+  readonly used: number
+  readonly limit: number
+}
+
+/** Why supervision is paused; this build only produces `manual`. */
+export interface WatchPause {
+  readonly kind: "manual" | "safety"
+  readonly reason: string
+}
+
 /** What the panel shows for one task. Plain data, safe as an RPC answer. */
 export interface WatchTaskView {
   readonly taskID: WatchTaskID
@@ -83,6 +95,8 @@ export interface WatchTaskView {
   readonly generation: number
   readonly ownership: WatchOwnership
   readonly participation: WatchParticipation
+  readonly attempts: WatchAttempts
+  readonly pause: WatchPause | null
   readonly lastReport: WatchReportView | null
   readonly createdAt: number
   readonly updatedAt: number
@@ -107,11 +121,15 @@ export interface WatchCapability {
   readonly mode: WatchMode
   readonly monitoring: "participant-reports-only"
   readonly automaticDetection: "unavailable"
+  readonly automaticDetectionReason: string
   readonly correction: "unavailable"
   readonly correctionReason: string
   readonly delegation: "unavailable"
+  readonly delegationReason: string
   readonly transfer: "unavailable"
+  readonly transferReason: string
   readonly recovery: "unavailable"
+  readonly recoveryReason: string
 }
 
 export interface WatchControl {
@@ -158,8 +176,13 @@ export const WATCH_LIMITS = {
   id: 128,
 } as const
 
+/** The hard cap the parent specification fixes for one watched task. */
+export const WATCH_CORRECTION_LIMIT = 3
+
 export const CORRECTION_UNAVAILABLE_REASON =
   "Finite correction is not implemented in this build; this watch can only record reports."
+export const AUTOMATIC_DETECTION_UNAVAILABLE_REASON =
+  "Automatic stall detection is not implemented in this build; only participant reports are recorded."
 export const DELEGATION_UNAVAILABLE_REASON =
   "Child-task delegation is not open in this build; enroll the calling session itself."
 export const TRANSFER_UNAVAILABLE_REASON =

@@ -85,6 +85,37 @@ function evidence(kind: WatchReportKind): WatchEvidence {
   }
 }
 
+interface WorkerOutcome {
+  readonly ok: boolean
+  readonly ledgerId: string
+  readonly taskID?: string
+  readonly created?: boolean
+  readonly code?: string
+  readonly detail?: string
+}
+
+async function runWorker(path: string, requestId: string, sessionId: string, owner: string): Promise<WorkerOutcome> {
+  const child = Bun.spawn({
+    cmd: [
+      process.execPath,
+      join(import.meta.dir, "fixtures", "watch-enroll-worker.ts"),
+      path,
+      requestId,
+      sessionId,
+      owner,
+    ],
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  const exitCode = await child.exited
+  const output = (await new Response(child.stdout).text()).trim()
+  const error = (await new Response(child.stderr).text()).trim()
+  if (exitCode !== 0 || output.length === 0) {
+    throw new Error(`watch worker exited ${exitCode}: ${error || output}`)
+  }
+  return JSON.parse(output) as WorkerOutcome
+}
+
 function report(ledger: WatchLedger, taskId: string, version: number, kind: WatchReportKind, id = `report-${kind}`) {
   return ledger.report({
     taskId,
@@ -124,9 +155,10 @@ describeSafe("the security ledger", () => {
 
       expect(statSync(path).mode & 0o777).toBe(0o600)
       expect(statSync(dirname(path)).mode & 0o777).toBe(0o700)
-      for (const sidecar of [`${path}-wal`, `${path}-shm`]) {
+      for (const sidecar of [`${path}-wal`, `${path}-shm`, join(dirname(path), "watch-ledger.identity.json")]) {
         if (existsSync(sidecar)) expect(statSync(sidecar).mode & 0o777).toBe(0o600)
       }
+      expect(existsSync(join(dirname(path), "watch-ledger.identity.json"))).toBe(true)
     } finally {
       ledger.close()
     }
@@ -214,7 +246,9 @@ describeSafe("the security ledger", () => {
       expect(completed.ok).toBe(true)
       if (!completed.ok) return
       expect(completed.value.task.taskState).toBe("completed")
+      expect(completed.value.task.watchState).toBe("ended")
       expect(completed.value.task.completedAt).toBeNumber()
+      expect(completed.value.task.endedAt).toBeNumber()
       expect(completed.value.task.lastReport?.kind).toBe("completed")
 
       const duplicate = report(ledger, taskId, 5, "completed")
@@ -248,7 +282,16 @@ describeSafe("the security ledger", () => {
       expect(wrongCaller).toMatchObject({ ok: false, code: "caller_mismatch" })
 
       const afterCompletion = report(ledger, taskId, 6, "progress", "report-after")
-      expect(afterCompletion).toMatchObject({ ok: false, code: "invalid_transition" })
+      expect(afterCompletion).toMatchObject({ ok: false, code: "ended" })
+
+      // Completion releases the one live slot, and its history remains.
+      const replacement = ledger.enroll(enrollInput({ requestId: "req-after-complete", goal: "The next task" }))
+      expect(replacement.ok).toBe(true)
+      if (replacement.ok) expect(replacement.value.created).toBe(true)
+      expect(ledger.show({ taskID: taskId, sessionID: "ses_alpha" })).toMatchObject({
+        ok: true,
+        value: { taskState: "completed", watchState: "ended" },
+      })
     } finally {
       ledger.close()
     }
@@ -360,6 +403,24 @@ describeSafe("the security ledger", () => {
     symlinkSync(target, symlink)
     expect(openWatchLedger({ path: symlink })).toMatchObject({ ok: false, code: "unsafe_path" })
 
+    const realState = join(ROOT, "real-state")
+    mkdirSync(realState, { recursive: true })
+    const alias = join(ROOT, "state-alias")
+    symlinkSync(realState, alias)
+    expect(openWatchLedger({ path: join(alias, "watch-ledger.sqlite3") })).toMatchObject({
+      ok: false,
+      code: "unsafe_path",
+    })
+    expect(existsSync(join(realState, "watch-ledger.sqlite3"))).toBe(false)
+
+    const lost = ledgerPath("lost")
+    const lostLedger = open(lost)
+    const lostTask = lostLedger.enroll(enrollInput({ requestId: "req-lost" }))
+    expect(lostTask.ok).toBe(true)
+    lostLedger.close()
+    rmSync(lost)
+    expect(openWatchLedger({ path: lost })).toMatchObject({ ok: false, code: "ledger_missing" })
+
     expect(openWatchLedger({ path: ledgerPath("old-runtime"), sqliteVersion: "3.51.2" })).toMatchObject({
       ok: false,
       code: "unsafe_sqlite",
@@ -396,6 +457,42 @@ describeSafe("the security ledger", () => {
     } finally {
       await holder.exited
     }
+  })
+})
+
+describeSafe("the ledger across independent processes", () => {
+  test("six processes sharing one request produce one task", async () => {
+    const path = ledgerPath("concurrent-same")
+    const workers = Array.from({ length: 6 }, (_, index) =>
+      runWorker(path, "req-shared", "ses_alpha", `owner-${index}`),
+    )
+    const results = await Promise.all(workers)
+    const successes = results.filter((result) => result.ok)
+    expect(successes).toHaveLength(6)
+    expect(new Set(results.map((result) => result.ledgerId)).size).toBe(1)
+    expect(new Set(successes.map((result) => result.taskID)).size).toBe(1)
+    expect(results.filter((result) => result.created === true)).toHaveLength(1)
+
+    const ledger = open(path)
+    try {
+      const shown = ledger.show({ sessionID: "ses_alpha" })
+      expect(shown.ok).toBe(true)
+      if (shown.ok) expect(shown.value?.taskID).toBe(successes[0]?.taskID)
+    } finally {
+      ledger.close()
+    }
+  })
+
+  test("six processes with different requests for one session produce one live task", async () => {
+    const path = ledgerPath("concurrent-distinct")
+    const results = await Promise.all(
+      Array.from({ length: 6 }, (_, index) => runWorker(path, `req-${index}`, "ses_race", `owner-${index}`)),
+    )
+    const winners = results.filter((result) => result.ok)
+    expect(winners).toHaveLength(1)
+    expect(winners[0]?.created).toBe(true)
+    expect(new Set(results.map((result) => result.ledgerId)).size).toBe(1)
+    expect(results.filter((result) => result.code === "session_conflict")).toHaveLength(5)
   })
 })
 

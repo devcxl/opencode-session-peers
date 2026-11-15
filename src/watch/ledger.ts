@@ -14,8 +14,17 @@
  */
 
 import { randomUUID } from "node:crypto"
-import { accessSync, chmodSync, existsSync, lstatSync, mkdirSync, realpathSync } from "node:fs"
-import { basename, dirname, isAbsolute, join, resolve } from "node:path"
+import {
+  accessSync,
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs"
+import { dirname, isAbsolute, join, resolve } from "node:path"
 
 import { Database } from "bun:sqlite"
 
@@ -47,6 +56,7 @@ export type WatchLedgerErrorCode =
   | "unsupported_schema"
   | "ledger_path_mismatch"
   | "ledger_mismatch"
+  | "ledger_missing"
   | "unsafe_sqlite"
   | "lock_timeout"
   | "io_error"
@@ -215,6 +225,109 @@ CREATE TABLE IF NOT EXISTS watch_reports (
 `
 
 const REQUIRED_TABLES = ["meta", "watch_tasks", "enrollment_requests", "watch_reports"]
+const ANCHOR_NAME = "watch-ledger.identity.json"
+
+interface LedgerAnchor {
+  readonly ledgerId: string
+  readonly canonicalPath: string
+  readonly schemaVersion: number
+  readonly protocolVersion: number
+  readonly createdAt: number
+}
+
+function anchorPathFor(canonicalLedgerPath: string): string {
+  return join(dirname(canonicalLedgerPath), ANCHOR_NAME)
+}
+
+/**
+ * The identity anchor is a small plugin-owned file beside the database. It is
+ * not a second authority for tasks, quota or authorization; it only lets an
+ * existing identity survive a missing database as an error instead of silently
+ * becoming a fresh, empty ledger. Losing both files cannot be distinguished
+ * from a first run by the plugin, and the same OS user can always do that.
+ */
+function readAnchor(path: string): LedgerAnchor | undefined {
+  let raw: string
+  try {
+    raw = readFileSync(path, "utf8")
+  } catch (error) {
+    if ((error as { code?: string }).code === "ENOENT") return undefined
+    throw new LedgerFailure("io_error", `could not read the ledger identity anchor: ${String(error)}`)
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    throw new LedgerFailure("corrupt", "the ledger identity anchor is not valid JSON")
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new LedgerFailure("corrupt", "the ledger identity anchor is not an object")
+  }
+  const record = parsed as Record<string, unknown>
+  const ledgerId = record["ledgerId"]
+  const canonicalPath = record["canonicalPath"]
+  const schemaVersion = record["schemaVersion"]
+  const protocolVersion = record["protocolVersion"]
+  const createdAt = record["createdAt"]
+  if (
+    typeof ledgerId !== "string" ||
+    typeof canonicalPath !== "string" ||
+    typeof schemaVersion !== "number" ||
+    typeof protocolVersion !== "number" ||
+    typeof createdAt !== "number"
+  ) {
+    throw new LedgerFailure("corrupt", "the ledger identity anchor is incomplete")
+  }
+  if (schemaVersion !== WATCH_LEDGER_SCHEMA_VERSION || protocolVersion !== WATCH_LEDGER_PROTOCOL_VERSION) {
+    throw new LedgerFailure(
+      "unsupported_schema",
+      `identity anchor schema=${schemaVersion} protocol=${protocolVersion}`,
+    )
+  }
+  return { ledgerId, canonicalPath, schemaVersion, protocolVersion, createdAt }
+}
+
+function writeAnchor(path: string, anchor: LedgerAnchor): void {
+  const temporary = `${path}.tmp-${randomUUID()}`
+  try {
+    writeFileSync(temporary, `${JSON.stringify(anchor)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" })
+    chmodSync(temporary, 0o600)
+    renameSync(temporary, path)
+    chmodSync(path, 0o600)
+  } catch (error) {
+    try {
+      if (existsSync(temporary)) chmodSync(temporary, 0o600)
+    } catch {
+      // The failure below is the one that matters.
+    }
+    throw new LedgerFailure("readonly", `could not write the ledger identity anchor: ${String(error)}`)
+  }
+}
+
+/**
+ * Reject every symlink in the requested path, not just the final file. A
+ * parent alias would otherwise be silently resolved and a chmod could touch a
+ * directory the fixed-state-path contract did not select.
+ */
+function assertNoSymlinkComponents(path: string): void {
+  if (!isAbsolute(path) || resolve(path) !== path) {
+    throw new LedgerFailure("unsafe_path", "the ledger path must be absolute and canonical")
+  }
+  let current = "/"
+  for (const part of path.split("/").filter((piece) => piece.length > 0)) {
+    current = join(current, part)
+    let stat
+    try {
+      stat = lstatSync(current)
+    } catch (error) {
+      if ((error as { code?: string }).code === "ENOENT") return
+      throw new LedgerFailure("io_error", `could not inspect ${current}: ${String(error)}`)
+    }
+    if (stat.isSymbolicLink()) {
+      throw new LedgerFailure("unsafe_path", `the ledger path contains a symlink: ${current}`)
+    }
+  }
+}
 
 export function openWatchLedger(options: OpenWatchLedgerOptions): OpenWatchLedgerResult {
   const attempts = Math.max(1, Math.trunc(options.openAttempts ?? 3))
@@ -232,31 +345,38 @@ export function openWatchLedger(options: OpenWatchLedgerOptions): OpenWatchLedge
 
 function openOnce(options: OpenWatchLedgerOptions): OpenWatchLedgerResult {
   let db: Database | undefined
-  let canonical: string | undefined
   try {
     const path = options.path
-    if (!isAbsolute(path)) throw new LedgerFailure("unsafe_path", "the ledger path must be absolute")
+    // Check the requested path before creating or chmod-ing anything: a parent
+    // symlink is an alias to a directory this fixed-state-path contract did not
+    // select, and resolving it silently is not acceptable.
+    assertNoSymlinkComponents(path)
     const directory = dirname(path)
     mkdirSync(directory, { recursive: true, mode: 0o700 })
+    assertNoSymlinkComponents(path)
     chmodSync(directory, 0o700)
-    // `existsSync` is false for a dangling symlink, which is still not a path
-    // this ledger may create through; lstat sees the link itself.
-    try {
-      if (lstatSync(path).isSymbolicLink()) {
-        throw new LedgerFailure("unsafe_path", "the ledger path must not be a symlink")
-      }
-    } catch (error) {
-      if (error instanceof LedgerFailure) throw error
-      if ((error as { code?: string }).code !== "ENOENT") throw error
-    }
-    canonical = existsSync(path) ? realpathSync(path) : join(realpathSync(directory), basename(path))
-    if (resolve(canonical) !== canonical) {
-      throw new LedgerFailure("unsafe_path", "the ledger path is not canonical")
-    }
-    checkWritable(canonical, directory)
 
-    db = new Database(canonical, { create: true, strict: true })
-    chmodSync(canonical, 0o600)
+    const anchorPath = anchorPathFor(path)
+    assertNoSymlinkComponents(anchorPath)
+    const anchor = readAnchor(anchorPath)
+    if (anchor !== undefined) {
+      if (anchor.canonicalPath !== path) {
+        throw new LedgerFailure(
+          "ledger_path_mismatch",
+          `identity anchor path=${anchor.canonicalPath} opened=${path}`,
+        )
+      }
+      if (!existsSync(path)) {
+        throw new LedgerFailure(
+          "ledger_missing",
+          "the ledger identity anchor exists but the database is missing; it is not recreated",
+        )
+      }
+    }
+    checkWritable(path, directory)
+
+    db = new Database(path, { create: anchor === undefined, strict: true })
+    chmodSync(path, 0o600)
     db.run(`PRAGMA busy_timeout = ${Math.max(0, Math.trunc(options.busyTimeoutMs ?? 500))}`)
     db.run("PRAGMA synchronous = FULL")
     db.run("PRAGMA foreign_keys = ON")
@@ -290,41 +410,57 @@ function openOnce(options: OpenWatchLedgerOptions): OpenWatchLedgerResult {
     )
     const existing = tables.size > 0
     if (!existing) {
-      db.run(DDL)
-      writeMetadata(db, canonical, options.now?.() ?? Date.now())
+      if (anchor !== undefined) {
+        throw new LedgerFailure(
+          "ledger_missing",
+          "the ledger identity anchor exists but the database has no schema; it is not recreated",
+        )
+      }
+      initializeLedger(db, path, options.now?.() ?? Date.now())
     } else {
       for (const table of REQUIRED_TABLES) {
         if (!tables.has(table)) throw new LedgerFailure("corrupt", `the ledger is missing the ${table} table`)
       }
-      const metadata = readMetadata(db)
-      const expectedPath = canonical
-      if (metadata.canonicalPath === undefined) {
-        throw new LedgerFailure("corrupt", "the ledger has no canonical path")
-      }
-      if (metadata.canonicalPath !== expectedPath) {
-        throw new LedgerFailure(
-          "ledger_path_mismatch",
-          `stored=${metadata.canonicalPath} opened=${expectedPath}`,
-        )
-      }
-      if (metadata.schemaVersion !== WATCH_LEDGER_SCHEMA_VERSION) {
-        throw new LedgerFailure("unsupported_schema", `schema_version=${metadata.schemaVersion}`)
-      }
-      if (metadata.protocolVersion !== WATCH_LEDGER_PROTOCOL_VERSION) {
-        throw new LedgerFailure("unsupported_schema", `protocol_version=${metadata.protocolVersion}`)
-      }
-      if (metadata.ledgerId === undefined) throw new LedgerFailure("corrupt", "the ledger has no ledger id")
-      const mismatch = db
-        .query("SELECT COUNT(*) AS n FROM watch_tasks WHERE ledger_id <> ?")
-        .get(metadata.ledgerId) as { n: number }
-      if (mismatch.n !== 0) {
-        throw new LedgerFailure("ledger_mismatch", "task rows carry a different ledger id")
-      }
     }
 
     const metadata = readMetadata(db)
+    if (metadata.canonicalPath === undefined) {
+      throw new LedgerFailure("corrupt", "the ledger has no canonical path")
+    }
+    if (metadata.canonicalPath !== path) {
+      throw new LedgerFailure("ledger_path_mismatch", `stored=${metadata.canonicalPath} opened=${path}`)
+    }
+    if (metadata.schemaVersion !== WATCH_LEDGER_SCHEMA_VERSION) {
+      throw new LedgerFailure("unsupported_schema", `schema_version=${metadata.schemaVersion}`)
+    }
+    if (metadata.protocolVersion !== WATCH_LEDGER_PROTOCOL_VERSION) {
+      throw new LedgerFailure("unsupported_schema", `protocol_version=${metadata.protocolVersion}`)
+    }
     if (metadata.ledgerId === undefined) throw new LedgerFailure("corrupt", "the ledger has no ledger id")
-    const ledger = new SqliteWatchLedger(db, canonical, metadata.ledgerId, sqliteVersion, options.now ?? Date.now)
+    const mismatch = db
+      .query("SELECT COUNT(*) AS n FROM watch_tasks WHERE ledger_id <> ?")
+      .get(metadata.ledgerId) as { n: number }
+    if (mismatch.n !== 0) {
+      throw new LedgerFailure("ledger_mismatch", "task rows carry a different ledger id")
+    }
+    if (anchor !== undefined) {
+      if (anchor.ledgerId !== metadata.ledgerId) {
+        throw new LedgerFailure(
+          "ledger_mismatch",
+          `identity anchor ledger=${anchor.ledgerId} database=${metadata.ledgerId}`,
+        )
+      }
+    } else {
+      writeAnchor(anchorPath, {
+        ledgerId: metadata.ledgerId,
+        canonicalPath: path,
+        schemaVersion: WATCH_LEDGER_SCHEMA_VERSION,
+        protocolVersion: WATCH_LEDGER_PROTOCOL_VERSION,
+        createdAt: metadata.createdAt ?? options.now?.() ?? Date.now(),
+      })
+    }
+
+    const ledger = new SqliteWatchLedger(db, path, metadata.ledgerId, sqliteVersion, options.now ?? Date.now)
     ledger.secureFiles()
     db = undefined
     return { ok: true, ledger }
@@ -353,14 +489,24 @@ function checkWritable(file: string, directory: string): void {
   }
 }
 
-function writeMetadata(db: Database, canonical: string, now: number): void {
-  const insert = db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
+/**
+ * Create the schema and its identity in one immediate transaction. A second
+ * process that arrives during a cold start either waits for the lock or sees a
+ * complete ledger; it never sees half a schema and calls that corruption.
+ */
+function initializeLedger(db: Database, canonical: string, now: number): void {
+  const insert = "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)"
   db.transaction(() => {
-    insert.run("ledger_id", randomUUID())
-    insert.run("schema_version", String(WATCH_LEDGER_SCHEMA_VERSION))
-    insert.run("protocol_version", String(WATCH_LEDGER_PROTOCOL_VERSION))
-    insert.run("canonical_path", canonical)
-    insert.run("created_at", String(now))
+    // The lock is acquired after the caller's first look. A process that lost
+    // the race must not replace the winner's identity with its own.
+    const tables = db.query("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>
+    if (tables.length > 0) return
+    db.run(DDL)
+    db.run(insert, ["ledger_id", randomUUID()])
+    db.run(insert, ["schema_version", String(WATCH_LEDGER_SCHEMA_VERSION)])
+    db.run(insert, ["protocol_version", String(WATCH_LEDGER_PROTOCOL_VERSION)])
+    db.run(insert, ["canonical_path", canonical])
+    db.run(insert, ["created_at", String(now)])
   }).immediate()
 }
 
@@ -369,6 +515,7 @@ interface Metadata {
   readonly schemaVersion?: number
   readonly protocolVersion?: number
   readonly canonicalPath?: string
+  readonly createdAt?: number
 }
 
 function readMetadata(db: Database): Metadata {
@@ -385,6 +532,7 @@ function readMetadata(db: Database): Metadata {
     schemaVersion: number("schema_version"),
     protocolVersion: number("protocol_version"),
     canonicalPath: values.get("canonical_path"),
+    createdAt: number("created_at"),
   }
 }
 
@@ -548,6 +696,12 @@ class SqliteWatchLedger implements WatchLedger {
       const version = task.version + 1
       const encoded = canonicalJson(evidence.value)
       const completedAt = next.value === "completed" ? at : task.completed_at
+      // Completion ends supervision: the business goal is done, so the live
+      // slot is released. The task row and its reports remain as history; this
+      // is not a manual "end", which is what must not be read as success.
+      const completes = next.value === "completed"
+      const watchState = completes ? "ended" : task.watch_state
+      const endedAt = completes ? at : task.ended_at
       this.db
         .query(
           "INSERT INTO watch_reports (task_id, report_id, kind, evidence, version, created_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -556,13 +710,14 @@ class SqliteWatchLedger implements WatchLedger {
       this.db
         .query(
           `UPDATE watch_tasks SET
-            task_state = ?, version = ?, updated_at = ?,
+            task_state = ?, watch_state = ?, version = ?, updated_at = ?,
             last_report_id = ?, last_report_kind = ?, last_report_evidence = ?,
-            last_report_at = ?, last_report_version = ?, completed_at = ?
+            last_report_at = ?, last_report_version = ?, completed_at = ?, ended_at = ?
            WHERE task_id = ?`,
         )
         .run(
           next.value,
+          watchState,
           version,
           at,
           reportID,
@@ -571,6 +726,7 @@ class SqliteWatchLedger implements WatchLedger {
           at,
           version,
           completedAt,
+          endedAt,
           taskID,
         )
       return { task: this.task(taskID), duplicate: false }
@@ -626,11 +782,15 @@ class SqliteWatchLedger implements WatchLedger {
   }
 
   secureFiles(): void {
-    for (const target of [this.path, `${this.path}-wal`, `${this.path}-shm`]) {
+    const targets = [this.path, `${this.path}-wal`, `${this.path}-shm`, anchorPathFor(this.path)]
+    for (const target of targets) {
+      if (!existsSync(target)) continue
       try {
-        if (existsSync(target)) chmodSync(target, 0o600)
-      } catch {
-        // The directory (0700) is the primary boundary; a later write retries.
+        chmodSync(target, 0o600)
+      } catch (error) {
+        // Returning success while a file may be readable by another OS user
+        // would contradict the 0600 requirement. Fail closed instead.
+        throw new LedgerFailure("readonly", `could not set 0600 on ${target}: ${String(error)}`)
       }
     }
   }
