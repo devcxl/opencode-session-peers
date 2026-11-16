@@ -44,6 +44,7 @@ import {
   WATCH_CORRECTION_LIMIT,
   WATCH_CORRECTION_TERMS,
   WATCH_LIMITS,
+  WATCH_MIN_SQLITE,
   type WatchAlertKind,
   type WatchAlertRecord,
   type WatchAlertState,
@@ -61,9 +62,8 @@ import {
   type WatchedTaskState,
 } from "../domain/watch.ts"
 
-export const WATCH_LEDGER_SCHEMA_VERSION = 8
+export const WATCH_LEDGER_SCHEMA_VERSION = 9
 export const WATCH_LEDGER_PROTOCOL_VERSION = 1
-export const WATCH_MIN_SQLITE = "3.51.3"
 
 export type WatchLedgerErrorCode =
   | "invalid_input"
@@ -480,6 +480,8 @@ interface CorrectionAttemptRow {
   readonly recovery_report_id: string | null
   readonly recovery_reference: string | null
   readonly recovered_at: number | null
+  readonly closed_at: number | null
+  readonly closed_reason: string | null
   readonly stop_reason: string | null
 }
 
@@ -496,6 +498,10 @@ interface AlertRow {
   readonly read_at: number | null
   readonly escalated_at: number | null
   readonly resolved_at: number | null
+}
+
+function openAttemptSql(prefix: string): string {
+  return `${prefix}state IN ('reserved','sending','accepted','unknown') OR (${prefix}state = 'receipted' AND ${prefix}receipt_permit_at IS NOT NULL AND ${prefix}closed_at IS NULL)`
 }
 
 const DDL = `
@@ -651,12 +657,14 @@ CREATE TABLE IF NOT EXISTS watch_correction_attempts (
   recovery_report_id TEXT,
   recovery_reference TEXT,
   recovered_at INTEGER,
+  closed_at INTEGER,
+  closed_reason TEXT,
   stop_reason TEXT,
   UNIQUE (task_id, attempt_no)
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS one_pending_correction_attempt
-  ON watch_correction_attempts(task_id) WHERE state IN ('reserved','sending','accepted','unknown');
+  ON watch_correction_attempts(task_id) WHERE ${openAttemptSql("")};
 
 CREATE INDEX IF NOT EXISTS correction_attempts_by_task
   ON watch_correction_attempts(task_id, attempt_no);
@@ -772,6 +780,8 @@ const REQUIRED_CORRECTION_ATTEMPT_COLUMNS = [
   "recovery_report_id",
   "recovery_reference",
   "recovered_at",
+  "closed_at",
+  "closed_reason",
   "stop_reason",
 ]
 const REQUIRED_ALERT_COLUMNS = [
@@ -1184,6 +1194,21 @@ function readMetadata(db: Database): Metadata {
   }
 }
 
+function correctionTermsDigest(task: TaskRow, deployment: string): string {
+  return createHash("sha256")
+    .update(
+      canonicalJson([
+        WATCH_CORRECTION_TERMS,
+        deployment,
+        task.initiator_session_id,
+        task.target_session_id,
+        task.goal,
+        task.generation,
+      ]),
+    )
+    .digest("hex")
+}
+
 class SqliteWatchLedger implements WatchLedger {
   constructor(
     private readonly db: Database,
@@ -1351,6 +1376,7 @@ class SqliteWatchLedger implements WatchLedger {
       const encoded = canonicalJson(evidence.value)
       const completedAt = next.value === "completed" ? at : task.completed_at
       this.recordReportedWrites(taskID, kind.value, evidence.value, reportID, at)
+      this.closeReceiptedForReport(taskID, kind.value, evidence.value, reportID, at)
       // Completion ends supervision: the business goal is done, so the live
       // slot is released. The task row and its reports remain as history; this
       // is not a manual "end", which is what must not be read as success.
@@ -1589,6 +1615,9 @@ class SqliteWatchLedger implements WatchLedger {
       const owner = requiredIdentifier(input.ownerActivation, "ownerActivation")
       const reviewSummary = readBoundedText(input.reviewSummary, "reviewSummary", WATCH_ALERT_REASON_LIMIT)
       if (!reviewSummary.ok) throw new LedgerFailure("invalid_input", reviewSummary.reason)
+      if (reviewSummary.value !== WATCH_CORRECTION_TERMS) {
+        throw new LedgerFailure("invalid_input", "reviewSummary must be the canonical correction terms")
+      }
       if (input.deployment !== "single-host-same-location") {
         throw new LedgerFailure("invalid_input", "deployment must be the explicit single-host-same-location declaration")
       }
@@ -1618,19 +1647,7 @@ class SqliteWatchLedger implements WatchLedger {
         throw new LedgerFailure("grant_active", "an active correction grant already exists; downgrade it first")
       }
       const ttl = Math.min(Math.max(Math.trunc(input.ttlMs ?? 120_000), 30_000), 300_000)
-      const termsDigest = createHash("sha256")
-        .update(
-          canonicalJson([
-            WATCH_CORRECTION_TERMS,
-            input.deployment,
-            task.initiator_session_id,
-            task.target_session_id,
-            task.goal,
-            task.version,
-            task.generation,
-          ]),
-        )
-        .digest("hex")
+      const termsDigest = correctionTermsDigest(task, input.deployment)
       this.db
         .query("UPDATE watch_correction_challenges SET consumed_at = ? WHERE task_id = ? AND consumed_at IS NULL")
         .run(input.at, taskID)
@@ -1714,7 +1731,10 @@ class SqliteWatchLedger implements WatchLedger {
           .run(input.at, challenge)
         throw new LedgerFailure("grant_expired", "the challenge has expired")
       }
+      const currentTerms = correctionTermsDigest(task, input.deployment)
       if (
+        termsDigest !== currentTerms ||
+        row.terms_digest !== currentTerms ||
         row.task_id !== task.task_id ||
         row.expected_version !== input.expectedVersion ||
         row.generation !== input.generation ||
@@ -1875,6 +1895,9 @@ class SqliteWatchLedger implements WatchLedger {
       if (grant.scope_target_session_id !== task.target_session_id) {
         throw new LedgerFailure("not_granted", "the correction grant does not cover this target")
       }
+      if (grant.terms_digest !== correctionTermsDigest(task, grant.deployment_statement)) {
+        throw new LedgerFailure("not_granted", "the correction terms changed; the old grant cannot continue")
+      }
       const counts = this.db
         .query("SELECT COUNT(*) AS used, COALESCE(MAX(attempt_no), 0) AS highest FROM watch_correction_attempts WHERE task_id = ?")
         .get(task.task_id) as { used: number; highest: number }
@@ -1883,7 +1906,7 @@ class SqliteWatchLedger implements WatchLedger {
       }
       const pending = this.db
         .query(
-          "SELECT 1 AS yes FROM watch_correction_attempts WHERE task_id = ? AND state IN ('reserved','sending','accepted','unknown') LIMIT 1",
+          `SELECT 1 AS yes FROM watch_correction_attempts WHERE task_id = ? AND (${openAttemptSql("")}) LIMIT 1`,
         )
         .get(task.task_id) as { yes: number } | null
       if (pending !== null) throw new LedgerFailure("pending_attempt", "the task already has an unresolved attempt")
@@ -1892,7 +1915,7 @@ class SqliteWatchLedger implements WatchLedger {
           `SELECT 1 AS yes FROM watch_correction_attempts a
            JOIN watch_tasks t ON t.task_id = a.task_id
            WHERE t.target_session_id = ? AND t.task_id <> ?
-             AND a.state IN ('reserved','sending','accepted','unknown')
+             AND (${openAttemptSql("a.")})
            LIMIT 1`,
         )
         .get(task.target_session_id, task.task_id) as { yes: number } | null
@@ -1984,7 +2007,8 @@ class SqliteWatchLedger implements WatchLedger {
         grant.version !== row.grant_version ||
         grant.generation !== row.reservation_generation ||
         grant.scope_target_session_id !== row.scope_target_session_id ||
-        task.target_session_id !== row.scope_target_session_id
+        task.target_session_id !== row.scope_target_session_id ||
+        grant.terms_digest !== correctionTermsDigest(task, grant.deployment_statement)
       ) {
         throw new LedgerFailure("not_granted", "the reservation's original grant is no longer active")
       }
@@ -2142,6 +2166,7 @@ class SqliteWatchLedger implements WatchLedger {
         grant.version === row.grant_version &&
         grant.generation === row.reservation_generation &&
         grant.scope_target_session_id === row.scope_target_session_id &&
+        grant.terms_digest === correctionTermsDigest(task, grant.deployment_statement) &&
         task.mode === "limited-correction" &&
         task.owner_activation === row.owner_activation &&
         task.owner_activation === currentActivation
@@ -2293,10 +2318,11 @@ class SqliteWatchLedger implements WatchLedger {
       this.db
         .query(
           `UPDATE watch_correction_attempts SET
-            state = 'recovered', recovery_report_id = ?, recovery_reference = ?, recovered_at = ?
+            state = 'recovered', recovery_report_id = ?, recovery_reference = ?, recovered_at = ?,
+            closed_at = ?, closed_reason = 'recovered'
            WHERE reservation_id = ?`,
         )
-        .run(reportID, reference.value, input.at, reservationID)
+        .run(reportID, reference.value, input.at, input.at, reservationID)
       return { attempt: correctionAttemptFromRow(this.correctionAttemptRow(reservationID)), recovered: true }
     })
   }
@@ -2316,7 +2342,7 @@ class SqliteWatchLedger implements WatchLedger {
           `SELECT 1 AS yes FROM watch_correction_attempts a
            JOIN watch_tasks t ON t.task_id = a.task_id
            WHERE t.target_session_id = ? AND t.task_id <> ?
-             AND a.state IN ('reserved','sending','accepted','unknown')
+             AND (${openAttemptSql("a.")})
            LIMIT 1`,
         )
         .get(task.target_session_id, task.task_id) as { yes: number } | null
@@ -2336,6 +2362,60 @@ class SqliteWatchLedger implements WatchLedger {
     return this.db
       .query("SELECT * FROM watch_correction_attempts WHERE reservation_id = ?")
       .get(reservationID) as CorrectionAttemptRow | null
+  }
+
+  private closeReceiptedForReport(
+    taskID: string,
+    kind: WatchReportKind,
+    evidence: WatchEvidence,
+    reportID: string,
+    at: number,
+  ): void {
+    const open = this.db
+      .query(
+        `SELECT * FROM watch_correction_attempts
+         WHERE task_id = ? AND state = 'receipted' AND receipt_permit_at IS NOT NULL AND closed_at IS NULL
+         LIMIT 1`,
+      )
+      .get(taskID) as CorrectionAttemptRow | null
+    if (open === null) return
+    if (kind === "progress" || kind === "completed") {
+      const reference = evidence.reference
+      if (reference === undefined) return
+      const earlier = this.db
+        .query("SELECT evidence FROM watch_reports WHERE task_id = ? AND report_id <> ?")
+        .all(taskID, reportID) as Array<{ readonly evidence: string }>
+      if (earlier.some((report) => parseEvidence(report.evidence).reference === reference)) return
+      if (kind === "progress") {
+        this.db
+          .query(
+            `UPDATE watch_correction_attempts SET
+              state = 'recovered', recovery_report_id = ?, recovery_reference = ?, recovered_at = ?,
+              closed_at = ?, closed_reason = 'recovered'
+             WHERE reservation_id = ?`,
+          )
+          .run(reportID, reference, at, at, open.reservation_id)
+        return
+      }
+      this.db
+        .query(
+          `UPDATE watch_correction_attempts SET closed_at = ?, closed_reason = 'task-completed' WHERE reservation_id = ?`,
+        )
+        .run(at, open.reservation_id)
+      return
+    }
+    if (kind === "waiting") {
+      const waitID = evidence.waitID ?? reportID
+      const wait = this.db
+        .query("SELECT wait_until FROM watch_reported_waits WHERE task_id = ? AND wait_id = ?")
+        .get(taskID, waitID) as { wait_until: number | null } | null
+      if (wait === null || (wait.wait_until !== null && wait.wait_until <= at)) return
+      this.db
+        .query(
+          `UPDATE watch_correction_attempts SET closed_at = ?, closed_reason = 'normal-wait' WHERE reservation_id = ?`,
+        )
+        .run(at, open.reservation_id)
+    }
   }
 
   private reportedWaits(taskID: string): WatchReportedWait[] {
@@ -2645,6 +2725,8 @@ function correctionAttemptFromRow(row: CorrectionAttemptRow | null): WatchCorrec
     ...(row.recovery_report_id === null ? {} : { recoveryReportID: row.recovery_report_id }),
     ...(row.recovery_reference === null ? {} : { recoveryReference: row.recovery_reference }),
     ...(row.recovered_at === null ? {} : { recoveredAt: row.recovered_at }),
+    ...(row.closed_at === null ? {} : { closedAt: row.closed_at }),
+    ...(row.closed_reason === null ? {} : { closedReason: row.closed_reason }),
     ...(row.stop_reason === null ? {} : { stopReason: parseCorrectionStopReason(row.stop_reason) }),
   }
 }

@@ -10,6 +10,7 @@
 import {
   CORRECTION_UNAVAILABLE_REASON,
   DELEGATION_UNAVAILABLE_REASON,
+  WATCH_CORRECTION_TERMS,
   readGoal,
   readIdentifier,
   type WatchActivityView,
@@ -461,6 +462,7 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
         at: options.now?.() ?? Date.now(),
       })
       if (!received.ok) return receiptFailure(mapLedgerFailure(received.code, received.detail))
+      if (!received.value.duplicate) notify()
       const shown = current.ledger.show({ taskID: taskID.value, sessionID: caller.value })
       if (!shown.ok) return receiptFailure(mapLedgerFailure(shown.code, shown.detail))
       if (shown.value === null) return receiptFailure(invalid("the receipt has no visible task"))
@@ -602,8 +604,7 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
         callerSessionId: caller.value,
         ownerActivation: options.activationID,
         expectedVersion: input.expectedVersion,
-        reviewSummary:
-          "Limited correction: three permanent attempts, but this build may use only the first automatic attempt; the deployment statement is single host and location, a declaration rather than proof of uniqueness; the controlled RPC is not same-user human authentication; a safety pause does not stop business; spent attempts never reset.",
+        reviewSummary: WATCH_CORRECTION_TERMS,
         deployment: input.deployment,
         at: options.now?.() ?? Date.now(),
       })

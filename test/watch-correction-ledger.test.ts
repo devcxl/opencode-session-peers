@@ -103,7 +103,7 @@ function grant(
     callerSessionId: caller,
     ownerActivation: owner,
     expectedVersion: currentVersion,
-    reviewSummary: "Grant one bounded correction attempt.",
+    reviewSummary: WATCH_CORRECTION_TERMS,
     deployment: "single-host-same-location",
     at: clock.value,
   })
@@ -220,17 +220,22 @@ function attemptOf(result: ReturnType<WatchLedger["correction"]>): readonly Watc
 }
 
 describeCorrection("correction ledger", () => {
-  test("schema 8 carries permanent attempts and the grant tables", () => {
+  test("schema 9 carries permanent attempts and the grant tables", () => {
     const clock = { value: 1_000 }
     const ledger = open(clock)
     try {
-      expect(WATCH_LEDGER_SCHEMA_VERSION).toBe(8)
+      expect(WATCH_LEDGER_SCHEMA_VERSION).toBe(9)
       expect(ledger.sqliteVersion).toMatch(/^3\./)
       let task = enroll(ledger)
       const granted = grant(ledger, task.taskID, task.version, clock)
       task = granted.task
       expect(granted.grant).toMatchObject({ mode: "limited-correction", state: "granted", version: 1 })
       expect(WATCH_CORRECTION_TERMS).toContain("three permanent attempts")
+      expect(WATCH_CORRECTION_TERMS).toContain("first automatic")
+      expect(WATCH_CORRECTION_TERMS).toContain("same OS user")
+      expect(WATCH_CORRECTION_TERMS).toContain("not human authentication")
+      expect(WATCH_CORRECTION_TERMS).toContain("never resets")
+      expect(WATCH_CORRECTION_TERMS.length).toBeLessThanOrEqual(500)
     } finally {
       ledger.close()
     }
@@ -355,7 +360,7 @@ describeCorrection("correction ledger", () => {
         callerSessionId: "ses_a",
         ownerActivation: "activation-a",
         expectedVersion: task.version,
-        reviewSummary: "ttl grant",
+        reviewSummary: WATCH_CORRECTION_TERMS,
         deployment: "single-host-same-location",
         ttlMs: 30_000,
         at: clock.value,
@@ -375,6 +380,70 @@ describeCorrection("correction ledger", () => {
       })
       expect(expired).toMatchObject({ ok: false, code: "grant_expired" })
       expect(attemptOf(ledger.correction(task.taskID))).toHaveLength(0)
+    } finally {
+      ledger.close()
+    }
+  })
+
+  test("only the canonical terms summary is accepted and the current digest is required", () => {
+    const clock = { value: 1_000 }
+    const ledger = open(clock)
+    try {
+      let task = enroll(ledger)
+      const began = ledger.report({
+        taskId: task.taskID,
+        callerSessionId: "ses_a",
+        expectedVersion: task.version,
+        reportId: "terms-begin",
+        kind: "begin",
+        evidence: {},
+      })
+      if (!began.ok) return
+      task = began.value.task
+      const wrongSummary = ledger.prepareCorrectionGrant({
+        taskId: task.taskID,
+        callerSessionId: "ses_a",
+        ownerActivation: "activation-a",
+        expectedVersion: task.version,
+        reviewSummary: "different terms",
+        deployment: "single-host-same-location",
+        at: clock.value,
+      })
+      expect(wrongSummary).toMatchObject({ ok: false, code: "invalid_input" })
+      const prepared = ledger.prepareCorrectionGrant({
+        taskId: task.taskID,
+        callerSessionId: "ses_a",
+        ownerActivation: "activation-a",
+        expectedVersion: task.version,
+        reviewSummary: WATCH_CORRECTION_TERMS,
+        deployment: "single-host-same-location",
+        at: clock.value,
+      })
+      if (!prepared.ok) return
+      const wrongDigest = ledger.confirmCorrectionGrant({
+        challenge: prepared.value.challenge,
+        taskId: task.taskID,
+        callerSessionId: "ses_a",
+        ownerActivation: "activation-a",
+        expectedVersion: prepared.value.expectedVersion,
+        generation: prepared.value.generation,
+        termsDigest: "wrong-digest",
+        deployment: "single-host-same-location",
+        at: clock.value,
+      })
+      expect(wrongDigest).toMatchObject({ ok: false, code: "grant_expired" })
+      const confirmed = ledger.confirmCorrectionGrant({
+        challenge: prepared.value.challenge,
+        taskId: task.taskID,
+        callerSessionId: "ses_a",
+        ownerActivation: "activation-a",
+        expectedVersion: prepared.value.expectedVersion,
+        generation: prepared.value.generation,
+        termsDigest: prepared.value.termsDigest,
+        deployment: "single-host-same-location",
+        at: clock.value,
+      })
+      expect(confirmed).toMatchObject({ ok: true, value: { grant: { reviewSummary: WATCH_CORRECTION_TERMS } } })
     } finally {
       ledger.close()
     }
@@ -810,6 +879,340 @@ describeCorrection("correction ledger", () => {
         at: clock.value,
       })
       expect(recovered).toMatchObject({ ok: true, value: { recovered: true } })
+    } finally {
+      ledger.close()
+    }
+  })
+
+  test("a permit without recovery stays pending and blocks another reserve or replacement task", () => {
+    const clock = { value: 1_000 }
+    const ledger = open(clock)
+    try {
+      let task = enroll(ledger)
+      task = grant(ledger, task.taskID, task.version, clock).task
+      const reserved = reserve(ledger, task.taskID, task.version, task.generation, "res-permit", clock)
+      if (!reserved.ok) return
+      const correlation = claimCorrelation(
+        ledger,
+        task.taskID,
+        "res-permit",
+        reserved.value.task.version,
+        task.generation,
+        clock,
+      )
+      clock.value += 10
+      const receipt = ledger.recordCorrectionReceipt({
+        taskId: task.taskID,
+        reservationId: "res-permit",
+        callerSessionId: "ses_a",
+        currentActivationId: "activation-a",
+        correlation,
+        at: clock.value,
+      })
+      expect(receipt).toMatchObject({ ok: true, value: { continuePermit: true } })
+      const shown = ledger.show({ taskID: task.taskID, sessionID: "ses_a" })
+      if (!shown.ok || shown.value === null) throw new Error("task missing")
+      const second = reserve(
+        ledger,
+        task.taskID,
+        shown.value.version,
+        task.generation,
+        "res-after-permit",
+        clock,
+      )
+      expect(second).toMatchObject({ ok: false, code: "pending_attempt" })
+
+      clock.value += 10
+      const progress = ledger.report({
+        taskId: task.taskID,
+        callerSessionId: "ses_a",
+        expectedVersion: shown.value.version,
+        reportId: "permit-recovery-report",
+        kind: "progress",
+        evidence: { summary: "new result", reference: "permit-new-result" },
+      })
+      expect(progress.ok).toBe(true)
+      const recovered = ledger.recordCorrectionRecovery({
+        taskId: task.taskID,
+        reservationId: "res-permit",
+        callerSessionId: "ses_a",
+        progressReportId: "permit-recovery-report",
+        resultReference: "permit-new-result",
+        generation: task.generation,
+        at: clock.value + 1,
+      })
+      expect(recovered).toMatchObject({ ok: true, value: { recovered: true } })
+      const afterRecovery = ledger.show({ taskID: task.taskID, sessionID: "ses_a" })
+      if (!afterRecovery.ok || afterRecovery.value === null) throw new Error("task missing")
+      const third = reserve(
+        ledger,
+        task.taskID,
+        afterRecovery.value.version,
+        task.generation,
+        "res-after-recovery",
+        clock,
+      )
+      expect(third.ok).toBe(true)
+    } finally {
+      ledger.close()
+    }
+  })
+
+  test("a permit closes on completed with a new reference but not on a reused one", () => {
+    const clock = { value: 1_000 }
+    const ledger = open(clock)
+    try {
+      let task = enroll(ledger)
+      task = grant(ledger, task.taskID, task.version, clock).task
+      const reserved = reserve(ledger, task.taskID, task.version, task.generation, "res-complete-permit", clock)
+      if (!reserved.ok) return
+      const correlation = claimCorrelation(
+        ledger,
+        task.taskID,
+        "res-complete-permit",
+        reserved.value.task.version,
+        task.generation,
+        clock,
+      )
+      const beforeReceipt = ledger.show({ taskID: task.taskID, sessionID: "ses_a" })
+      if (!beforeReceipt.ok || beforeReceipt.value === null) throw new Error("task missing")
+      clock.value += 1
+      const oldProgress = ledger.report({
+        taskId: task.taskID,
+        callerSessionId: "ses_a",
+        expectedVersion: beforeReceipt.value.version,
+        reportId: "old-ref-before",
+        kind: "progress",
+        evidence: { summary: "old result", reference: "reused-reference" },
+      })
+      expect(oldProgress.ok).toBe(true)
+      clock.value += 10
+      ledger.recordCorrectionReceipt({
+        taskId: task.taskID,
+        reservationId: "res-complete-permit",
+        callerSessionId: "ses_a",
+        currentActivationId: "activation-a",
+        correlation,
+        at: clock.value,
+      })
+      const shown = ledger.show({ taskID: task.taskID, sessionID: "ses_a" })
+      if (!shown.ok || shown.value === null) throw new Error("task missing")
+      clock.value += 10
+      const oldRef = ledger.report({
+        taskId: task.taskID,
+        callerSessionId: "ses_a",
+        expectedVersion: shown.value.version,
+        reportId: "complete-old-ref",
+        kind: "completed",
+        evidence: { summary: "old result", reference: "reused-reference" },
+      })
+      expect(oldRef.ok).toBe(true)
+      let attempt = attemptOf(ledger.correction(task.taskID))[0]
+      expect(attempt).toMatchObject({ phase: "receipted" })
+      expect(attempt?.closedAt).toBeUndefined()
+
+      // A completed task with a reused reference was still a valid business
+      // report, but it did not close the correction permit.
+      const after = ledger.show({ taskID: task.taskID, sessionID: "ses_a" })
+      if (!after.ok || after.value === null) throw new Error("task missing")
+      expect(after.value.taskState).toBe("completed")
+    } finally {
+      ledger.close()
+    }
+  })
+
+  test("a permit closes on a new completed result reference without faking recovery", () => {
+    const clock = { value: 1_000 }
+    const ledger = open(clock)
+    try {
+      let task = enroll(ledger)
+      task = grant(ledger, task.taskID, task.version, clock).task
+      const reserved = reserve(ledger, task.taskID, task.version, task.generation, "res-complete-new", clock)
+      if (!reserved.ok) return
+      const correlation = claimCorrelation(
+        ledger,
+        task.taskID,
+        "res-complete-new",
+        reserved.value.task.version,
+        task.generation,
+        clock,
+      )
+      clock.value += 10
+      ledger.recordCorrectionReceipt({
+        taskId: task.taskID,
+        reservationId: "res-complete-new",
+        callerSessionId: "ses_a",
+        currentActivationId: "activation-a",
+        correlation,
+        at: clock.value,
+      })
+      const shown = ledger.show({ taskID: task.taskID, sessionID: "ses_a" })
+      if (!shown.ok || shown.value === null) throw new Error("task missing")
+      clock.value += 10
+      const completed = ledger.report({
+        taskId: task.taskID,
+        callerSessionId: "ses_a",
+        expectedVersion: shown.value.version,
+        reportId: "complete-new",
+        kind: "completed",
+        evidence: { summary: "new result", reference: "new-completed-result" },
+      })
+      expect(completed.ok).toBe(true)
+      const attempt = attemptOf(ledger.correction(task.taskID))[0]
+      expect(attempt).toMatchObject({ phase: "receipted", closedReason: "task-completed" })
+      expect(attempt?.recoveredAt).toBeUndefined()
+      const next = enroll(ledger, "ses_a", "req-after-complete", "activation-a")
+      const granted = grant(ledger, next.taskID, next.version, clock).task
+      const allowed = reserve(ledger, next.taskID, granted.version, granted.generation, "res-after-complete", clock)
+      expect(allowed.ok).toBe(true)
+    } finally {
+      ledger.close()
+    }
+  })
+
+  test("a permit closes on an active new waiting report but is not recovery", () => {
+    const clock = { value: 1_000 }
+    const ledger = open(clock)
+    try {
+      let task = enroll(ledger)
+      task = grant(ledger, task.taskID, task.version, clock).task
+      const reserved = reserve(ledger, task.taskID, task.version, task.generation, "res-wait-permit", clock)
+      if (!reserved.ok) return
+      const correlation = claimCorrelation(
+        ledger,
+        task.taskID,
+        "res-wait-permit",
+        reserved.value.task.version,
+        task.generation,
+        clock,
+      )
+      clock.value += 10
+      ledger.recordCorrectionReceipt({
+        taskId: task.taskID,
+        reservationId: "res-wait-permit",
+        callerSessionId: "ses_a",
+        currentActivationId: "activation-a",
+        correlation,
+        at: clock.value,
+      })
+      const shown = ledger.show({ taskID: task.taskID, sessionID: "ses_a" })
+      if (!shown.ok || shown.value === null) throw new Error("task missing")
+      clock.value += 10
+      const waiting = ledger.report({
+        taskId: task.taskID,
+        callerSessionId: "ses_a",
+        expectedVersion: shown.value.version,
+        reportId: "waiting-new",
+        kind: "waiting",
+        evidence: {
+          waitKind: "human",
+          waitFor: "reviewer",
+          reason: "needs an answer",
+          reference: "waiting-reference",
+          waitID: "waiting-new",
+          waitUntil: clock.value + 60_000,
+        },
+      })
+      expect(waiting.ok).toBe(true)
+      const attempt = attemptOf(ledger.correction(task.taskID))[0]
+      expect(attempt).toMatchObject({ phase: "receipted", closedReason: "normal-wait" })
+      expect(attempt?.recoveredAt).toBeUndefined()
+      expect(waiting.ok && waiting.value.task.taskState).toBe("waiting")
+    } finally {
+      ledger.close()
+    }
+  })
+
+  test("a permit-only old task blocks a replacement task until recovery", () => {
+    const clock = { value: 1_000 }
+    const ledger = open(clock)
+    try {
+      let first = enroll(ledger, "ses_a", "req-permit-old", "activation-a")
+      first = grant(ledger, first.taskID, first.version, clock).task
+      const reserved = reserve(ledger, first.taskID, first.version, first.generation, "res-permit-old", clock)
+      if (!reserved.ok) return
+      const correlation = claimCorrelation(
+        ledger,
+        first.taskID,
+        "res-permit-old",
+        reserved.value.task.version,
+        first.generation,
+        clock,
+      )
+      clock.value += 10
+      ledger.recordCorrectionReceipt({
+        taskId: first.taskID,
+        reservationId: "res-permit-old",
+        callerSessionId: "ses_a",
+        currentActivationId: "activation-a",
+        correlation,
+        at: clock.value,
+      })
+      const current = ledger.show({ taskID: first.taskID, sessionID: "ses_a" })
+      if (!current.ok || current.value === null) throw new Error("task missing")
+      const ended = ledger.control({
+        taskId: first.taskID,
+        callerSessionId: "ses_a",
+        expectedVersion: current.value.version,
+        operation: "end",
+      })
+      expect(ended.ok).toBe(true)
+      expect(attemptOf(ledger.correction(first.taskID))[0]?.closedAt).toBeUndefined()
+      let second = enroll(ledger, "ses_a", "req-permit-new", "activation-a")
+      second = grant(ledger, second.taskID, second.version, clock).task
+      const blocked = reserve(ledger, second.taskID, second.version, second.generation, "res-permit-new", clock)
+      expect(blocked).toMatchObject({ ok: false, code: "session_unresolved" })
+    } finally {
+      ledger.close()
+    }
+  })
+
+  test("an overdue waiting report does not close a receipted permit", () => {
+    const clock = { value: 1_000 }
+    const ledger = open(clock)
+    try {
+      let task = enroll(ledger)
+      task = grant(ledger, task.taskID, task.version, clock).task
+      const reserved = reserve(ledger, task.taskID, task.version, task.generation, "res-overdue-wait", clock)
+      if (!reserved.ok) return
+      const correlation = claimCorrelation(
+        ledger,
+        task.taskID,
+        "res-overdue-wait",
+        reserved.value.task.version,
+        task.generation,
+        clock,
+      )
+      clock.value += 10
+      ledger.recordCorrectionReceipt({
+        taskId: task.taskID,
+        reservationId: "res-overdue-wait",
+        callerSessionId: "ses_a",
+        currentActivationId: "activation-a",
+        correlation,
+        at: clock.value,
+      })
+      const shown = ledger.show({ taskID: task.taskID, sessionID: "ses_a" })
+      if (!shown.ok || shown.value === null) throw new Error("task missing")
+      clock.value += 10
+      const waiting = ledger.report({
+        taskId: task.taskID,
+        callerSessionId: "ses_a",
+        expectedVersion: shown.value.version,
+        reportId: "overdue-wait-report",
+        kind: "waiting",
+        evidence: {
+          waitKind: "human",
+          waitFor: "reviewer",
+          reason: "already late",
+          reference: "late",
+          waitID: "overdue-wait",
+          waitUntil: clock.value - 1,
+        },
+      })
+      expect(waiting.ok).toBe(true)
+      const attempt = attemptOf(ledger.correction(task.taskID))[0]
+      expect(attempt?.closedAt).toBeUndefined()
     } finally {
       ledger.close()
     }

@@ -232,9 +232,14 @@ When a correction prompt actually arrives, it carries the task, attempt and one 
 in a concrete `peers` call. Before any business step, the target submits that call with
 `operation: "receipt"`. Only `continuePermit: true` for that attempt permits the smallest next step;
 a duplicate receipt returns no second permit. The correlation is never exposed by `watch show`.
-A receipt is not recovery: recovery requires new progress and a new result reference after the
-receipt. Queue admission is not a read receipt, the last check and the host enqueue are not atomic,
-and an already admitted message cannot be retracted.
+A permit does not close the attempt by itself. It stays pending until a real current-target report:
+`progress` with a new result reference becomes recovered; `completed` with a new result reference
+records business completion but leaves the attempt `receipted`, not recovered; a new active
+`waiting` report closes the correction round as a normal wait, not as recovery or completion.
+Pause/end alone, target activity only, an old/reused reference, a non-target reporter, or an
+overdue/cleared wait does not close it. A correct receipt without a permit records the known
+instruction as seen/refused and starts no business. Queue admission is not a read receipt, the last
+check and the host enqueue are not atomic, and an already admitted message cannot be retracted.
 
 Reload does not inherit correction authority: a new activation observes and shows a safety pause,
 an old receipt is recorded as seen but issues no permit, and no quiescence proof or ownership

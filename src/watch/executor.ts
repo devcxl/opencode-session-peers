@@ -195,7 +195,12 @@ export function createCorrectionExecutor(options: CorrectionExecutorOptions): Co
       generation: task.generation,
       at: options.now(),
     })
-    if (!claimed.ok) return
+    if (!claimed.ok) {
+      if (claimed.code !== "claim_taken") {
+        abort(taskID, reservationID, reserved.value.task.version, task.generation)
+      }
+      return
+    }
 
     if (closing) {
       record(taskID, reservationID, { kind: "unknown", reason: "the executor closed before queue" })

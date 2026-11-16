@@ -32,6 +32,7 @@ import type {
   WatchObservationView,
   WatchTaskRecord,
 } from "../src/domain/watch.ts"
+import { WATCH_CORRECTION_TERMS } from "../src/domain/watch.ts"
 
 const runtimeVersion = (() => {
   const db = new Database(":memory:")
@@ -99,7 +100,7 @@ function seed(ledger: WatchLedger, clock: Clock): WatchTaskRecord {
     callerSessionId: "ses_a",
     ownerActivation: "activation-a",
     expectedVersion: task.version,
-    reviewSummary: "executor test grant",
+    reviewSummary: WATCH_CORRECTION_TERMS,
     deployment: "single-host-same-location",
     at: clock.value,
   })
@@ -378,6 +379,84 @@ describeExecutor("correction executor", () => {
       expect(sent).toHaveLength(0)
       expect(attempts(ledger, task.taskID)).toHaveLength(1)
       expect(attempts(ledger, task.taskID)[0]).toMatchObject({ phase: "aborted" })
+      await executor.close()
+    } finally {
+      ledger.close()
+    }
+  })
+
+  test("a non-claim-taken failure aborts the unclaimed reservation", async () => {
+    const clock = { value: 1_000 }
+    const ledger = open(clock)
+    try {
+      const task = seed(ledger, clock)
+      const base = authority(ledger)
+      let aborts = 0
+      const executor = createCorrectionExecutor({
+        authority: {
+          ...base,
+          claim: () => ({ ok: false, code: "stale_version", detail: "raced" }),
+          abort: (input) => {
+            aborts += 1
+            return base.abort(input)
+          },
+        },
+        observationFor: () => observation(),
+        sameLocation: async () => true,
+        runtime: () => runtime,
+        gate: correctionGateWithVerifiedTuples(["2.3.0/linux/x64"]),
+        delivery: {
+          async send() {
+            return { kind: "accepted", admissionID: "must-not-happen" }
+          },
+        },
+        activationID: "activation-a",
+        now: () => clock.value,
+        warn: () => {},
+      })
+      executor.kick(task.taskID)
+      await executor.settle()
+      expect(aborts).toBe(1)
+      expect(attempts(ledger, task.taskID)[0]).toMatchObject({ phase: "aborted" })
+      await executor.close()
+    } finally {
+      ledger.close()
+    }
+  })
+
+  test("claim_taken is a no-op and leaves the other claimer's attempt alone", async () => {
+    const clock = { value: 1_000 }
+    const ledger = open(clock)
+    try {
+      const task = seed(ledger, clock)
+      const base = authority(ledger)
+      let aborts = 0
+      const executor = createCorrectionExecutor({
+        authority: {
+          ...base,
+          claim: () => ({ ok: false, code: "claim_taken", detail: "another process" }),
+          abort: (input) => {
+            aborts += 1
+            return base.abort(input)
+          },
+        },
+        observationFor: () => observation(),
+        sameLocation: async () => true,
+        runtime: () => runtime,
+        gate: correctionGateWithVerifiedTuples(["2.3.0/linux/x64"]),
+        delivery: {
+          async send() {
+            return { kind: "accepted", admissionID: "must-not-happen" }
+          },
+        },
+        activationID: "activation-a",
+        now: () => clock.value,
+        warn: () => {},
+      })
+      executor.kick(task.taskID)
+      await executor.settle()
+      expect(aborts).toBe(0)
+      expect(attempts(ledger, task.taskID)[0]).toMatchObject({ phase: "reserved" })
       await executor.close()
     } finally {
       ledger.close()

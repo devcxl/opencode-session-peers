@@ -24,6 +24,7 @@ import {
   type WatchCorrectionSnapshot,
   type WatchCorrectionActual,
   type WatchCorrectionView,
+  isCorrectionAttemptOpen,
   type WatchMode,
   type WatchObservationView,
   type WatchControl,
@@ -86,9 +87,10 @@ export function watchTaskView(
 }
 
 /**
- * The pass-1 correction pane contract: the grant is separate from what this
- * build can actually do. No controlled grant surface or executor exists here,
- * so even a granted task stays `actual: "unavailable"` until pass 2.
+ * The correction pane contract: authorization, the task's actual gate and the
+ * executor policy are separate. The executor exists but stays unavailable until
+ * its runtime/protocol tuple and every task gate are verified; manual correction
+ * remains unavailable even when the first automatic attempt is ready.
  */
 export function watchCorrectionView(
   task: WatchTaskRecord,
@@ -100,13 +102,7 @@ export function watchCorrectionView(
 ): WatchCorrectionView {
   const grant = snapshot.grant
   const attempts = snapshot.attempts
-  const open = attempts.find(
-    (attempt) =>
-      attempt.phase === "reserved" ||
-      attempt.phase === "sending" ||
-      attempt.phase === "accepted" ||
-      attempt.phase === "unknown",
-  )
+  const open = attempts.find(isCorrectionAttemptOpen)
   const last = attempts.length === 0 ? null : (attempts[attempts.length - 1] ?? null)
   const used = attempts.length
   const gate = correctionGate({

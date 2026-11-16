@@ -1,3 +1,4 @@
+import { WATCH_CORRECTION_TERMS } from "../src/domain/watch.ts"
 /**
  * The model-facing receipt entry through the real plugin tool.
  *
@@ -109,7 +110,7 @@ function seed(state: string, downgrade = false, pause = false): Seeded {
       callerSessionId: CALLER_SESSION_ID,
       ownerActivation: "seed-activation",
       expectedVersion: began.value.task.version,
-      reviewSummary: "receipt test grant",
+      reviewSummary: WATCH_CORRECTION_TERMS,
       deployment: "single-host-same-location",
       at: clock.value,
     })
@@ -345,6 +346,12 @@ describeReceipt("correction receipt surface", () => {
       })
       expect(first.text).toContain("One continue permit")
       expect(first.text).not.toContain(seededAttempt.correlation)
+      const afterReceipt = await show(host)
+      expect(afterReceipt.task?.correction).toMatchObject({
+        phase: "receipted",
+        stop: { reason: "receipted-awaiting-recovery" },
+      })
+      expect(afterReceipt.task?.correction.pending).not.toBeNull()
 
       const duplicate = await receipt(host, seededAttempt)
       expect((duplicate.details as { watch: Record<string, unknown> }).watch).toMatchObject({

@@ -1,3 +1,4 @@
+import { WATCH_CORRECTION_TERMS } from "../src/domain/watch.ts"
 /**
  * Observation and persistent alerts through the real plugin entry.
  *
@@ -305,7 +306,7 @@ describeWatch("trusted idle and running observation", () => {
         callerSessionId: CALLER_SESSION_ID,
         ownerActivation: "seed-activation",
         expectedVersion: began.value.task.version,
-        reviewSummary: "Seeded review",
+        reviewSummary: WATCH_CORRECTION_TERMS,
         deployment: "single-host-same-location",
         at: clock.value,
       })
