@@ -16,6 +16,7 @@ import { randomUUID } from "node:crypto"
 import type { Plugin } from "@opencode/plugin"
 
 import { watchCommand } from "./actions/watch-command.ts"
+import { watchDelegationRpc, watchDelegationViewRpc } from "./actions/watch-delegation-rpc.ts"
 import { watchGrantRpc } from "./actions/watch-grant-rpc.ts"
 import { watchRpc } from "./actions/watch-rpc.ts"
 import { parseConfig } from "./config.ts"
@@ -28,6 +29,7 @@ import { PEERS_SKILL, SUPERVISOR_SKILL } from "./skill.ts"
 import { rosterPayload } from "./surface.ts"
 import { peersTool } from "./tool.ts"
 import { sessionAtLocation } from "./watch/access.ts"
+import { createDelegationAuthority, createScopeFactReader } from "./watch/delegation-authority.ts"
 import { createCorrectionExecutor } from "./watch/executor.ts"
 import { createWatchObserver } from "./watch/observe.ts"
 import { createWatchApplication } from "./watch/service.ts"
@@ -51,6 +53,13 @@ export default {
     let announceWatch: (() => void) | undefined
     let observer: ReturnType<typeof createWatchObserver> | undefined
     const activationID = randomUUID()
+    let watchRef: { isClosing(): boolean } | undefined
+    const scopeOf = createScopeFactReader({
+      configScope: config.scope,
+      directory: host.location.directory,
+      sessions: host.sessions,
+      peers: host.storage.peers,
+    })
     const correctionPolicy = {
       observationMs: config.watch.correctionObservationMs,
       windowMs: config.watch.correctionWindowMs,
@@ -66,8 +75,18 @@ export default {
             sessionAtLocation(host.sessions, sessionID, host.location.directory),
           observationFor: (taskID) => observer?.observationFor(taskID) ?? null,
           policy: correctionPolicy,
+          delegation: (ledger) =>
+            createDelegationAuthority({
+              ledger,
+              sessions: host.sessions,
+              scopeOf,
+              activationID,
+              closing: () => watchRef?.isClosing() ?? true,
+              now: () => host.scheduler.now(),
+            }),
         })
       : undefined
+    watchRef = watch
 
     const correctionAuthority = watch?.correctionAuthority()
     const executor =
@@ -80,6 +99,7 @@ export default {
             markOwnReservation: (taskID, fromVersion, toVersion) =>
               observer?.markOwnReservation(taskID, fromVersion, toVersion),
             sameLocation: (sessionID) => sessionAtLocation(host.sessions, sessionID, host.location.directory),
+            checkDelegatedAuthority: (taskID) => watch.checkDelegatedAuthority(taskID),
             runtime: () => {
               const status = watch.status()
               return {
@@ -163,6 +183,26 @@ export default {
         ),
       watchGrant: (input) =>
         watchGrantRpc(
+          {
+            enabled: config.enabled,
+            watch,
+            sessions: host.sessions,
+            directory: host.location.directory,
+          },
+          input,
+        ),
+      watchDelegation: (input) =>
+        watchDelegationRpc(
+          {
+            enabled: config.enabled,
+            watch,
+            sessions: host.sessions,
+            directory: host.location.directory,
+          },
+          input,
+        ),
+      watchDelegationView: (input) =>
+        watchDelegationViewRpc(
           {
             enabled: config.enabled,
             watch,

@@ -1132,6 +1132,10 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
           const snapshot = ledger.correction(taskID)
           return snapshot.ok ? snapshot.value : undefined
         },
+        isDelegatedTask(taskID) {
+          const link = ledger.delegatedTaskLink(taskID)
+          return !link.ok || link.value !== null
+        },
         reserve(input) {
           return ledger.reserveCorrection(input)
         },
