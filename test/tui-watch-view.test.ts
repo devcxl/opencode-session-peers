@@ -418,10 +418,13 @@ describe("a watched task", () => {
       "Child-task enrollment: unavailable — Child-task delegation is not open in this build; enroll the calling session itself.",
     )
     expect(notes).toContain(
-      "Ownership transfer and recovery: unavailable — Watch ownership transfer is not implemented in this build. / Resume and recovery confirmation are not implemented in this build.",
+      "Ownership transfer: unavailable — Watch ownership transfer is not implemented in this build.",
     )
     expect(notes).toContain(
-      "Safety pause: unavailable — Watch safety pause is not implemented in this build; only a manual pause can occur.",
+      "Supervision resume: unavailable — Resume and recovery confirmation are not implemented in this build.",
+    )
+    expect(notes).toContain(
+      "Safety-pause recovery controls: unavailable — Watch safety pause is not implemented in this build; only a manual pause can occur.",
     )
   })
 

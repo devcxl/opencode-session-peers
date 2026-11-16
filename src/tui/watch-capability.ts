@@ -46,13 +46,14 @@ export function capabilityNotes(payload: WatchPayload, compact: boolean): string
   if (capability.delegation === "unavailable") {
     notes.push(`Child-task enrollment: unavailable — ${ensurePeriod(capability.delegationReason)}`)
   }
-  if (capability.transfer === "unavailable" || capability.recovery === "unavailable") {
-    notes.push(
-      `Ownership transfer and recovery: unavailable — ${ensurePeriod(capability.transferReason)} / ${ensurePeriod(capability.recoveryReason)}`,
-    )
+  if (capability.transfer === "unavailable") {
+    notes.push(`Ownership transfer: unavailable — ${ensurePeriod(capability.transferReason)}`)
+  }
+  if (capability.recovery === "unavailable") {
+    notes.push(`Supervision resume: unavailable — ${ensurePeriod(capability.recoveryReason)}`)
   }
   if (capability.safetyPause === "unavailable") {
-    notes.push(`Safety pause: unavailable — ${ensurePeriod(capability.safetyPauseReason)}`)
+    notes.push(`Safety-pause recovery controls: unavailable — ${ensurePeriod(capability.safetyPauseReason)}`)
   }
   return notes
 }

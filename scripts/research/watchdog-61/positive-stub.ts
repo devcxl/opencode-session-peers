@@ -282,13 +282,26 @@ function json(reply: Reply, model: string): unknown {
 }
 
 function streamed(reply: Reply, model: string): string {
-  const message = json(reply, model) as { choices: Array<{ message: unknown }> }
   const chunk = {
     id: "chatcmpl-watch61",
     object: "chat.completion.chunk",
     created: 0,
     model,
-    choices: [{ index: 0, delta: message.choices[0]?.message, finish_reason: reply.kind === "tool" ? "tool_calls" : "stop" }],
+    choices: [{
+      index: 0,
+      delta: reply.kind === "text"
+        ? { role: "assistant", content: reply.text }
+        : {
+            role: "assistant",
+            tool_calls: [{
+              index: 0,
+              id: "call_watch61",
+              type: "function",
+              function: { name: reply.name, arguments: reply.arguments },
+            }],
+          },
+      finish_reason: reply.kind === "tool" ? "tool_calls" : "stop",
+    }],
   }
   return `data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`
 }

@@ -1,8 +1,9 @@
 # #61 positive protocol plan (real host, candidate build)
 
-Status: proposed, **not executed**. The parent owns the verification worktree,
-the static candidate tuple and the decision to run. This plan does not change
-the production whitelist, the live binary, the probe scripts or the UI.
+Status: executed by the parent; **the real-host positive protocol failed**.
+The parent owns the verification worktree and its static candidate tuple.
+The production whitelist remains empty. No live binary or live session was
+modified.
 
 ## What this must prove
 
@@ -121,3 +122,36 @@ bun scripts/research/watchdog-61/positive-runner.ts
 
 The runner refuses to start without both the explicit confirmation and the
 verification plugin path. It never modifies the candidate tuple.
+
+## Measured blocker (2026-11-16)
+
+Three isolated runs completed enrollment, a real target `begin` tool call and
+controlled grant confirmation. None produced a correction or spent an attempt.
+The short configuration was verified through RPC: `idleMs=2000`, `tickMs=500`.
+Runtime, declaration, location, owner and protocol gates passed in the candidate
+build. Observation and wait-completeness gates failed:
+
+> session predates continuous observation; event-only wait sources incomplete
+
+A metadata-only trace resolved the cause. The target's `session.created`,
+inbox, step, text and tool events carried the expected scratch directory.
+`session.execution.started`, `session.execution.succeeded` and
+`session.usage.updated` had no location stamp. Under the approved source-evidence
+policy, the observer invalidated its previously established lifecycle coverage.
+This is not a SQLite failure, a missing grant, or proof of a busy target.
+
+Each run stopped its own service and stub, verified both ports closed, and
+preserved the live service registry digest. Failure scratch was retained.
+No normal-user authentication was copied and no paid provider was called.
+
+The positive protocol is **not accepted**. Do not add the candidate tuple to the
+production whitelist, synthesize missing event locations, or reinterpret the
+single-host declaration as source proof. An equivalent trusted public signal
+needs separate review; otherwise the host must supply the missing provenance.
+The ticket remains incomplete while that support condition is unmet.
+
+`WATCH61_TRACE_EVENTS=1` optionally loads the research event-shape fixture on a
+future isolated run. It records only bounded event types, timestamps, location,
+session identifiers and data-key names, never prompt text, tool inputs/results,
+grant challenges or dispatch correlations. The fixture is not a production
+adapter and does not modify events.

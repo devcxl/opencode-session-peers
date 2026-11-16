@@ -22,7 +22,7 @@ import { MISSING, readLiveService } from "../../harness/isolation.ts"
 import { isPortOpen, prepareScratch, startInstance, type InstanceHandle } from "../../harness/instance.ts"
 import { STUB_MODEL_ID, STUB_PROVIDER_ID, defaultScratchRoot, scratchLayout, serviceJsonPath } from "../../harness/paths.ts"
 import { sleep } from "../../harness/instance.ts"
-import { promptForResult, toolCalls, waitForCall, type ToolCall } from "../../harness/stub/transcript.ts"
+import { isTerminal, promptForResult, toolCalls, waitForCall, type ToolCall } from "../../harness/stub/transcript.ts"
 import { messageText } from "../../harness/sessions.ts"
 import type { HarnessOptions } from "../../harness/args.ts"
 import { readWatchGrantPayload, readWatchPayload, type WatchPayload } from "../../../src/rpc.ts"
@@ -37,6 +37,7 @@ if (pluginPath === undefined || pluginPath.length === 0) {
   console.error("WATCH61_VERIFICATION_PLUGIN must point at the reviewed verification worktree")
   process.exit(2)
 }
+const traceEvents = process.env["WATCH61_TRACE_EVENTS"] === "1"
 
 const opencodeBin = process.env["WATCH61_OPENCODE_BIN"] ?? "/usr/bin/opencode"
 const root = mkdtempSync(join(defaultScratchRoot(), "watchdog-61-positive-"))
@@ -57,11 +58,14 @@ const before = readLiveService(liveService)
 const stub = await startPositiveStub()
 let instance: InstanceHandle | undefined
 let failure: string | undefined
+let diagnostic: unknown
+let inspectFailure: (() => Promise<unknown>) | undefined
 const evidence: string[] = []
 
 try {
   prepareScratch(layout, {
     plugins: [
+      ...(traceEvents ? [join(import.meta.dir, "event-probe")] : []),
       {
         package: pluginPath,
         options: { watch: { idleMs: 2_000, runningSilentMs: 10_000, waitOverdueMs: 60_000, tickMs: 500 } },
@@ -74,7 +78,10 @@ try {
     password: `watch61-positive-${crypto.randomUUID()}`,
     opencodeBin,
     bootTimeoutMs: 60_000,
-    env: base,
+    env: {
+      ...base,
+      ...(traceEvents ? { WATCH61_EVENT_SHAPES: join(layout.root, "event-shapes.jsonl") } : {}),
+    },
     stubBaseUrl: `${stub.url}/v1`,
   })
   const client = createClient(instance.url, instance.password)
@@ -99,6 +106,32 @@ try {
     const payload = readWatchPayload(await rpc("watch", input))
     if (payload === undefined) throw new Error("the watch RPC answer was not understood")
     return payload
+  }
+  inspectFailure = async () => {
+    const payload = await watch({ operation: "show", sessionID: target.id })
+    return {
+      ledger: payload.ledger,
+      task: payload.task === null ? null : {
+        mode: payload.task.mode,
+        watchState: payload.task.watchState,
+        taskState: payload.task.taskState,
+        ownership: payload.task.ownership,
+        participation: payload.task.participation,
+        attempts: payload.task.attempts,
+        phase: payload.task.correction.phase,
+        stop: payload.task.correction.stop,
+        gates: payload.task.correction.gates,
+      },
+      observation: payload.observation === null ? null : {
+        state: payload.observation.state,
+        reason: payload.observation.reason,
+        trusted: payload.observation.trusted,
+        waitsPartial: payload.observation.waitsPartial,
+        waitsTruncated: payload.observation.waitsTruncated,
+        effective: payload.observation.effective,
+        waits: payload.observation.waits.map((wait) => ({ source: wait.source, status: wait.status })),
+      },
+    }
   }
   const options = { turnTimeoutMs: 60_000 } as HarnessOptions
 
@@ -150,14 +183,14 @@ try {
   if (confirmed?.ok !== true) throw new Error(`grant confirm failed: ${confirmed?.failure?.code ?? "unknown"}`)
   evidence.push("controlled RPC granted limited correction with the explicit deployment declaration")
 
-  const correction = await waitForCorrectionPrompt(client, target.id, 120_000)
+  const correction = await waitForCorrectionPrompt(client, target.id, 15_000)
   const prompt = parseCorrectionPrompt(correction)
   evidence.push(`automatic queue produced one correction prompt for attempt ${prompt.attemptID}`)
 
   const receipt = await waitForCall(
     client,
     target.id,
-    (call) => call.name === "peers" && operationOf(call) === "receipt",
+    (call) => isTerminal(call) && call.name === "peers" && operationOf(call) === "receipt",
     60_000,
   )
   if (receipt === undefined) throw new Error("the target never called receipt")
@@ -192,8 +225,9 @@ try {
     target.id,
     (call) =>
       call.name === "peers" &&
+      isTerminal(call) &&
       operationOf(call) === "receipt" &&
-      call.metadata["duplicate"] === true,
+      watchMeta(call)?.["duplicate"] === true,
     60_000,
   )
   if (
@@ -217,7 +251,7 @@ try {
   const wrong = await waitForCall(
     client,
     other.id,
-    (call) => call.name === "peers" && operationOf(call) === "receipt",
+    (call) => isTerminal(call) && call.name === "peers" && operationOf(call) === "receipt",
     60_000,
   )
   if (wrong === undefined) throw new Error("the wrong caller never reached receipt")
@@ -235,6 +269,11 @@ try {
   evidence.push("a different local session was refused with E_WATCH_CALLER_MISMATCH")
 } catch (error) {
   failure = error instanceof Error ? error.message : String(error)
+  try {
+    diagnostic = await inspectFailure?.()
+  } catch {
+    diagnostic = { unavailable: true }
+  }
 } finally {
   let stop: { stopped: boolean; portClosed: boolean; observed: string } | undefined
   if (instance !== undefined) {
@@ -262,6 +301,7 @@ try {
       stubPortClosed &&
       before.digest === after.digest,
     failure: failure ?? null,
+    diagnostic: diagnostic ?? null,
     evidence,
     childPid: instance?.pid ?? null,
     stopped: stop?.stopped ?? null,
