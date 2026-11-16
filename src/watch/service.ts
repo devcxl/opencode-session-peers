@@ -826,6 +826,84 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
       if (current.ledger === undefined) {
         return delegationGrantFailure(mapLedgerFailure(current.failure?.code ?? "ledger_error", current.failure?.detail ?? "unknown"))
       }
+      const delegation = delegationFor(current.ledger)
+      if (delegation === undefined) {
+        return delegationGrantFailure(unsupported("The delegated-authority guard is not wired at this location; no grant was confirmed."))
+      }
+      const parent = current.ledger.show({ sessionID: input.callerSessionID, taskID: parentTaskID.value })
+      if (!parent.ok) return delegationGrantFailure(mapLedgerFailure(parent.code, parent.detail))
+      if (parent.value === null) {
+        return delegationGrantFailure({ code: "E_WATCH_NOT_FOUND", reason: "No parent task matches that id for this session." })
+      }
+      const existing = current.ledger.delegationGrantFor({
+        parentTaskID: parentTaskID.value,
+        targetSessionID: target.value,
+      })
+      if (!existing.ok) return delegationGrantFailure(mapLedgerFailure(existing.code, existing.detail))
+      const [parentFacts, childFacts] = await Promise.all([
+        delegation.facts(parent.value.targetSessionID),
+        delegation.facts(target.value),
+      ])
+      if (closing) return delegationGrantFailure(closingFailure())
+      const gate = delegationGrantGate({
+        parentTask: parent.value,
+        callerSessionID: input.callerSessionID,
+        ownerActivation: options.activationID,
+        expectedVersion: input.expectedVersion,
+        targetSessionID: target.value,
+        mode: mode.value,
+        parent: parentFacts.session,
+        child: childFacts.session,
+        parentScope: parentFacts.scope?.scope ?? null,
+        childScope: childFacts.scope?.scope ?? null,
+        existingGrant: existing.value,
+        closing,
+      })
+      if (!gate.allowed) return delegationGrantFailure(delegationFailure(gate.stopReason, gate.missingEvidence))
+      if (
+        parentFacts.session === null ||
+        childFacts.session === null ||
+        parentFacts.scope === null ||
+        childFacts.scope === null
+      ) {
+        return delegationGrantFailure(delegationFailure("authority-unknown", "fresh host facts disappeared before confirmation"))
+      }
+      if (
+        parentFacts.session.directory !== scopeDirectory.value ||
+        childFacts.session.directory !== scopeDirectory.value
+      ) {
+        return delegationGrantFailure(
+          delegationFailure("location-mismatch", "the current host location differs from the reviewed challenge"),
+        )
+      }
+      if (parentFacts.scope.scope !== scopePeerScope.value || childFacts.scope.scope !== scopePeerScope.value) {
+        return delegationGrantFailure(
+          delegationFailure("scope-mismatch", "the current scope differs from the reviewed challenge"),
+        )
+      }
+      // Host facts were awaited above; re-read the durable facts and closing
+      // before consuming the challenge. A changed task version means the
+      // reviewed challenge no longer describes the same parent state.
+      if (closing) return delegationGrantFailure(closingFailure())
+      const after = current.ledger.show({ sessionID: input.callerSessionID, taskID: parentTaskID.value })
+      if (!after.ok) return delegationGrantFailure(mapLedgerFailure(after.code, after.detail))
+      if (
+        after.value === null ||
+        after.value.version !== input.expectedVersion ||
+        after.value.generation !== input.generation
+      ) {
+        return delegationGrantFailure(
+          delegationFailure("grant-stale", "the parent task changed during the confirmation"),
+        )
+      }
+      const afterGrant = current.ledger.delegationGrantFor({
+        parentTaskID: parentTaskID.value,
+        targetSessionID: target.value,
+      })
+      if (!afterGrant.ok) return delegationGrantFailure(mapLedgerFailure(afterGrant.code, afterGrant.detail))
+      if (afterGrant.value?.state === "granted") {
+        return delegationGrantFailure(delegationFailure("grant-active", "another delegation grant won the race"))
+      }
       const confirmed = current.ledger.confirmDelegationGrant({
         challenge: challenge.value,
         taskId: parentTaskID.value,

@@ -127,6 +127,35 @@ function enrollParent(app: WatchApplication, requestID = "parent"): { taskID: st
   return { taskID: enrolled.task.taskID, version: enrolled.task.version }
 }
 
+async function prepareOnly(app: WatchApplication, parentTaskID: string, version: number) {
+  const prepared = await app.prepareDelegationGrant({
+    callerSessionID: PARENT,
+    parentTaskID,
+    expectedVersion: version,
+    targetSessionID: CHILD,
+    mode: "limited-correction",
+    deployment: "single-host-same-location",
+  })
+  if (!prepared.ok || prepared.challenge === null) throw new Error(JSON.stringify(prepared.failure))
+  return prepared.challenge
+}
+
+function confirmRequest(challenge: NonNullable<Awaited<ReturnType<WatchApplication["prepareDelegationGrant"]>>["challenge"]>) {
+  return {
+    callerSessionID: PARENT,
+    parentTaskID: challenge.parentTaskID,
+    expectedVersion: challenge.expectedVersion,
+    generation: challenge.generation,
+    targetSessionID: challenge.targetSessionID,
+    mode: challenge.mode,
+    scopeDirectory: challenge.scopeDirectory,
+    scopePeerScope: challenge.scopePeerScope,
+    termsDigest: challenge.termsDigest,
+    challenge: challenge.challenge,
+    ...(challenge.deployment === undefined ? {} : { deployment: challenge.deployment }),
+  } as const
+}
+
 async function prepareAndConfirm(app: WatchApplication, parentTaskID: string, version: number) {
   const prepared = await app.prepareDelegationGrant({
     callerSessionID: PARENT,
@@ -255,6 +284,66 @@ describeService("delegation application", () => {
       })
       expect(crossScope.ok).toBe(false)
       expect(crossScope.failure?.code).toBe("E_WATCH_UNSUPPORTED")
+    } finally {
+      h.close()
+    }
+  })
+
+  test("confirm rechecks the current direct parent and leaves the challenge reusable", async () => {
+    const h = harness({ withAuthority: true })
+    try {
+      const parent = enrollParent(h.app)
+      const challenge = await prepareOnly(h.app, parent.taskID, parent.version)
+      const original = h.sessions.get(CHILD)
+      if (original !== undefined) h.sessions.set(CHILD, { ...original, parentID: "ses_other" })
+      const refused = await h.app.confirmDelegationGrant(confirmRequest(challenge))
+      expect(refused.ok).toBe(false)
+      expect(refused.failure?.code).toBe("E_WATCH_CALLER_MISMATCH")
+      expect(refused.challenge).toBeNull()
+      const noGrant = h.ledger.delegationGrantFor({ parentTaskID: parent.taskID, targetSessionID: CHILD })
+      expect(noGrant.ok && noGrant.value).toBeNull()
+
+      if (original !== undefined) h.sessions.set(CHILD, original)
+      const confirmed = await h.app.confirmDelegationGrant(confirmRequest(challenge))
+      expect(confirmed.ok).toBe(true)
+      expect(confirmed.grant).toMatchObject({ state: "granted", targetSessionID: CHILD })
+    } finally {
+      h.close()
+    }
+  })
+
+  test("confirm refuses a scope change without writing a wrong-scope grant", async () => {
+    const h = harness({ withAuthority: true })
+    try {
+      const parent = enrollParent(h.app)
+      const challenge = await prepareOnly(h.app, parent.taskID, parent.version)
+      h.scopes.set(CHILD, { scope: "project-b", source: "recorded" })
+      const refused = await h.app.confirmDelegationGrant(confirmRequest(challenge))
+      expect(refused.ok).toBe(false)
+      expect(refused.failure?.code).toBe("E_WATCH_UNSUPPORTED")
+      expect(refused.challenge).toBeNull()
+      const noGrant = h.ledger.delegationGrantFor({ parentTaskID: parent.taskID, targetSessionID: CHILD })
+      expect(noGrant.ok && noGrant.value).toBeNull()
+    } finally {
+      h.close()
+    }
+  })
+
+  test("confirm refuses a deleted child without consuming the nonce", async () => {
+    const h = harness({ withAuthority: true })
+    try {
+      const parent = enrollParent(h.app)
+      const challenge = await prepareOnly(h.app, parent.taskID, parent.version)
+      const original = h.sessions.get(CHILD)
+      h.sessions.delete(CHILD)
+      const refused = await h.app.confirmDelegationGrant(confirmRequest(challenge))
+      expect(refused.ok).toBe(false)
+      expect(refused.failure?.code).toBe("E_WATCH_UNSUPPORTED")
+      expect(refused.challenge).toBeNull()
+
+      if (original !== undefined) h.sessions.set(CHILD, original)
+      const confirmed = await h.app.confirmDelegationGrant(confirmRequest(challenge))
+      expect(confirmed.ok).toBe(true)
     } finally {
       h.close()
     }
