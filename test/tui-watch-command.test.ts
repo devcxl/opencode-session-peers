@@ -275,3 +275,90 @@ describe("the panel's own controls", () => {
     setup.renderer.destroy()
   })
 })
+
+describe("peers-watch children command", () => {
+  test("children opens delegation panel with 1 read and 0 writes", async () => {
+    const fake = fakePort()
+    const dispose = installWatch(fake.port)
+    // Run /peers-watch children
+    commandOf(fake).run("children")
+    await tick(0)
+
+    expect(fake.dialogShows()).toBeGreaterThan(0)
+    expect(fake.delegationReads).toHaveLength(1)
+    expect(fake.delegationCalls).toHaveLength(0)
+    expect(fake.calls).toHaveLength(0)
+
+    const setup = await testRender(() => {
+      const render = fake.shown()
+      if (render === undefined) throw new Error("the delegation panel was not opened")
+      return render()
+    }, { width: 100, height: 40 })
+    await setup.flush()
+
+    const text = setup.captureCharFrame().replace(/[│─┌┐└┘├┤┬┴┼]+/g, " ").replace(/\s+/g, " ")
+    expect(text).toContain("Session watch — delegation")
+    expect(text).toContain("g: grant delegation")
+    dispose()
+    setup.renderer.destroy()
+  })
+
+  test("children with childID and mode opens review stage without writing", async () => {
+    const fake = fakePort()
+    const dispose = installWatch(fake.port)
+    // Run /peers-watch children ses_child_prefill limited
+    commandOf(fake).run("children ses_child_prefill limited")
+    await tick(0)
+
+    expect(fake.delegationCalls).toHaveLength(0)
+    const setup = await testRender(() => {
+      const render = fake.shown()
+      if (render === undefined) throw new Error("the delegation panel was not opened")
+      return render()
+    }, { width: 100, height: 40 })
+    await setup.flush()
+
+    const text = setup.captureCharFrame().replace(/[│─┌┐└┘├┤┬┴┼]+/g, " ").replace(/\s+/g, " ")
+    expect(text).toContain("Session watch — delegation review")
+    expect(text).toContain("Target child session: ses_child_prefill")
+    expect(text).toContain("Delegation mode: limited-correction")
+    expect(text).toContain("y: declare + prepare challenge · n: cancel")
+    // Absolutely no prepare/confirm/grant write RPC was issued
+    expect(fake.delegationCalls).toHaveLength(0)
+    dispose()
+    setup.renderer.destroy()
+  })
+
+  test("pressing k in watch dialog opens delegation panel", async () => {
+    const fake = fakePort()
+    const dispose = installWatch(fake.port)
+    commandOf(fake).run()
+    await tick(0)
+
+    const setup = await testRender(() => {
+      const render = fake.shown()
+      return render ? render() : null
+    }, { width: 100, height: 40 })
+    await setup.flush()
+
+    // Press k from task watch view
+    setup.mockInput.pressKey("k")
+    await setup.flush()
+    await tick(10)
+    await setup.flush()
+
+    expect(fake.dialogShows()).toBe(2)
+    const delegationSetup = await testRender(() => {
+      const render = fake.shown()
+      if (render === undefined) throw new Error("the delegation panel was not opened")
+      return render()
+    }, { width: 100, height: 40 })
+    await delegationSetup.flush()
+
+    const text = delegationSetup.captureCharFrame().replace(/[│─┌┐└┘├┤┬┴┼]+/g, " ").replace(/\s+/g, " ")
+    expect(text).toContain("Session watch — delegation")
+    dispose()
+    setup.renderer.destroy()
+    delegationSetup.renderer.destroy()
+  })
+})

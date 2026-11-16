@@ -24,11 +24,14 @@ import { readWatchPayload, type WatchPayload } from "../rpc.ts"
 import { alertItems } from "./watch-alerts.ts"
 import { failureText } from "./feed.ts"
 import { WatchDialog } from "./watch-dialog.tsx"
+import { WatchDelegationDialog } from "./watch-delegation-dialog.tsx"
 import { createGrantFlow } from "./watch-grant-flow.ts"
+import { createWatchDelegationFeed } from "./watch-delegation-feed.ts"
+import { createDelegationFlow } from "./watch-delegation-flow.ts"
 import { createWatchFeed } from "./watch-feed.ts"
 
 const USAGE =
-  "usage: /peers-watch [enroll <goal> | pause <taskID> <version> | end <taskID> <version>]"
+  "usage: /peers-watch [enroll <goal> | pause <taskID> <version> | end <taskID> <version> | children [childID] [mode]]"
 
 const NO_SESSION = "Peers watch: no session is open here."
 
@@ -121,6 +124,104 @@ export function installWatch(port: TuiPort, options: WatchCommandOptions = {}): 
     epoch: () => lifecycleEpoch,
   })
 
+  const delegationFeed = createWatchDelegationFeed(port.watchDelegation)
+  let delegationPanelOpen = false
+  let delegationParentTaskID: string | undefined
+  let delegationParentVersion: number | undefined
+
+  const delegation = createDelegationFlow({
+    port,
+    feed: delegationFeed,
+    isDisposed: () => disposed,
+    panel: () => ({
+      sessionID: panelSessionID,
+      parentTaskID: delegationParentTaskID,
+      expectedVersion: delegationParentVersion,
+      open: delegationPanelOpen,
+    }),
+    epoch: () => lifecycleEpoch,
+  })
+
+  const openDelegation = async (
+    initialTargetSessionID?: string,
+    initialMode?: "alert" | "limited-correction",
+  ): Promise<void> => {
+    if (disposed) return
+    const { sessionID } = port.currentSession()
+    if (sessionID === undefined) {
+      port.toast(NO_SESSION, "warning")
+      return
+    }
+    let state = feed.state()
+    if (state.kind !== "payload") {
+      try {
+        const answer = await port.watch.read({ sessionID })
+        const payload = readWatchPayload(answer)
+        if (payload !== undefined && payload.task !== null) {
+          feed.apply(payload)
+          state = { kind: "payload", payload }
+        }
+      } catch {
+        // handled below
+      }
+    }
+    const task = state.kind === "payload" ? state.payload.task : null
+    if (task === null) {
+      port.toast("No enrolled parent task for this session.", "warning")
+      return
+    }
+    const openedEpoch = ++lifecycleEpoch
+    panelSessionID = sessionID
+    delegationParentTaskID = task.taskID
+    delegationParentVersion = task.version
+    delegationPanelOpen = true
+    delegation.clear()
+    delegationFeed.open(sessionID, task.taskID)
+
+    port.dialog.show(
+      () => (
+        <WatchDelegationDialog
+          state={delegationFeed.state}
+          sessionID={sessionID}
+          parentTaskID={task.taskID}
+          parentVersion={task.version}
+          palette={port.palette}
+          initialTargetSessionID={initialTargetSessionID}
+          initialMode={initialMode}
+          onPrepare={async (target, mode) => {
+            if (disposed || openedEpoch !== lifecycleEpoch || panelSessionID !== sessionID) return undefined
+            return delegation.prepare(target, mode)
+          }}
+          onConfirm={async () => {
+            if (disposed || openedEpoch !== lifecycleEpoch || panelSessionID !== sessionID) return
+            await delegation.confirm()
+          }}
+          onRevoke={async (target) => {
+            if (disposed || openedEpoch !== lifecycleEpoch || panelSessionID !== sessionID) return
+            await delegation.revoke(target)
+          }}
+          onCancel={() => delegation.cancel()}
+          onClose={() => {
+            delegationPanelOpen = false
+            delegationFeed.close()
+            delegation.clear()
+            open(sessionID)
+          }}
+        />
+      ),
+      () => {
+        if (disposed || openedEpoch !== lifecycleEpoch) return
+        delegationPanelOpen = false
+        delegationParentTaskID = undefined
+        delegationParentVersion = undefined
+        delegation.clear()
+        lifecycleEpoch += 1
+        delegationFeed.close()
+      },
+    )
+    port.dialog.set({ size: "xlarge", centered: true })
+  }
+
   const open = (sessionID: string): void => {
     if (disposed) return
     const openedEpoch = ++lifecycleEpoch
@@ -163,6 +264,7 @@ export function installWatch(port: TuiPort, options: WatchCommandOptions = {}): 
             if (disposed || openedEpoch !== lifecycleEpoch || panelSessionID !== sessionID) return
             await grant.downgrade()
           }}
+          onDelegation={() => openDelegation()}
         />
       ),
       // A close from an older panel must not act for the one on screen now.
@@ -408,6 +510,18 @@ export function installWatch(port: TuiPort, options: WatchCommandOptions = {}): 
           void control(operation, taskID, version, false)
           return
         }
+        case "children": {
+          const childID = rest[0]
+          const modeRaw = rest[1]
+          const mode =
+            modeRaw === "limited-correction" || modeRaw === "limited"
+              ? "limited-correction"
+              : modeRaw === "alert"
+                ? "alert"
+                : undefined
+          openDelegation(childID, mode)
+          return
+        }
         case "delegate":
           port.toast(
             "Child-task enrollment is unavailable in this build; enroll this session itself.",
@@ -443,10 +557,15 @@ export function installWatch(port: TuiPort, options: WatchCommandOptions = {}): 
     if (disposed) return
     disposed = true
     panelOpen = false
+    delegationPanelOpen = false
     panelSessionID = undefined
+    delegationParentTaskID = undefined
+    delegationParentVersion = undefined
     grant.clear()
+    delegation.clear()
     lifecycleEpoch += 1
     feed.dispose()
+    delegationFeed.dispose()
   }
 }
 

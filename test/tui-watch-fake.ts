@@ -7,6 +7,7 @@
  * toasts and screens without binding to a private helper.
  */
 
+import { createSignal } from "solid-js"
 import { RGBA } from "@opentui/core"
 import { testRender } from "@opentui/solid"
 
@@ -412,7 +413,7 @@ export function fakePort(options: FakeOptions = {}) {
   const toasts: { message: string; variant: ToastVariant | undefined }[] = []
   const commands: TuiCommand[] = []
   const dialogSets: { size: string; centered: boolean }[] = []
-  let shown: Parameters<TuiPort["dialog"]["show"]>[0] | undefined
+  const [shown, setShown] = createSignal<Parameters<TuiPort["dialog"]["show"]>[0] | undefined>()
   let onClose: (() => void) | undefined
   let listener: (() => void) | undefined
   let rosterReads = 0
@@ -483,7 +484,7 @@ export function fakePort(options: FakeOptions = {}) {
     dialog: {
       show: (render, close) => {
         dialogShows += 1
-        shown = render
+        setShown(() => render)
         onClose = close
       },
       set: (presentation) => {
@@ -502,7 +503,7 @@ export function fakePort(options: FakeOptions = {}) {
     toasts,
     commands,
     dialogSets,
-    shown: () => shown,
+    shown: () => shown(),
     dialogShows: () => dialogShows,
     rosterReads: () => rosterReads,
     setSession: (sessionID: string | undefined) => {
