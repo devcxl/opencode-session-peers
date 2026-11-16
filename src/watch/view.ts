@@ -10,6 +10,7 @@
 import { correctionGate } from "./correction.ts"
 import {
   CORRECTION_UNAVAILABLE_REASON,
+  WATCH_CORRECTION_DEFAULT_POLICY,
   DELEGATION_UNAVAILABLE_REASON,
   MANUAL_CORRECTION_UNAVAILABLE_REASON,
   RECOVERY_UNAVAILABLE_REASON,
@@ -21,6 +22,8 @@ import {
   type WatchCapability,
   type WatchCorrectionAttemptRecord,
   type WatchCorrectionAttemptView,
+  type WatchCorrectionPolicy,
+  type WatchCorrectionPolicyView,
   type WatchCorrectionSnapshot,
   type WatchCorrectionActual,
   type WatchCorrectionView,
@@ -53,6 +56,8 @@ export function watchTaskView(
   runtime?: WatchRuntimeFactsView,
   observation?: WatchObservationView | null,
   closing?: boolean,
+  now: number = Date.now(),
+  policy: WatchCorrectionPolicy = WATCH_CORRECTION_DEFAULT_POLICY,
 ): WatchTaskView {
   return {
     taskID: task.taskID,
@@ -67,7 +72,7 @@ export function watchTaskView(
     ownership: task.ownerActivation === activationID ? "this-instance" : "another-activation",
     participation: task.lastReport === undefined ? "not-seen" : "seen",
     attempts: { used: task.attemptsUsed, limit: WATCH_CORRECTION_LIMIT },
-    correction: watchCorrectionView(task, correction, activationID, runtime, observation, closing),
+    correction: watchCorrectionView(task, correction, activationID, runtime, observation, closing, now, policy),
     pause:
       task.ownerActivation !== activationID
         ? {
@@ -99,6 +104,8 @@ export function watchCorrectionView(
   runtime?: WatchRuntimeFactsView,
   observation?: WatchObservationView | null,
   closing = false,
+  now: number = Date.now(),
+  policy: WatchCorrectionPolicy = WATCH_CORRECTION_DEFAULT_POLICY,
 ): WatchCorrectionView {
   const grant = snapshot.grant
   const attempts = snapshot.attempts
@@ -124,6 +131,8 @@ export function watchCorrectionView(
     singleHostDeclared: grant?.deployment === "single-host-same-location",
     closing,
     executorReady: true,
+    now,
+    policy,
   })
   const history = attempts.map(correctionAttemptView)
   const pending = open === undefined ? null : correctionAttemptView(open)
@@ -141,7 +150,8 @@ export function watchCorrectionView(
       ? "The correction executor gates are satisfied for this attempt."
       : (gate.missingEvidence ?? CORRECTION_UNAVAILABLE_REASON),
     attempts: { used, limit: WATCH_CORRECTION_LIMIT },
-    executionPolicy: "first-attempt-only",
+    executionPolicy: "bounded-three-attempt",
+    policy: correctionPolicyView(gate.policy),
     phase: pending?.phase ?? (last === null ? "idle" : last.phase),
     pending,
     last: last === null ? null : correctionAttemptView(last),
@@ -181,6 +191,22 @@ function correctionDowngradeControl(
   return enabled()
 }
 
+function correctionPolicyView(policy: {
+  readonly observationMs: number
+  readonly windowMs: number
+  readonly windowStartedAt: number | null
+  readonly windowEndsAt: number | null
+  readonly observationEndsAt: number | null
+}): WatchCorrectionPolicyView {
+  return {
+    observationMs: policy.observationMs,
+    windowMs: policy.windowMs,
+    windowStartedAt: policy.windowStartedAt,
+    windowEndsAt: policy.windowEndsAt,
+    nextAttemptAt: policy.observationEndsAt,
+  }
+}
+
 function correctionAttemptView(attempt: WatchCorrectionAttemptRecord): WatchCorrectionAttemptView {
   return {
     attemptID: attempt.reservationID,
@@ -212,8 +238,13 @@ function correctionAttemptView(attempt: WatchCorrectionAttemptRecord): WatchCorr
             resultReference: attempt.recoveryReference ?? "",
             at: attempt.recoveredAt,
           },
-    stopReason: attempt.stopReason ?? null,
+    stopReason: attempt.stopReason ?? closedReasonAsStop(attempt.closedReason),
   }
+}
+
+/** A verified closure is displayed as why another automatic send is not eligible. */
+function closedReasonAsStop(reason: string | undefined): "normal-wait" | "task-completed" | null {
+  return reason === "normal-wait" || reason === "task-completed" ? reason : null
 }
 
 export function watchAlertView(alert: WatchAlertRecord): WatchAlertView {
@@ -239,16 +270,16 @@ export function watchCapability(
   mode: WatchMode = "alert",
   correctionActual: WatchCorrectionActual = "unavailable",
 ): WatchCapability {
-  const firstAttempt = correctionActual === "ready"
+  const bounded = correctionActual === "ready"
   return {
     mode,
     monitoring: "observer-alerts",
     automaticDetection: "partial",
     automaticDetectionReason:
       "Observes local execution lifecycle, target activity and same-location waits; it does not prove goal progress or single-host uniqueness.",
-    correction: firstAttempt ? "first-attempt" : "unavailable",
-    correctionReason: firstAttempt
-      ? "The runtime/protocol tuple is verified; only the first permanent attempt may be automatic. Manual correction, resume and transfer remain unavailable."
+    correction: bounded ? "bounded" : "unavailable",
+    correctionReason: bounded
+      ? "The runtime/protocol tuple is verified; up to three permanent automatic attempts are available under the bounded policy. Manual correction, resume and transfer remain unavailable."
       : CORRECTION_UNAVAILABLE_REASON,
     delegation: "unavailable",
     delegationReason: DELEGATION_UNAVAILABLE_REASON,

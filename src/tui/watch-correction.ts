@@ -64,8 +64,11 @@ export function correctionRows(
     ),
     fact("Deployment", deploymentText(authorization.deployment)),
     fact("Actual capability", actualText(correction)),
-    fact("Policy", `first attempt only · hard limit ${correction.attempts.limit}`),
-    fact("Attempts", `${correction.attempts.used} of ${correction.attempts.limit} used`),
+    fact("Policy", policyText(correction)),
+    fact(
+      "Attempts",
+      `${correction.attempts.used} of ${correction.attempts.limit} used · ${Math.max(0, correction.attempts.limit - correction.attempts.used)} remaining`,
+    ),
     fact("Phase", correction.phase),
     fact("Business completed", correction.businessCompleted ? "yes" : "no"),
     fact("Stop", stopText(correction)),
@@ -98,6 +101,22 @@ export function correctionRows(
     notes.push(
       `Automatic send stopped: ${correction.stop.reason}${correction.stop.missingEvidence === null ? "" : ` · missing: ${correction.stop.missingEvidence}`}.`,
     )
+  }
+  if (correction.stop?.reason === "attempt-limit") {
+    notes.push(
+      correction.last !== null && correction.last.recovery !== null
+        ? "The last attempt recovered; the permanent limit only prevents a fourth automatic attempt, not a successful third one."
+        : "The permanent automatic attempts are spent; a later stall is alert-only and no fourth attempt is sent.",
+    )
+  }
+  if (correction.pending?.phase === "receipted" && correction.pending.receipt?.continuePermitIssuedAt !== null) {
+    notes.push("A continue permit is issued but recovery is unconfirmed until new progress and a new result reference arrive.")
+  }
+  if (attempts.some((attempt) => attempt.stopReason === "normal-wait")) {
+    notes.push("A normal wait closed that round; it is not recovery and does not reset spent attempts.")
+  }
+  if (attempts.some((attempt) => attempt.stopReason === "task-completed")) {
+    notes.push("Task completion closed that round; a completed task receives no further automatic attempt.")
   }
   if (correction.businessCompleted) {
     notes.push("Business completion is independent of supervision, grants and correction attempts.")
@@ -184,6 +203,26 @@ function stopText(correction: Correction): string {
   )
 }
 
+function policyText(correction: Correction): string {
+  const policy = correction.policy
+  const parts = [
+    `up to ${correction.attempts.limit} automatic attempts`,
+    `observe ${policyDurationText(policy.observationMs)}`,
+    `problem ${policyDurationText(policy.windowMs)}`,
+  ]
+  if (policy.windowEndsAt !== null) parts.push(`window ends ${formatWatchTime(policy.windowEndsAt)}`)
+  if (policy.nextAttemptAt !== null && correction.attempts.used < correction.attempts.limit) {
+    parts.push(`next attempt after ${formatWatchTime(policy.nextAttemptAt)}`)
+  }
+  return parts.join(" · ")
+}
+
+export function policyDurationText(ms: number): string {
+  if (ms % 60_000 === 0) return `${ms / 60_000}m`
+  if (ms % 1_000 === 0) return `${ms / 1_000}s`
+  return `${ms}ms`
+}
+
 function attemptText(attempt: Attempt): string {
   const parts: string[] = [attempt.phase, `reserved ${formatWatchTime(attempt.reservedAt)}`]
   if (attempt.claimedAt !== null) parts.push(`claimed ${formatWatchTime(attempt.claimedAt)}`)
@@ -205,8 +244,19 @@ function attemptText(attempt: Attempt): string {
     parts.push(
       `recovered ${formatWatchTime(attempt.recovery.at)} · ${attempt.recovery.progressReportID} → ${attempt.recovery.resultReference}`,
     )
+  } else if (
+    attempt.phase === "receipted" &&
+    attempt.stopReason !== "normal-wait" &&
+    attempt.stopReason !== "task-completed" &&
+    attempt.receipt?.continuePermitIssuedAt !== null &&
+    attempt.receipt?.continuePermitIssuedAt !== undefined
+  ) {
+    parts.push("recovery unconfirmed")
   }
-  if (attempt.stopReason !== null) parts.push(`stop ${attempt.stopReason}`)
+  if (attempt.stopReason === "normal-wait") parts.push("closed · normal wait")
+  else if (attempt.stopReason === "task-completed") parts.push("closed · task completed")
+  else if (attempt.stopReason === "attempt-aborted") parts.push("stopped · aborted")
+  else if (attempt.stopReason !== null) parts.push(`stop ${attempt.stopReason}`)
   return parts.join(" · ")
 }
 

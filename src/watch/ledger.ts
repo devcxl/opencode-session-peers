@@ -41,16 +41,19 @@ import {
   readReportKind,
   WATCH_ALERT_REASON_LIMIT,
   WATCH_ALERT_SUMMARY_LIMIT,
+  WATCH_CORRECTION_DEFAULT_POLICY,
   WATCH_CORRECTION_LIMIT,
   WATCH_CORRECTION_TERMS,
   WATCH_LIMITS,
   WATCH_MIN_SQLITE,
+  watchCorrectionAttemptAnchor,
   type WatchAlertKind,
   type WatchAlertRecord,
   type WatchAlertState,
   type WatchCorrectionAttemptPhase,
   type WatchCorrectionAttemptRecord,
   type WatchCorrectionGrantRecord,
+  type WatchCorrectionPolicy,
   type WatchCorrectionSnapshot,
   type WatchCorrectionStopReason,
   type WatchEvidence,
@@ -259,6 +262,8 @@ export interface ReserveCorrectionInput {
   readonly generation: number
   readonly reservationId: string
   readonly at: number
+  /** The configured policy; a new episode fixes these values at its first reserve. */
+  readonly policy?: WatchCorrectionPolicy
 }
 
 export interface ClaimCorrectionInput {
@@ -555,6 +560,10 @@ interface CorrectionAttemptRow {
   readonly closed_at: number | null
   readonly closed_reason: string | null
   readonly stop_reason: string | null
+  readonly episode_started_at: number
+  readonly episode_deadline_at: number
+  readonly episode_observation_ms: number
+  readonly episode_window_ms: number
 }
 
 interface AlertRow {
@@ -735,6 +744,10 @@ CREATE TABLE IF NOT EXISTS watch_correction_attempts (
   closed_at INTEGER,
   closed_reason TEXT,
   stop_reason TEXT,
+  episode_started_at INTEGER NOT NULL,
+  episode_deadline_at INTEGER NOT NULL,
+  episode_observation_ms INTEGER NOT NULL CHECK (episode_observation_ms > 0),
+  episode_window_ms INTEGER NOT NULL CHECK (episode_window_ms > 0),
   UNIQUE (task_id, attempt_no)
 );
 
@@ -861,6 +874,10 @@ const REQUIRED_CORRECTION_ATTEMPT_COLUMNS = [
   "closed_at",
   "closed_reason",
   "stop_reason",
+  "episode_started_at",
+  "episode_deadline_at",
+  "episode_observation_ms",
+  "episode_window_ms",
 ]
 const REQUIRED_ALERT_COLUMNS = [
   "alert_id",
@@ -1244,6 +1261,22 @@ function assertAttemptsIntegrity(db: Database): void {
     .get() as { n: number }
   if (badGrant.n !== 0) {
     throw new LedgerFailure("corrupt", "a correction grant row is invalid")
+  }
+  const badEpisode = db
+    .query(
+      `SELECT COUNT(*) AS n FROM watch_correction_attempts
+       WHERE typeof(episode_started_at) <> 'integer'
+          OR typeof(episode_deadline_at) <> 'integer'
+          OR typeof(episode_observation_ms) <> 'integer'
+          OR typeof(episode_window_ms) <> 'integer'
+          OR episode_started_at < 0
+          OR episode_observation_ms <= 0
+          OR episode_window_ms <= 0
+          OR episode_deadline_at <> episode_started_at + episode_window_ms`,
+    )
+    .get() as { n: number }
+  if (badEpisode.n !== 0) {
+    throw new LedgerFailure("corrupt", "a correction attempt row has an invalid persisted episode budget")
   }
 }
 
@@ -2007,6 +2040,16 @@ class SqliteWatchLedger implements WatchLedger {
       if (grant.terms_digest !== correctionTermsDigest(task, grant.deployment_statement)) {
         throw new LedgerFailure("not_granted", "the correction terms changed; the old grant cannot continue")
       }
+      const policy = input.policy ?? WATCH_CORRECTION_DEFAULT_POLICY
+      if (
+        !Number.isSafeInteger(policy.observationMs) ||
+        policy.observationMs <= 0 ||
+        !Number.isSafeInteger(policy.windowMs) ||
+        policy.windowMs <= 0 ||
+        !Number.isSafeInteger(input.at + policy.windowMs)
+      ) {
+        throw new LedgerFailure("invalid_input", "the correction policy must be bounded positive integers")
+      }
       const delegated = assertDelegatedCorrectionAuthority(this.delegationHost(), {
         taskID: task.task_id,
         targetSessionID: task.target_session_id,
@@ -2042,6 +2085,58 @@ class SqliteWatchLedger implements WatchLedger {
       if (sessionUnresolved !== null) {
         throw new LedgerFailure("session_unresolved", "an older task for this session still has an unresolved attempt")
       }
+      const previous = this.db
+        .query("SELECT * FROM watch_correction_attempts WHERE task_id = ? ORDER BY attempt_no DESC LIMIT 1")
+        .get(task.task_id) as CorrectionAttemptRow | null
+      const episode =
+        previous === null || correctionEpisodeEnded(previous)
+          ? {
+              startedAt: input.at,
+              deadlineAt: input.at + policy.windowMs,
+              observationMs: policy.observationMs,
+              windowMs: policy.windowMs,
+            }
+          : {
+              startedAt: previous.episode_started_at,
+              deadlineAt: previous.episode_deadline_at,
+              observationMs: previous.episode_observation_ms,
+              windowMs: previous.episode_window_ms,
+            }
+      if (
+        !Number.isSafeInteger(episode.startedAt) ||
+        !Number.isSafeInteger(episode.deadlineAt) ||
+        episode.deadlineAt !== episode.startedAt + episode.windowMs ||
+        episode.observationMs <= 0 ||
+        episode.windowMs <= 0
+      ) {
+        throw new LedgerFailure("corrupt", "the stored correction episode budget is invalid")
+      }
+      if (previous !== null && !correctionEpisodeEnded(previous)) {
+        if (input.at < episode.startedAt) {
+          throw new LedgerFailure("invalid_input", "at precedes the fixed start of this correction episode")
+        }
+        if (input.at >= episode.deadlineAt) {
+          throw new LedgerFailure("invalid_input", "the fixed correction episode deadline has passed")
+        }
+      }
+      if (previous !== null) {
+        const observationEndsAt =
+          watchCorrectionAttemptAnchor({
+            reservedAt: previous.reserved_at,
+            claimedAt: previous.claimed_at,
+            acceptedAt: previous.accepted_at,
+            rejectedAt: previous.rejected_at,
+            unknownAt: previous.unknown_at,
+            abortedAt: previous.aborted_at,
+            receiptAt: previous.receipt_at,
+            lastSeenAt: previous.last_seen_at,
+            recoveredAt: previous.recovered_at,
+            closedAt: previous.closed_at,
+          }) + previous.episode_observation_ms
+        if (input.at < observationEndsAt) {
+          throw new LedgerFailure("invalid_input", "the post-attempt observation window has not completed")
+        }
+      }
       const ordinal = counts.highest + 1
       try {
         this.db
@@ -2049,8 +2144,9 @@ class SqliteWatchLedger implements WatchLedger {
             `INSERT INTO watch_correction_attempts (
               reservation_id, task_id, attempt_no, state, reserved_at,
               owner_activation, grant_id, grant_version, reservation_generation,
-              scope_target_session_id, reserved_task_version, correlation
-            ) VALUES (?, ?, ?, 'reserved', ?, ?, ?, ?, ?, ?, ?, ?)`,
+              scope_target_session_id, reserved_task_version, correlation,
+              episode_started_at, episode_deadline_at, episode_observation_ms, episode_window_ms
+            ) VALUES (?, ?, ?, 'reserved', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             reservationID,
@@ -2064,6 +2160,10 @@ class SqliteWatchLedger implements WatchLedger {
             task.target_session_id,
             task.version + 1,
             randomUUID(),
+            episode.startedAt,
+            episode.deadlineAt,
+            episode.observationMs,
+            episode.windowMs,
           )
       } catch (error) {
         const text = String(error)
@@ -2146,7 +2246,13 @@ class SqliteWatchLedger implements WatchLedger {
       if (row.state !== "reserved" || row.claimed_at !== null) {
         throw new LedgerFailure("claim_taken", "the one send slot for this reservation is already claimed")
       }
-      if (!Number.isSafeInteger(input.at) || input.at < row.reserved_at) {
+      if (!Number.isSafeInteger(input.at) || input.at < row.episode_started_at) {
+        throw new LedgerFailure("invalid_input", "at precedes the fixed start of this correction episode")
+      }
+      if (input.at >= row.episode_deadline_at) {
+        throw new LedgerFailure("invalid_input", "the fixed correction episode deadline has passed; the send slot is not claimable")
+      }
+      if (input.at < row.reserved_at) {
         throw new LedgerFailure("invalid_input", "at must be a non-negative, non-decreasing time")
       }
       const changed = this.db
@@ -2513,9 +2619,26 @@ class SqliteWatchLedger implements WatchLedger {
            LIMIT 1`,
         )
         .get(task.target_session_id, task.task_id) as { yes: number } | null
+      const previous = rows.length === 0 ? null : (rows[rows.length - 1] ?? null)
       return {
         grant: grant === null ? null : correctionGrantFromRow(grant),
         attempts: rows.map(correctionAttemptFromRow),
+        episode:
+          previous === null || correctionEpisodeEnded(previous)
+            ? null
+            : {
+                startedAt: previous.episode_started_at,
+                deadlineAt: previous.episode_deadline_at,
+                observationMs: previous.episode_observation_ms,
+                windowMs: previous.episode_window_ms,
+              },
+        lastAttemptPolicy:
+          previous === null
+            ? null
+            : {
+                observationMs: previous.episode_observation_ms,
+                windowMs: previous.episode_window_ms,
+              },
         sessionUnresolved: unresolved !== null,
       }
     })
@@ -3018,18 +3141,28 @@ function parseCorrectionPhase(value: string): WatchCorrectionAttemptPhase {
   throw new LedgerFailure("corrupt", `unknown correction attempt state ${value}`)
 }
 
+function correctionEpisodeEnded(row: CorrectionAttemptRow): boolean {
+  return (
+    row.state === "recovered" ||
+    row.closed_reason === "recovered" ||
+    row.closed_reason === "normal-wait" ||
+    row.closed_reason === "task-completed"
+  )
+}
+
 function parseCorrectionStopReason(value: string): WatchCorrectionStopReason {
   const reasons: readonly WatchCorrectionStopReason[] = [
     "grant-missing",
     "grant-pending",
     "grant-expired",
     "attempt-limit",
+    "correction-window",
+    "post-attempt-observation",
     "session-unresolved",
     "reservation-pending",
     "sending-unaccounted",
     "accepted-without-receipt",
     "unknown-result",
-    "first-attempt-policy",
     "receipted-awaiting-recovery",
     "attempt-aborted",
     "closing",

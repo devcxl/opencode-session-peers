@@ -57,13 +57,16 @@ describe("controlled correction grant", () => {
     panel.mockInput.pressKey("g")
     await panel.flush()
 
-    expect(panelText(panel)).toContain("three permanent attempts")
-    expect(panelText(panel)).toContain("only the first automatic one")
-    expect(panelText(panel)).toContain("same OS user and location")
-    expect(panelText(panel)).toContain("single-host declaration is not proof of uniqueness")
-    expect(panelText(panel)).toContain("controlled channel is not human authentication")
-    expect(panelText(panel)).toContain("stops automatic correction, not business work, and never resets spent attempts")
-    expect(panelText(panel)).toContain("Queue admission is not consumption and cannot be retracted")
+    const text = panelText(panel).replace(/\/ /g, "/")
+    expect(text).toContain("3 permanent auto attempts")
+    expect(text).toContain("Defaults 5m post-attempt, 20m/problem")
+    expect(text).toContain("round fixes configured values, next round current")
+    expect(text).toContain("same OS/user/location")
+    expect(text).toContain("single-host declaration not proof")
+    expect(text).toContain("not human auth")
+    expect(text).toContain("never reset quota or live window")
+    expect(text).toContain("matched clear when a wait existed")
+    expect(text).toContain("Queue admission not consumption, irreversible")
     expect(fake.grantCalls).toEqual([])
     expect(fake.calls).toEqual([])
     dispose()
@@ -81,7 +84,7 @@ describe("controlled correction grant", () => {
     panel.mockInput.pressKey("g")
     await panel.flush()
 
-    const text = panelText(panel)
+    const text = panelText(panel).replace(/\/ /g, "/")
     expect(text).toContain(WATCH_CORRECTION_TERMS)
     expect(text).toContain("y: declare + prepare challenge · n: cancel")
     expect(fake.grantCalls).toEqual([])
@@ -623,6 +626,44 @@ describe("grant challenge redaction", () => {
     expect(fake.toasts[0]?.message).toContain("E_WATCH_STALE")
     expect(fake.toasts[0]?.message).not.toContain(nonce)
     expect(panelText(panel)).not.toContain(nonce)
+    dispose()
+    panel.renderer.destroy()
+  })
+})
+
+describe("grant review effective policy", () => {
+  test("shows the current configured observation and problem values beside the canonical defaults", async () => {
+    const custom = payload({
+      task: task({
+        correction: correction({
+          policy: {
+            observationMs: 600_000,
+            windowMs: 2_400_000,
+            windowStartedAt: null,
+            windowEndsAt: null,
+            nextAttemptAt: null,
+          },
+          controls: {
+            grant: control(),
+            downgrade: control(false, "no grant is active"),
+          },
+        }),
+      }),
+    })
+    const fake = fakePort({ read: async () => custom })
+    const dispose = installWatch(fake.port, { now: () => 1_000 })
+    commandOf(fake).run()
+    await tick(0)
+
+    const panel = await mountPanel(fake)
+    panel.mockInput.pressKey("c")
+    panel.mockInput.pressKey("g")
+    await panel.flush()
+
+    const text = panelText(panel)
+    expect(text).toContain("Defaults 5m post-attempt, 20m/problem")
+    expect(text).toContain("Effective this round: observe 10m · problem 40m")
+    expect(fake.grantCalls).toEqual([])
     dispose()
     panel.renderer.destroy()
   })

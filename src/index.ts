@@ -51,6 +51,10 @@ export default {
     let announceWatch: (() => void) | undefined
     let observer: ReturnType<typeof createWatchObserver> | undefined
     const activationID = randomUUID()
+    const correctionPolicy = {
+      observationMs: config.watch.correctionObservationMs,
+      windowMs: config.watch.correctionWindowMs,
+    }
     const watch = config.enabled
       ? createWatchApplication({
           ledgerPath: watchLedgerPath(),
@@ -61,6 +65,7 @@ export default {
           sessionAtLocation: (sessionID) =>
             sessionAtLocation(host.sessions, sessionID, host.location.directory),
           observationFor: (taskID) => observer?.observationFor(taskID) ?? null,
+          policy: correctionPolicy,
         })
       : undefined
 
@@ -91,6 +96,7 @@ export default {
             delivery: host.correctionDelivery,
             activationID,
             now: () => host.scheduler.now(),
+            policy: correctionPolicy,
             warn,
           })
 

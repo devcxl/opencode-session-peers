@@ -20,6 +20,10 @@ export interface WatchConfig {
   waitOverdueMs: number
   /** Observation sampling interval. */
   tickMs: number
+  /** Observation after one automatic attempt before another may be considered. */
+  correctionObservationMs: number
+  /** Fixed budget of one continuous problem, measured from its first attempt. */
+  correctionWindowMs: number
 }
 
 export interface Config {
@@ -48,6 +52,8 @@ export const DEFAULT_CONFIG: Config = {
     runningSilentMs: 10 * 60 * 1000,
     waitOverdueMs: 30 * 60 * 1000,
     tickMs: 15 * 1000,
+    correctionObservationMs: 5 * 60 * 1000,
+    correctionWindowMs: 20 * 60 * 1000,
   },
 }
 
@@ -171,6 +177,24 @@ function watchOptions(raw: unknown, warnings: string[]): WatchConfig {
       250,
       60_000,
       "watch.tickMs",
+      warnings,
+    ),
+    correctionObservationMs: boundedIntegerOption(
+      options,
+      "correctionObservationMs",
+      DEFAULT_CONFIG.watch.correctionObservationMs,
+      5 * 60_000,
+      60 * 60_000,
+      "watch.correctionObservationMs",
+      warnings,
+    ),
+    correctionWindowMs: boundedIntegerOption(
+      options,
+      "correctionWindowMs",
+      DEFAULT_CONFIG.watch.correctionWindowMs,
+      5 * 60_000,
+      2 * 60 * 60_000,
+      "watch.correctionWindowMs",
       warnings,
     ),
   }

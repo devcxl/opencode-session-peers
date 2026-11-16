@@ -21,6 +21,7 @@ import {
   WATCH_CORRECTION_TERMS,
   type WatchCorrectionAttemptRecord,
   type WatchCorrectionGrantRecord,
+  type WatchCorrectionPolicy,
 } from "../src/domain/watch.ts"
 
 const runtimeVersion = (() => {
@@ -130,6 +131,7 @@ function reserve(
   generation: number,
   reservationID: string,
   clock: Clock,
+  policy?: WatchCorrectionPolicy,
   caller = "ses_a",
   owner = "activation-a",
 ) {
@@ -141,6 +143,7 @@ function reserve(
     generation,
     reservationId: reservationID,
     at: clock.value,
+    ...(policy === undefined ? {} : { policy }),
   })
 }
 
@@ -220,7 +223,7 @@ function attemptOf(result: ReturnType<WatchLedger["correction"]>): readonly Watc
 }
 
 describeCorrection("correction ledger", () => {
-  test("schema 10 carries permanent attempts, grant tables and delegation tables", () => {
+  test("schema 10 carries permanent attempts, grants, the fixed episode budget and delegation tables", () => {
     const clock = { value: 1_000 }
     const ledger = open(clock)
     try {
@@ -230,11 +233,14 @@ describeCorrection("correction ledger", () => {
       const granted = grant(ledger, task.taskID, task.version, clock)
       task = granted.task
       expect(granted.grant).toMatchObject({ mode: "limited-correction", state: "granted", version: 1 })
-      expect(WATCH_CORRECTION_TERMS).toContain("three permanent attempts")
-      expect(WATCH_CORRECTION_TERMS).toContain("first automatic")
-      expect(WATCH_CORRECTION_TERMS).toContain("same OS user")
-      expect(WATCH_CORRECTION_TERMS).toContain("not human authentication")
-      expect(WATCH_CORRECTION_TERMS).toContain("never resets")
+      expect(WATCH_CORRECTION_TERMS).toContain("3 permanent auto attempts")
+      expect(WATCH_CORRECTION_TERMS).toContain("Defaults 5m post-attempt, 20m/problem")
+      expect(WATCH_CORRECTION_TERMS).toContain("round fixes configured values, next round current")
+      expect(WATCH_CORRECTION_TERMS).toContain("same OS/user/location")
+      expect(WATCH_CORRECTION_TERMS).toContain("not human auth")
+      expect(WATCH_CORRECTION_TERMS).toContain("never reset quota or live window")
+      expect(WATCH_CORRECTION_TERMS).toContain("matched clear when a wait existed")
+      expect(WATCH_CORRECTION_TERMS).toContain("Unknown alert-only")
       expect(WATCH_CORRECTION_TERMS.length).toBeLessThanOrEqual(500)
     } finally {
       ledger.close()
@@ -249,7 +255,15 @@ describeCorrection("correction ledger", () => {
       task = grant(ledger, task.taskID, task.version, clock).task
       for (let ordinal = 1; ordinal <= 3; ordinal += 1) {
         clock.value += 1_000
-        const reserved = reserve(ledger, task.taskID, task.version, task.generation, `res-${ordinal}`, clock)
+        const reserved = reserve(
+          ledger,
+          task.taskID,
+          task.version,
+          task.generation,
+          `res-${ordinal}`,
+          clock,
+          { observationMs: 1, windowMs: 60_000 },
+        )
         expect(reserved.ok).toBe(true)
         if (!reserved.ok) return
         expect(reserved.value.attempt).toMatchObject({ ordinal, phase: "reserved" })
@@ -1002,6 +1016,7 @@ describeCorrection("correction ledger", () => {
         at: clock.value + 1,
       })
       expect(recovered).toMatchObject({ ok: true, value: { recovered: true } })
+      clock.value += 300_001
       const afterRecovery = ledger.show({ taskID: task.taskID, sessionID: "ses_a" })
       if (!afterRecovery.ok || afterRecovery.value === null) throw new Error("task missing")
       const third = reserve(
@@ -1513,7 +1528,7 @@ describeCorrection("correction ledger", () => {
       let task = enroll(ledger)
       task = grant(ledger, task.taskID, task.version, clock).task
       for (let ordinal = 1; ordinal <= 3; ordinal += 1) {
-        clock.value += 1_000
+        clock.value += 300_000
         const prefix = `limit-${ordinal}`
         const results = await Promise.all(
           Array.from({ length: 4 }, (_, index) =>
@@ -1674,6 +1689,7 @@ describeCorrection("correction ledger", () => {
       })
       expect(aborted).toMatchObject({ ok: true, value: { aborted: true, attempt: { phase: "aborted" } } })
       if (aborted.ok) expect(aborted.value.attempt.abortedAt).toBe(clock.value + 5)
+      clock.value += 5 + 300_000
       const current = ledger.show({ taskID: task.taskID, sessionID: "ses_a" })
       if (!current.ok || current.value === null) throw new Error("task missing")
       const next = reserve(ledger, task.taskID, current.value.version, task.generation, "res-after-abort", clock)
@@ -1746,5 +1762,342 @@ describeCorrection("correction ledger", () => {
     } finally {
       ledger.close()
     }
+  })
+
+  test("persists the fixed episode budget; reload and a changed config never extend it", () => {
+    const clock = { value: 1_000 }
+    const ledger = open(clock)
+    let path = ""
+    try {
+      let task = enroll(ledger)
+      task = grant(ledger, task.taskID, task.version, clock).task
+      const policy = { observationMs: 300_000, windowMs: 1_200_000 }
+      const reserved = reserve(ledger, task.taskID, task.version, task.generation, "res-policy-1", clock, policy)
+      if (!reserved.ok) throw new Error(`${reserved.code}: ${reserved.detail}`)
+      const frozen = ledger.correction(task.taskID)
+      expect(frozen.ok && frozen.value.episode).toEqual({
+        startedAt: 1_000,
+        deadlineAt: 1_201_000,
+        observationMs: 300_000,
+        windowMs: 1_200_000,
+      })
+      expect(ledger.abortCorrection({
+        taskId: task.taskID,
+        reservationId: "res-policy-1",
+        ownerActivation: "activation-a",
+        expectedVersion: reserved.value.task.version,
+        generation: task.generation,
+        at: clock.value,
+      })).toMatchObject({ ok: true })
+      path = ledger.path
+    } finally {
+      ledger.close()
+    }
+
+    clock.value = 301_000
+    const reopened = openWatchLedger({ path, busyTimeoutMs: 2_000, openAttempts: 20, now: () => clock.value })
+    if (!reopened.ok) throw new Error(`${reopened.code}: ${reopened.detail}`)
+    try {
+      const live = reopened.ledger.listActive()
+      expect(live.ok).toBe(true)
+      if (!live.ok) return
+      const task = live.value[0]
+      if (task === undefined) throw new Error("task missing after reload")
+      const continuing = reserve(
+        reopened.ledger,
+        task.taskID,
+        task.version,
+        task.generation,
+        "res-policy-2",
+        clock,
+        { observationMs: 600_000, windowMs: 3_600_000 },
+      )
+      if (!continuing.ok) throw new Error(`${continuing.code}: ${continuing.detail}`)
+      const after = reopened.ledger.correction(task.taskID)
+      expect(after.ok && after.value.episode).toEqual({
+        startedAt: 1_000,
+        deadlineAt: 1_201_000,
+        observationMs: 300_000,
+        windowMs: 1_200_000,
+      })
+      expect(attemptOf(after)).toHaveLength(2)
+    } finally {
+      reopened.ledger.close()
+    }
+  })
+
+  test("a normal-wait closure ends the episode; a new reserve uses a new fixed budget and keeps the quota", () => {
+    const clock = { value: 1_000 }
+    const ledger = open(clock)
+    try {
+      let task = enroll(ledger)
+      task = grant(ledger, task.taskID, task.version, clock).task
+      const reserved = reserve(
+        ledger,
+        task.taskID,
+        task.version,
+        task.generation,
+        "res-wait-episode",
+        clock,
+        { observationMs: 600_000, windowMs: 1_200_000 },
+      )
+      if (!reserved.ok) throw new Error(`${reserved.code}: ${reserved.detail}`)
+      const correlation = claimCorrelation(
+        ledger,
+        task.taskID,
+        "res-wait-episode",
+        reserved.value.task.version,
+        task.generation,
+        clock,
+      )
+      clock.value += 10
+      ledger.recordCorrectionReceipt({
+        taskId: task.taskID,
+        reservationId: "res-wait-episode",
+        callerSessionId: "ses_a",
+        currentActivationId: "activation-a",
+        correlation,
+        at: clock.value,
+      })
+      const shown = ledger.show({ taskID: task.taskID, sessionID: "ses_a" })
+      if (!shown.ok || shown.value === null) throw new Error("task missing")
+      clock.value += 10
+      const waiting = ledger.report({
+        taskId: task.taskID,
+        callerSessionId: "ses_a",
+        expectedVersion: shown.value.version,
+        reportId: "episode-normal-wait",
+        kind: "waiting",
+        evidence: {
+          waitKind: "human",
+          waitFor: "reviewer",
+          reason: "review",
+          reference: "episode-wait-ref",
+          waitID: "episode-wait",
+          waitUntil: clock.value + 60_000,
+        },
+      })
+      expect(waiting.ok).toBe(true)
+      const closed = ledger.correction(task.taskID)
+      expect(closed.ok && closed.value.episode).toBeNull()
+      expect(closed.ok && closed.value.lastAttemptPolicy).toEqual({
+        observationMs: 600_000,
+        windowMs: 1_200_000,
+      })
+      expect(attemptOf(closed)[0]).toMatchObject({
+        phase: "receipted",
+        closedAt: 1_020,
+        closedReason: "normal-wait",
+      })
+
+      const current = ledger.show({ taskID: task.taskID, sessionID: "ses_a" })
+      if (!current.ok || current.value === null) throw new Error("task missing")
+      clock.value += 300_001
+      const tooSoon = reserve(
+        ledger,
+        task.taskID,
+        current.value.version,
+        task.generation,
+        "res-wait-too-soon",
+        clock,
+        { observationMs: 300_000, windowMs: 2_400_000 },
+      )
+      expect(tooSoon).toMatchObject({ ok: false, code: "invalid_input" })
+      clock.value += 299_999
+      const next = reserve(
+        ledger,
+        task.taskID,
+        current.value.version,
+        task.generation,
+        "res-wait-episode-2",
+        clock,
+        { observationMs: 300_000, windowMs: 2_400_000 },
+      )
+      if (!next.ok) throw new Error(`${next.code}: ${next.detail}`)
+      const fresh = ledger.correction(task.taskID)
+      expect(fresh.ok && fresh.value.episode).toEqual({
+        startedAt: clock.value,
+        deadlineAt: clock.value + 2_400_000,
+        observationMs: 300_000,
+        windowMs: 2_400_000,
+      })
+      expect(fresh.ok && fresh.value.lastAttemptPolicy).toEqual({
+        observationMs: 300_000,
+        windowMs: 2_400_000,
+      })
+      expect(attemptOf(fresh)).toHaveLength(2)
+    } finally {
+      ledger.close()
+    }
+  })
+
+  test("a verified recovery ends the episode and the next reserve keeps the remaining quota", () => {
+    const clock = { value: 1_000 }
+    const ledger = open(clock)
+    try {
+      let task = enroll(ledger)
+      task = grant(ledger, task.taskID, task.version, clock).task
+      const reserved = reserve(
+        ledger,
+        task.taskID,
+        task.version,
+        task.generation,
+        "res-recover-episode",
+        clock,
+        { observationMs: 600_000, windowMs: 1_200_000 },
+      )
+      if (!reserved.ok) throw new Error(`${reserved.code}: ${reserved.detail}`)
+      const correlation = claimCorrelation(
+        ledger,
+        task.taskID,
+        "res-recover-episode",
+        reserved.value.task.version,
+        task.generation,
+        clock,
+      )
+      clock.value += 10
+      ledger.recordCorrectionReceipt({
+        taskId: task.taskID,
+        reservationId: "res-recover-episode",
+        callerSessionId: "ses_a",
+        currentActivationId: "activation-a",
+        correlation,
+        at: clock.value,
+      })
+      const shown = ledger.show({ taskID: task.taskID, sessionID: "ses_a" })
+      if (!shown.ok || shown.value === null) throw new Error("task missing")
+      clock.value += 10
+      const progress = ledger.report({
+        taskId: task.taskID,
+        callerSessionId: "ses_a",
+        expectedVersion: shown.value.version,
+        reportId: "episode-recovery",
+        kind: "progress",
+        evidence: { summary: "real new result", reference: "episode-recovery-ref" },
+      })
+      expect(progress.ok).toBe(true)
+      const recovered = ledger.correction(task.taskID)
+      expect(recovered.ok && recovered.value.episode).toBeNull()
+      expect(recovered.ok && recovered.value.lastAttemptPolicy).toEqual({
+        observationMs: 600_000,
+        windowMs: 1_200_000,
+      })
+      expect(attemptOf(recovered)[0]).toMatchObject({
+        phase: "recovered",
+        recoveredAt: 1_020,
+        closedReason: "recovered",
+      })
+
+      const current = ledger.show({ taskID: task.taskID, sessionID: "ses_a" })
+      if (!current.ok || current.value === null) throw new Error("task missing")
+      clock.value += 300_001
+      const tooSoon = reserve(
+        ledger,
+        task.taskID,
+        current.value.version,
+        task.generation,
+        "res-recover-too-soon",
+        clock,
+        { observationMs: 300_000, windowMs: 2_400_000 },
+      )
+      expect(tooSoon).toMatchObject({ ok: false, code: "invalid_input" })
+      clock.value += 299_999
+      const next = reserve(
+        ledger,
+        task.taskID,
+        current.value.version,
+        task.generation,
+        "res-recover-episode-2",
+        clock,
+        { observationMs: 300_000, windowMs: 2_400_000 },
+      )
+      if (!next.ok) throw new Error(`${next.code}: ${next.detail}`)
+      const fresh = ledger.correction(task.taskID)
+      expect(fresh.ok && fresh.value.episode).toEqual({
+        startedAt: clock.value,
+        deadlineAt: clock.value + 2_400_000,
+        observationMs: 300_000,
+        windowMs: 2_400_000,
+      })
+      expect(fresh.ok && fresh.value.lastAttemptPolicy).toEqual({
+        observationMs: 300_000,
+        windowMs: 2_400_000,
+      })
+      expect(attemptOf(fresh)).toHaveLength(2)
+    } finally {
+      ledger.close()
+    }
+  })
+
+  test("reserve and claim reject the stored episode deadline atomically", () => {
+    const clock = { value: 1_000 }
+    const ledger = open(clock)
+    try {
+      let task = enroll(ledger)
+      task = grant(ledger, task.taskID, task.version, clock).task
+      const policy = { observationMs: 300_000, windowMs: 1_000 }
+      const reserved = reserve(ledger, task.taskID, task.version, task.generation, "res-deadline", clock, policy)
+      if (!reserved.ok) throw new Error(`${reserved.code}: ${reserved.detail}`)
+
+      clock.value = 2_000
+      const lateClaim = ledger.claimCorrection({
+        taskId: task.taskID,
+        reservationId: "res-deadline",
+        ownerActivation: "activation-a",
+        expectedVersion: reserved.value.task.version,
+        generation: task.generation,
+        at: clock.value,
+      })
+      expect(lateClaim).toMatchObject({ ok: false, code: "invalid_input" })
+      expect(attemptOf(ledger.correction(task.taskID))[0]).toMatchObject({ phase: "reserved" })
+
+      clock.value = 1_999
+      const aborted = ledger.abortCorrection({
+        taskId: task.taskID,
+        reservationId: "res-deadline",
+        ownerActivation: "activation-a",
+        expectedVersion: reserved.value.task.version,
+        generation: task.generation,
+        at: clock.value,
+      })
+      expect(aborted.ok).toBe(true)
+
+      clock.value = 2_000
+      const lateReserve = reserve(ledger, task.taskID, reserved.value.task.version, task.generation, "res-deadline-2", clock, policy)
+      expect(lateReserve).toMatchObject({ ok: false, code: "invalid_input" })
+      expect(attemptOf(ledger.correction(task.taskID))).toHaveLength(1)
+    } finally {
+      ledger.close()
+    }
+  })
+
+  test("schema 10 carries the fixed episode columns and rejects an old schema marker", () => {
+    const clock = { value: 1_000 }
+    const ledger = open(clock)
+    const path = ledger.path
+    try {
+      const inspect = new Database(path)
+      const rows = inspect.query("PRAGMA table_info(watch_correction_attempts)").all() as Array<{
+        name: string
+        notnull: number
+      }>
+      inspect.close()
+      const names = new Map(rows.map((row) => [row.name, row.notnull]))
+      for (const column of [
+        "episode_started_at",
+        "episode_deadline_at",
+        "episode_observation_ms",
+        "episode_window_ms",
+      ]) {
+        expect(names.get(column)).toBe(1)
+      }
+    } finally {
+      ledger.close()
+    }
+    const raw = new Database(path)
+    raw.run("UPDATE meta SET value = '9' WHERE key = 'schema_version'")
+    raw.close()
+    const stale = openWatchLedger({ path, busyTimeoutMs: 2_000, openAttempts: 1 })
+    expect(stale).toMatchObject({ ok: false, code: "unsupported_schema" })
   })
 })

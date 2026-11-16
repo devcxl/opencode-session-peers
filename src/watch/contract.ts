@@ -21,6 +21,7 @@ import type {
   WatchCorrectionGateView,
   WatchCorrectionGrantState,
   WatchCorrectionGrantView,
+  WatchCorrectionPolicyView,
   WatchCorrectionReceiptView,
   WatchCorrectionRecoveryView,
   WatchCorrectionStopReason,
@@ -202,12 +203,13 @@ const correctionAttemptSchema = {
         "grant-pending",
         "grant-expired",
         "attempt-limit",
+        "correction-window",
+        "post-attempt-observation",
         "session-unresolved",
         "reservation-pending",
         "sending-unaccounted",
         "accepted-without-receipt",
         "unknown-result",
-        "first-attempt-policy",
         "receipted-awaiting-recovery",
         "rejected",
         "attempt-aborted",
@@ -288,6 +290,19 @@ const correctionStopSchema = {
   required: ["reason", "missingEvidence"],
 } as const
 
+const correctionPolicySchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    observationMs: { type: "integer", minimum: 1 },
+    windowMs: { type: "integer", minimum: 1 },
+    windowStartedAt: { type: ["integer", "null"], minimum: 0 },
+    windowEndsAt: { type: ["integer", "null"], minimum: 0 },
+    nextAttemptAt: { type: ["integer", "null"], minimum: 0 },
+  },
+  required: ["observationMs", "windowMs", "windowStartedAt", "windowEndsAt", "nextAttemptAt"],
+} as const
+
 const correctionSchema = {
   type: "object",
   additionalProperties: false,
@@ -296,7 +311,8 @@ const correctionSchema = {
     actual: { type: "string", enum: ["unavailable", "ready"] },
     actualReason: { type: "string" },
     attempts: attemptsSchema,
-    executionPolicy: { type: "string", enum: ["first-attempt-only"] },
+    executionPolicy: { type: "string", enum: ["bounded-three-attempt"] },
+    policy: correctionPolicySchema,
     phase: {
       type: "string",
       enum: ["idle", "reserved", "sending", "accepted", "rejected", "unknown", "receipted", "recovered", "aborted"],
@@ -323,6 +339,7 @@ const correctionSchema = {
     "actualReason",
     "attempts",
     "executionPolicy",
+    "policy",
     "phase",
     "pending",
     "last",
@@ -399,7 +416,7 @@ const capabilitySchema = {
     monitoring: { type: "string", enum: ["observer-alerts"] },
     automaticDetection: { type: "string", enum: ["partial"] },
     automaticDetectionReason: { type: "string" },
-    correction: { type: "string", enum: ["unavailable", "first-attempt"] },
+    correction: { type: "string", enum: ["unavailable", "bounded"] },
     correctionReason: { type: "string" },
     delegation: { type: "string", enum: ["unavailable"] },
     delegationReason: { type: "string" },
@@ -1119,6 +1136,7 @@ function readCorrection(value: unknown): WatchCorrectionView | undefined {
   const actualReason = record["actualReason"]
   const attempts = readAttempts(record["attempts"])
   const executionPolicy = record["executionPolicy"]
+  const policy = readCorrectionPolicy(record["policy"])
   const phase = record["phase"]
   const pending = record["pending"] === null ? null : readCorrectionAttempt(record["pending"])
   const last = record["last"] === null ? null : readCorrectionAttempt(record["last"])
@@ -1130,7 +1148,8 @@ function readCorrection(value: unknown): WatchCorrectionView | undefined {
   if (authorization === undefined || attempts === undefined) return undefined
   if (actual !== "unavailable" && actual !== "ready") return undefined
   if (typeof actualReason !== "string") return undefined
-  if (executionPolicy !== "first-attempt-only") return undefined
+  if (executionPolicy !== "bounded-three-attempt") return undefined
+  if (policy === undefined) return undefined
   if (!isCorrectionPhase(phase) || phase === undefined) return undefined
   if (pending === undefined || last === undefined || stop === undefined) return undefined
   if (typeof businessCompleted !== "boolean" || controls === undefined) return undefined
@@ -1154,6 +1173,7 @@ function readCorrection(value: unknown): WatchCorrectionView | undefined {
     actualReason,
     attempts,
     executionPolicy,
+    policy,
     phase,
     pending,
     last,
@@ -1163,6 +1183,21 @@ function readCorrection(value: unknown): WatchCorrectionView | undefined {
     businessCompleted,
     controls,
   }
+}
+
+function readCorrectionPolicy(value: unknown): WatchCorrectionPolicyView | undefined {
+  const record = asRecord(value)
+  if (record === undefined) return undefined
+  const observationMs = record["observationMs"]
+  const windowMs = record["windowMs"]
+  const windowStartedAt = record["windowStartedAt"]
+  const windowEndsAt = record["windowEndsAt"]
+  const nextAttemptAt = record["nextAttemptAt"]
+  if (!isPositiveInteger(observationMs) || !isPositiveInteger(windowMs)) return undefined
+  if (!isTimestampOrNull(windowStartedAt) || !isTimestampOrNull(windowEndsAt) || !isTimestampOrNull(nextAttemptAt)) {
+    return undefined
+  }
+  return { observationMs, windowMs, windowStartedAt, windowEndsAt, nextAttemptAt }
 }
 
 function readCorrectionGrant(value: unknown): WatchCorrectionGrantView | undefined {
@@ -1371,12 +1406,13 @@ function isCorrectionStopReason(value: unknown): value is WatchCorrectionStopRea
     value === "grant-pending" ||
     value === "grant-expired" ||
     value === "attempt-limit" ||
+    value === "correction-window" ||
+    value === "post-attempt-observation" ||
     value === "session-unresolved" ||
     value === "reservation-pending" ||
     value === "sending-unaccounted" ||
     value === "accepted-without-receipt" ||
     value === "unknown-result" ||
-    value === "first-attempt-policy" ||
     value === "receipted-awaiting-recovery" ||
     value === "attempt-aborted" ||
     value === "closing" ||
@@ -1491,7 +1527,7 @@ function readCapability(value: unknown): WatchCapability | undefined {
     monitoring !== "observer-alerts" ||
     automaticDetection !== "partial" ||
     typeof automaticDetectionReason !== "string" ||
-    (correction !== "unavailable" && correction !== "first-attempt") ||
+    (correction !== "unavailable" && correction !== "bounded") ||
     typeof correctionReason !== "string" ||
     delegation !== "unavailable" ||
     typeof delegationReason !== "string" ||
