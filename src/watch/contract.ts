@@ -418,7 +418,7 @@ const capabilitySchema = {
     automaticDetectionReason: { type: "string" },
     correction: { type: "string", enum: ["unavailable", "bounded"] },
     correctionReason: { type: "string" },
-    delegation: { type: "string", enum: ["unavailable"] },
+    delegation: { type: "string", enum: ["unavailable", "direct-child"] },
     delegationReason: { type: "string" },
     transfer: { type: "string", enum: ["unavailable"] },
     transferReason: { type: "string" },
@@ -1529,7 +1529,7 @@ function readCapability(value: unknown): WatchCapability | undefined {
     typeof automaticDetectionReason !== "string" ||
     (correction !== "unavailable" && correction !== "bounded") ||
     typeof correctionReason !== "string" ||
-    delegation !== "unavailable" ||
+    (delegation !== "unavailable" && delegation !== "direct-child") ||
     typeof delegationReason !== "string" ||
     transfer !== "unavailable" ||
     typeof transferReason !== "string" ||

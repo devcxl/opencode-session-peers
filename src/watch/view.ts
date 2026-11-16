@@ -11,7 +11,7 @@ import { correctionGate } from "./correction.ts"
 import {
   CORRECTION_UNAVAILABLE_REASON,
   WATCH_CORRECTION_DEFAULT_POLICY,
-  DELEGATION_UNAVAILABLE_REASON,
+  DIRECT_CHILD_DELEGATION_REASON,
   MANUAL_CORRECTION_UNAVAILABLE_REASON,
   RECOVERY_UNAVAILABLE_REASON,
   SAFETY_PAUSE_UNAVAILABLE_REASON,
@@ -281,8 +281,8 @@ export function watchCapability(
     correctionReason: bounded
       ? "The runtime/protocol tuple is verified; up to three permanent automatic attempts are available under the bounded policy. Manual correction, resume and transfer remain unavailable."
       : CORRECTION_UNAVAILABLE_REASON,
-    delegation: "unavailable",
-    delegationReason: DELEGATION_UNAVAILABLE_REASON,
+    delegation: "direct-child",
+    delegationReason: DIRECT_CHILD_DELEGATION_REASON,
     transfer: "unavailable",
     transferReason: TRANSFER_UNAVAILABLE_REASON,
     recovery: "unavailable",

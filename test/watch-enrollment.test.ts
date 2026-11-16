@@ -131,7 +131,7 @@ describeSafe("watch enrollment and reading", () => {
         automaticDetectionReason: expect.any(String),
         correction: "unavailable",
         correctionReason: expect.any(String),
-        delegation: "unavailable",
+        delegation: "direct-child",
         delegationReason: expect.any(String),
         transfer: "unavailable",
         transferReason: expect.any(String),
