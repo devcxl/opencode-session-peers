@@ -15,14 +15,15 @@ import {
   canonicalJson,
   readBoundedText,
   readIdentifier,
+  WATCH_CORRECTION_TERMS,
   type Checked,
   type WatchMode,
   type WatchTaskRecord,
 } from "../domain/watch.ts"
 
-/** The controlled-surface terms shown before a delegation grant is confirmed. */
+/** The controlled-surface delegation summary; kept short and separate from the correction terms. */
 export const WATCH_DELEGATION_TERMS =
-  "Direct-child delegation: one specific host-verified direct child, one level only, inside the parent task's current location and visibility scope. It does not grant automatic correction, does not cover later or unrelated children, and cannot be inferred from a correction grant or a model message. Revocation stops new enrollment and correction eligibility but does not retract accepted messages or reset spent attempts. Unknown parentage, cross-location, cross-scope or a changed relationship is alert-only."
+  "Direct-child delegation: one host-verified direct child, one level only, in the parent task's current location and scope. It does not grant automatic correction, cover later children, or follow from a correction grant or model message. Revocation stops new enrollment and correction eligibility but does not retract accepted messages or reset spent attempts. Unknown parentage, cross-location, cross-scope or a changed relationship is alert-only."
 
 export type DelegationState = "granted" | "revoked"
 
@@ -43,6 +44,7 @@ export interface DelegationGrantRecord {
   readonly scopeTargetSessionID: string
   readonly scopeDirectory: string
   readonly scopePeerScope: string
+  readonly deployment?: "single-host-same-location"
   readonly reviewSummary: string
   readonly termsDigest: string
   readonly confirmationID: string
@@ -60,6 +62,7 @@ export interface DelegationChallenge {
   readonly targetSessionID: string
   readonly scopeDirectory: string
   readonly scopePeerScope: string
+  readonly deployment?: "single-host-same-location"
   readonly termsDigest: string
   readonly reviewSummary: string
   readonly expiresAt: number
@@ -150,6 +153,7 @@ export type DelegationStopReason =
   | "scope-mismatch"
   | "child-busy"
   | "child-completed"
+  | "authority-unknown"
 
 export interface DelegationGateView {
   readonly gate: DelegationGate
@@ -168,6 +172,149 @@ export interface DelegationGateResult {
   readonly late: boolean
 }
 
+/** The durable link from one child task to the controlled grant that created it. */
+export interface DelegatedTaskLink {
+  readonly taskID: string
+  readonly grantID: string
+  readonly grantVersion: number
+  readonly parentTaskID: string
+  readonly parentSessionID: string
+  readonly targetSessionID: string
+  readonly verifiedParentID: string
+  readonly verifiedDirectory: string
+  readonly verifiedScope: string
+  readonly verifiedScopeSource: "recorded" | "configured"
+  readonly verifiedAt: number
+}
+
+/**
+ * The atomic ledger facts a fresh delegated-authority check starts from. Host
+ * facts are deliberately absent: they are read after this snapshot and are
+ * never stored here as proof.
+ */
+export interface DelegatedAuthoritySnapshot {
+  readonly task: WatchTaskRecord
+  readonly link: DelegatedTaskLink | null
+  readonly grant: DelegationGrantRecord | null
+  readonly parentTask: WatchTaskRecord | null
+}
+
+export interface DelegatedChildRecord {
+  readonly task: WatchTaskRecord
+  readonly link: DelegatedTaskLink
+}
+
+export interface DelegatedAuthorityResult {
+  /** False for an ordinary self-enrolled task: its existing behavior is unchanged. */
+  readonly required: boolean
+  readonly allowed: boolean
+  readonly stopReason: DelegationStopReason | null
+  readonly missingEvidence: string | null
+  readonly gates: readonly DelegationGateView[]
+}
+
+/**
+ * Checks the durable link against the current source grant and parent task.
+ * The caller adds fresh host facts; this function never treats a stored
+ * directory, scope or parentID as a current host fact.
+ */
+export function delegatedAuthorityGate(
+  snapshot: DelegatedAuthoritySnapshot,
+  facts: {
+    readonly parent: DelegationSessionFact | null
+    readonly child: DelegationSessionFact | null
+    readonly parentScope: string | null
+    readonly childScope: string | null
+    readonly ownerActivation: string
+    readonly closing: boolean
+  },
+): DelegatedAuthorityResult {
+  if (snapshot.link === null) {
+    return { required: false, allowed: true, stopReason: null, missingEvidence: null, gates: [] }
+  }
+  const link = snapshot.link
+  const grant = snapshot.grant
+  const parentTask = snapshot.parentTask
+  if (grant === null) {
+    return {
+      required: true,
+      allowed: false,
+      stopReason: "grant-missing",
+      missingEvidence: "the source delegation grant no longer exists",
+      gates: [gate("grant", false, "missing", "the source delegation grant")],
+    }
+  }
+  if (parentTask === null) {
+    return {
+      required: true,
+      allowed: false,
+      stopReason: "parent-unknown",
+      missingEvidence: "the parent task no longer exists",
+      gates: [gate("parent-task", false, "missing", "the parent task")],
+    }
+  }
+  if (grant.state !== "granted") {
+    return {
+      required: true,
+      allowed: false,
+      stopReason: "grant-revoked",
+      missingEvidence: "the source delegation grant is not active",
+      gates: [gate("grant", false, grant.state, "an active source delegation grant")],
+    }
+  }
+  const linkFresh =
+    link.grantID === grant.grantID &&
+    link.grantVersion === grant.version &&
+    link.parentTaskID === grant.parentTaskID &&
+    link.parentSessionID === grant.parentSessionID &&
+    link.targetSessionID === snapshot.task.targetSessionID &&
+    link.verifiedDirectory === grant.scopeDirectory &&
+    link.verifiedScope === grant.scopePeerScope
+  if (!linkFresh) {
+    return {
+      required: true,
+      allowed: false,
+      stopReason: "grant-stale",
+      missingEvidence: "the child task's delegation link no longer matches its source grant",
+      gates: [
+        gate(
+          "grant",
+          false,
+          `link=${link.grantID}@${link.grantVersion}; grant=${grant.grantID}@${grant.version}`,
+          "a link bound to the current source grant version",
+        ),
+      ],
+    }
+  }
+  const result = delegationEnrollmentGate(
+    {
+      parentTask,
+      parent: facts.parent,
+      child: facts.child,
+      parentScope: facts.parentScope,
+      childScope: facts.childScope,
+      grant,
+      existingChild: { task: snapshot.task, delegatedByThisGrant: true },
+      ownerActivation: facts.ownerActivation,
+      closing: facts.closing,
+    },
+    {
+      parentTaskID: link.parentTaskID,
+      targetSessionID: snapshot.task.targetSessionID,
+      mode: snapshot.task.mode,
+      requestID: `authority-${snapshot.task.taskID}`,
+      goal: snapshot.task.goal,
+    },
+  )
+  return {
+    required: true,
+    allowed: result.allowed,
+    stopReason: result.stopReason,
+    missingEvidence: result.missingEvidence,
+    gates: result.gates,
+  }
+}
+
 export function readDelegationMode(value: unknown): Checked<WatchMode> {
   if (value === "alert" || value === "limited-correction") return { ok: true, value }
   return { ok: false, reason: "mode must be alert or limited-correction" }
@@ -177,7 +324,12 @@ export function readDelegationScope(value: unknown, field: string): Checked<stri
   return readBoundedText(value, field, 128)
 }
 
-/** Stable terms digest for the controlled challenge; not a secret. */
+/**
+ * Stable terms digest for the controlled challenge; not a secret. It binds both
+ * canonical texts and the parent/target/mode/scope/owner/generation/version, so
+ * a later correction-terms or delegation-scope change cannot reuse an old
+ * challenge.
+ */
 export function delegationTermsDigest(input: {
   readonly parentTaskID: string
   readonly parentSessionID: string
@@ -185,17 +337,24 @@ export function delegationTermsDigest(input: {
   readonly mode: WatchMode
   readonly directory: string
   readonly peerScope: string
+  readonly ownerActivation: string
+  readonly generation: number
+  readonly version: number
 }): string {
   return createHash("sha256")
     .update(
       canonicalJson([
         WATCH_DELEGATION_TERMS,
+        WATCH_CORRECTION_TERMS,
         input.parentTaskID,
         input.parentSessionID,
         input.targetSessionID,
         input.mode,
         input.directory,
         input.peerScope,
+        input.ownerActivation,
+        input.generation,
+        input.version,
       ]),
     )
     .digest("hex")

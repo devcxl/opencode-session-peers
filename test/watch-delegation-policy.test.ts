@@ -452,6 +452,9 @@ describe("delegation terms and bounded input", () => {
       mode: "alert" as const,
       directory: DIRECTORY,
       peerScope: SCOPE,
+      ownerActivation: "act-parent",
+      generation: 1,
+      version: 3,
     }
     const first = delegationTermsDigest(base)
     expect(first).toBe(delegationTermsDigest({ ...base }))
@@ -459,6 +462,9 @@ describe("delegation terms and bounded input", () => {
     expect(first).not.toBe(delegationTermsDigest({ ...base, mode: "limited-correction" }))
     expect(first).not.toBe(delegationTermsDigest({ ...base, directory: "/tmp/opencode/other" }))
     expect(first).not.toBe(delegationTermsDigest({ ...base, peerScope: "project-b" }))
+    expect(first).not.toBe(delegationTermsDigest({ ...base, ownerActivation: "act-other" }))
+    expect(first).not.toBe(delegationTermsDigest({ ...base, generation: 2 }))
+    expect(first).not.toBe(delegationTermsDigest({ ...base, version: 4 }))
   })
 
   test("only the two known modes are accepted", () => {

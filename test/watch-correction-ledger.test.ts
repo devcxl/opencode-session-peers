@@ -220,11 +220,11 @@ function attemptOf(result: ReturnType<WatchLedger["correction"]>): readonly Watc
 }
 
 describeCorrection("correction ledger", () => {
-  test("schema 9 carries permanent attempts and the grant tables", () => {
+  test("schema 10 carries permanent attempts, grant tables and delegation tables", () => {
     const clock = { value: 1_000 }
     const ledger = open(clock)
     try {
-      expect(WATCH_LEDGER_SCHEMA_VERSION).toBe(9)
+      expect(WATCH_LEDGER_SCHEMA_VERSION).toBe(10)
       expect(ledger.sqliteVersion).toMatch(/^3\./)
       let task = enroll(ledger)
       const granted = grant(ledger, task.taskID, task.version, clock)
