@@ -1418,7 +1418,8 @@ function failureOutcome(failure: WatchFailure): WatchOutcome {
 function isDelegatedChild(ledger: WatchLedger, task: WatchTaskRecord, sessionID: string): boolean {
   if (task.targetSessionID === sessionID) return false
   const link = ledger.delegatedTaskLink(task.taskID)
-  return link.ok && link.value !== null
+  // A failed link read cannot prove this is an ordinary self task; redact.
+  return !link.ok || link.value !== null
 }
 
 function readDelegationScopeText(value: string, field: string): Checked<string> {
