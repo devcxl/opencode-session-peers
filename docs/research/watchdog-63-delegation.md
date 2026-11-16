@@ -71,11 +71,18 @@ caller path; the parent cannot report or receipt as the child.
 Enrollment requires: an active self-enrolled parent task owned by the current
 activation, an active grant for that exact child, a fresh host `parentID`
 equal to the parent session, one location and one scope, a non-wider mode, and
-no completed child. A late child is enrolled and classified as late; the
-plugin sends no prompt, generates no text, replays no business task and does
-not interrupt a foreground child or peer wait. A repeated `requestId` is
-idempotent; changed parameters conflict. A completed/ended child is not
-re-enrolled.
+no live child task occupying the child's one slot. A late child is enrolled and
+classified as late; the plugin sends no prompt, generates no text, replays no
+business task and does not interrupt a foreground child or peer wait.
+
+A repeated `requestId` is idempotent even when the earlier child task is
+completed or ended: it returns that history without creating a new task,
+prompting, or replaying old work. A new `requestId` is a new explicit
+supervision request; once the child's previous task has released its live slot
+it may create a new child task, but it still does not wake the child or replay
+the old business task. Host idle, a last execution result of `succeeded` or a
+process restart is never treated as business completion; only the target's
+explicit `completed` report is.
 
 ## Fresh authority and receipts
 
