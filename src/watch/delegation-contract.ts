@@ -38,6 +38,7 @@ export interface DelegationReviewView {
   readonly delegationTerms: string
   readonly correctionTerms: string
   readonly deploymentRequired: boolean
+  readonly derivesCorrectionGrant: boolean
 }
 
 export interface WatchDelegationGrantPayload {
@@ -176,8 +177,9 @@ export const watchDelegationRpcMethod = {
           delegationTerms: { type: "string" },
           correctionTerms: { type: "string" },
           deploymentRequired: { type: "boolean" },
+          derivesCorrectionGrant: { type: "boolean" },
         },
-        required: ["delegationTerms", "correctionTerms", "deploymentRequired"],
+        required: ["delegationTerms", "correctionTerms", "deploymentRequired", "derivesCorrectionGrant"],
       },
       failure: { type: ["object", "null"] },
     },
@@ -441,18 +443,29 @@ function readControls(value: unknown): WatchControls | undefined {
 function readReview(value: unknown): DelegationReviewView | undefined {
   const record = asRecord(value)
   if (record === undefined) return undefined
-  if (!onlyKeys(record, ["delegationTerms", "correctionTerms", "deploymentRequired"])) return undefined
-  const delegationTerms = record["delegationTerms"]
-  const correctionTerms = record["correctionTerms"]
-  const deploymentRequired = record["deploymentRequired"]
   if (
-    delegationTerms !== WATCH_DELEGATION_TERMS ||
-    correctionTerms !== WATCH_CORRECTION_TERMS ||
-    typeof deploymentRequired !== "boolean"
+    !onlyKeys(record, [
+      "delegationTerms",
+      "correctionTerms",
+      "deploymentRequired",
+      "derivesCorrectionGrant",
+    ])
   ) {
     return undefined
   }
-  return { delegationTerms, correctionTerms, deploymentRequired }
+  const delegationTerms = record["delegationTerms"]
+  const correctionTerms = record["correctionTerms"]
+  const deploymentRequired = record["deploymentRequired"]
+  const derivesCorrectionGrant = record["derivesCorrectionGrant"]
+  if (
+    delegationTerms !== WATCH_DELEGATION_TERMS ||
+    correctionTerms !== WATCH_CORRECTION_TERMS ||
+    typeof deploymentRequired !== "boolean" ||
+    typeof derivesCorrectionGrant !== "boolean"
+  ) {
+    return undefined
+  }
+  return { delegationTerms, correctionTerms, deploymentRequired, derivesCorrectionGrant }
 }
 
 function readFailure(value: unknown): WatchFailure | undefined {

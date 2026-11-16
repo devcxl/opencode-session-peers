@@ -240,6 +240,79 @@ describeLedger("delegation ledger", () => {
     }
   })
 
+  test("a scope-provenance change is audit-only for the same enrollment request", () => {
+    const clock = { value: 1_000 }
+    const ledger = open(clock)
+    try {
+      const parent = enrollParent(ledger)
+      const confirmed = grant(ledger, parent, CHILD_A).grant
+      const first = ledger.delegatedEnroll({
+        requestId: "provenance-request",
+        initiatorSessionId: PARENT,
+        targetSessionId: CHILD_A,
+        parentTaskId: parent.taskID,
+        goal: "Deliver the child",
+        mode: "limited-correction",
+        ownerActivation: OWNER,
+        expectedVersion: parent.version,
+        grantId: confirmed.grantID,
+        grantVersion: confirmed.version,
+        verifiedParentId: PARENT,
+        verifiedDirectory: DIRECTORY,
+        verifiedScope: SCOPE,
+        verifiedScopeSource: "configured",
+      })
+      expect(first.ok).toBe(true)
+      if (!first.ok) return
+      const repeat = ledger.delegatedEnroll({
+        requestId: "provenance-request",
+        initiatorSessionId: PARENT,
+        targetSessionId: CHILD_A,
+        parentTaskId: parent.taskID,
+        goal: "Deliver the child",
+        mode: "limited-correction",
+        ownerActivation: OWNER,
+        expectedVersion: parent.version,
+        grantId: confirmed.grantID,
+        grantVersion: confirmed.version,
+        verifiedParentId: PARENT,
+        verifiedDirectory: DIRECTORY,
+        verifiedScope: SCOPE,
+        verifiedScopeSource: "recorded",
+      })
+      expect(repeat.ok).toBe(true)
+      if (!repeat.ok) return
+      expect(repeat.value.created).toBe(false)
+      expect(repeat.value.task.taskID).toBe(first.value.task.taskID)
+      expect(ledger.delegatedTaskLink(first.value.task.taskID)).toMatchObject({
+        ok: true,
+        value: { verifiedScopeSource: "configured" },
+      })
+
+      const conflict = ledger.delegatedEnroll({
+        requestId: "provenance-request",
+        initiatorSessionId: PARENT,
+        targetSessionId: CHILD_A,
+        parentTaskId: parent.taskID,
+        goal: "A different goal",
+        mode: "limited-correction",
+        ownerActivation: OWNER,
+        expectedVersion: parent.version,
+        grantId: confirmed.grantID,
+        grantVersion: confirmed.version,
+        verifiedParentId: PARENT,
+        verifiedDirectory: DIRECTORY,
+        verifiedScope: SCOPE,
+        verifiedScopeSource: "recorded",
+      })
+      expect(conflict.ok).toBe(false)
+      if (conflict.ok) return
+      expect(conflict.code).toBe("request_conflict")
+    } finally {
+      ledger.close()
+    }
+  })
+
   test("a revoked source blocks a new enrollment and revokes the derived correction grant", () => {
     const clock = { value: 1_000 }
     const ledger = open(clock)

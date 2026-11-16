@@ -288,6 +288,7 @@ function failure(code: string, reason: string): WatchDelegationGrantPayload {
       delegationTerms: WATCH_DELEGATION_TERMS,
       correctionTerms: WATCH_CORRECTION_TERMS,
       deploymentRequired: false,
+      derivesCorrectionGrant: false,
     },
     failure: { code: code as WatchFailure["code"], reason },
   }

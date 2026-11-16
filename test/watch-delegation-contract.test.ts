@@ -21,6 +21,7 @@ const review = {
   delegationTerms: WATCH_DELEGATION_TERMS,
   correctionTerms: WATCH_CORRECTION_TERMS,
   deploymentRequired: true,
+  derivesCorrectionGrant: true,
 }
 
 const task = {

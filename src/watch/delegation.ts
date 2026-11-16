@@ -23,7 +23,7 @@ import {
 
 /** The controlled-surface delegation summary; kept short and separate from the correction terms. */
 export const WATCH_DELEGATION_TERMS =
-  "Direct-child delegation: one host-verified direct child, one level only, in the parent task's current location and scope. It does not grant automatic correction, cover later children, or follow from a correction grant or model message. Revocation stops new enrollment and correction eligibility but does not retract accepted messages or reset spent attempts. Unknown parentage, cross-location, cross-scope or a changed relationship is alert-only."
+  "Direct-child delegation: one host-verified direct child, one level, in the parent task's location and scope. It sets the child's maximum mode; a limited grant derives that child's correction grant at enrollment but sends nothing and bypasses no gate. It covers no later children, cross-scope work or transfer. Revocation stops new enrollment and correction without retracting accepted messages or resetting spent attempts. Unknown parentage, location, scope or changed relationship is alert-only."
 
 export type DelegationState = "granted" | "revoked"
 

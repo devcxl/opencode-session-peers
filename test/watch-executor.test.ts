@@ -130,6 +130,10 @@ function authority(ledger: WatchLedger): CorrectionExecutorAuthority {
       const snapshot = ledger.correction(taskID)
       return snapshot.ok ? snapshot.value : undefined
     },
+    isDelegatedTask(taskID) {
+      const link = ledger.delegatedTaskLink(taskID)
+      return !link.ok || link.value !== null
+    },
     reserve(input: ReserveCorrectionInput) {
       return ledger.reserveCorrection(input)
     },

@@ -71,11 +71,18 @@ caller path; the parent cannot report or receipt as the child.
 Enrollment requires: an active self-enrolled parent task owned by the current
 activation, an active grant for that exact child, a fresh host `parentID`
 equal to the parent session, one location and one scope, a non-wider mode, and
-no completed child. A late child is enrolled and classified as late; the
-plugin sends no prompt, generates no text, replays no business task and does
-not interrupt a foreground child or peer wait. A repeated `requestId` is
-idempotent; changed parameters conflict. A completed/ended child is not
-re-enrolled.
+no live child task occupying the child's one slot. A late child is enrolled and
+classified as late; the plugin sends no prompt, generates no text, replays no
+business task and does not interrupt a foreground child or peer wait.
+
+A repeated `requestId` is idempotent even when the earlier child task is
+completed or ended: it returns that history without creating a new task,
+prompting, or replaying old work. A new `requestId` is a new explicit
+supervision request; once the child's previous task has released its live slot
+it may create a new child task, but it still does not wake the child or replay
+the old business task. Host idle, a last execution result of `succeeded` or a
+process restart is never treated as business completion; only the target's
+explicit `completed` report is.
 
 ## Fresh authority and receipts
 
@@ -91,9 +98,13 @@ when the panel is read:
 3. `delegatedAuthorityGate` applies the same direct-parent/location/scope/mode
    policy to the current facts.
 4. The ledger repeats the durable part inside reserve/claim/receipt:
-   source grant active and version-bound to the link, one-hop link still
-   present, parent active/self/uncompleted/owned, and the child task identity
-   unchanged.
+   source grant active and version-bound to the link, source owner equal to the
+   parent owner and the current activation, source generation equal to the
+   parent generation, one-hop link still present, parent
+   active/self/uncompleted/owned, child task identity unchanged, and the child
+   correction grant's generation separately bound to the child generation.
+   Parent and child generations are never assumed equal; the source grant's
+   mode and deployment must cover the derived correction.
 
 The service `receipt` path is `async`: it awaits the fresh check before the
 ledger receipt, and on refusal passes an internal `authorityRefusalReason` so
@@ -101,9 +112,9 @@ the receipt is recorded as **seen without a continue permit**, not as a
 successful receipt. A delegated task with no wired authority guard is refused
 the permit (never fail-open); a self-enrolled task keeps the #61 synchronous
 behavior and needs no delegation check. `actions/watch.ts` awaits that receipt
-call. The parent wires the same helper at the executor's precheck and
-post-reserve/pre-claim recheck; the ledger's internal check still guards any
-race between the helper and the claim.
+call. The executor awaits the same helper before its pre-reserve gate and again
+after reserve before claim; the ledger's internal check still guards any race
+between the helper and the claim.
 
 Known race, stated honestly: the final host-fact check and host enqueue are
 not one transaction. The ledger prevents a new reservation/claim/permit based
@@ -152,7 +163,7 @@ ordinary `show` of a delegated child by its parent is refused with
 target task. `src/tui/watch-delegation.ts` renders the same boundary without
 touching the shared panel skeleton.
 
-## Wiring seams for the parent
+## Server wiring
 
 - `createDelegationAuthority({ ledger, sessions, scopeOf, activationID,
   closing, now })` returns `check(taskID)` and `facts(sessionID)`. The watch
@@ -165,13 +176,21 @@ touching the shared panel skeleton.
 - `WatchApplication.delegate`, `prepareDelegationGrant`,
   `confirmDelegationGrant`, `revokeDelegationGrant`, `delegationView` and
   `checkDelegatedAuthority` are the application entries.
-- Action `delegate` and non-self `enroll` cases call `delegate`; the
-  `watchDelegation`/`watchDelegationView` RPC handlers live in
-  `src/actions/watch-delegation-rpc.ts`; `src/rpc.ts` and `src/index.ts` still
-  need the parent's public wiring.
-- Executor seam: call `await watch.checkDelegatedAuthority(taskID)` after every
-  fresh observation/lookups and before claim; a `required && !allowed` result
-  aborts the reservation without sending. The ledger repeats the durable check.
+- `src/index.ts` creates the scope reader and a delegation-authority factory
+  with the application's own ledger, and registers both sibling RPC methods.
+- `src/rpc.ts` exports the delegation readers/types and registers
+  `watchDelegation` and `watchDelegationView`.
+- `src/actions/watch.ts` routes `delegate` and non-self `enroll` through the
+  reserved `taskID`/`targetSessionID`/`requestId`/`goal`/`mode`/
+  `expectedVersion` fields; the model cannot call the grant/confirm RPC.
+- `src/watch/executor.ts` has an optional
+  `checkDelegatedAuthority?: (taskID) => Promise<{required, allowed}>`.
+  `CorrectionExecutorAuthority.isDelegatedTask(taskID)` lets it fail closed if
+  the hook is missing. The hook runs before the pre-reserve gate and again
+  after reserve before claim; all observations used afterward are re-sampled,
+  and closing/task version are re-read after each await. A `required &&
+  !allowed` result aborts without sending; the ledger repeats the durable
+  check.
 
 ## Evidence
 
@@ -184,22 +203,31 @@ Targeted red/green:
 - `test/watch-delegation-policy.test.ts`: 22 pass (direct child, wrong/absent
   parent, grandchild, cross-location/scope, revoked, mode cap, recursion,
   owner/version, completed/late/busy child, closing, digest text/owner/version).
-- `test/watch-delegation-ledger.test.ts`: 9 pass (real SQLite, derived grant,
-  independent children, idempotent request, revoked source, reserve/claim
-  refusal with attempt facts retained, accepted/unknown facts retained, and
-  pause-before-receipt seen/no permit).
+- `test/watch-delegation-ledger.test.ts`: 10 pass (real SQLite, derived grant,
+  independent children, idempotent request and scope-provenance idempotency,
+  revoked source, reserve/claim refusal with attempt facts retained,
+  accepted/unknown facts retained, and pause-before-receipt seen/no permit).
 - `test/watch-delegation-authority.test.ts`: 9 pass (self task, fresh allow,
   revoke/pause/scope/parentID/child deletion, configured-scope source,
   revoke-during-read, closing-during-read).
-- `test/watch-delegation-service.test.ts`: 13 pass (prepare/confirm/delegate/
-  view/revoke, wrong parent/scope, revoke before delegate, own-show preference,
-  parent-as-child refusal, redacted control, completed-child read, completed
-  repeat idempotency, parent correction grant not a delegation, receipt after
-  revoke and scope change with no permit, missing guard fail-closed, self-task
-  receipt permit regression).
+- `test/watch-delegation-service.test.ts`: 17 pass (prepare/confirm/delegate/
+  view/revoke, wrong parent/scope, confirm fresh parentID/scope/deletion
+  refuses without consuming the nonce, revoke before delegate, own-show
+  preference, parent-as-child report/receipt refusal, redacted control,
+  completed-child read, completed repeat idempotency, parent correction grant
+  not a delegation, downgrade retaining spent facts, receipt after revoke and
+  scope change with no permit, missing guard fail-closed, self-task receipt
+  permit regression).
 - `test/watch-delegation-contract.test.ts`: 9 pass (strict readers, no
   consent/checked/nonce in normal view, no content on unauthorized view, RPC
   parse/deployment/revoke shape).
+- `test/watch-delegation-entry.test.ts`: 6 pass (plugin setup/FakeHost:
+  controlled grant, public delegate, child begin/waiting, parent view, revoke,
+  only-child report/receipt, model grant refusal, non-self reserved fields,
+  one real queue and child receipt permit, revoke-before-receipt no permit).
+- `test/watch-delegation-executor.test.ts`: 4 pass (scope change and source
+  revoke during the pre-reserve authority await, revoke after reserve before
+  claim, unknown delivery retained and not replayed after revoke).
 - `test/tui-watch-delegation.test.ts`: 4 pass (authorized rows, unauthorized
   redaction, revoked grant notes, failure tone).
 - `test/watch-delegation-policy.test.ts` and `test/watch-delegation-ledger.test.ts`

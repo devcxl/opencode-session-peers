@@ -41,6 +41,8 @@ import type { CorrectionDeliveryOutcome as DeliveryOutcome, CorrectionDeliveryPo
 export interface CorrectionExecutorAuthority {
   liveTasks(): readonly WatchTaskRecord[]
   snapshot(taskID: string): WatchCorrectionSnapshot | undefined
+  /** A missing/ambiguous link is treated as delegated, never as a self task. */
+  isDelegatedTask(taskID: string): boolean
   reserve(input: ReserveCorrectionInput): LedgerResult<{
     readonly task: WatchTaskRecord
     readonly attempt: WatchCorrectionAttemptRecord
@@ -78,6 +80,15 @@ export interface CorrectionExecutorOptions {
   readonly now: () => number
   /** Configured bounded-attempt policy; production passes the parsed watch config. */
   readonly policy?: WatchCorrectionPolicy
+  /**
+   * Fresh delegated-child authority. A delegated task with no hook, or a
+   * refused hook, never reserves or claims a correction. Self tasks are
+   * unchanged and need no check.
+   */
+  readonly checkDelegatedAuthority?: (taskID: string) => Promise<{
+    readonly required: boolean
+    readonly allowed: boolean
+  }>
   readonly warn: (message: string) => void
 }
 
@@ -130,6 +141,10 @@ export function createCorrectionExecutor(options: CorrectionExecutorOptions): Co
     ) {
       return
     }
+    // Fresh delegated authority runs before this round's observation; every
+    // observation used below is sampled after this await.
+    if (!(await delegatedOkay(taskID))) return
+    if (closing) return
     const sameLocation = await options.sameLocation(initialTask.targetSessionID)
     if (closing) return
     const observation = await freshObservation(taskID)
@@ -159,6 +174,14 @@ export function createCorrectionExecutor(options: CorrectionExecutorOptions): Co
     // location change or closing abandons the permanent reservation without
     // sending. The executor's own reservation is not a blocking pending gate.
     await new Promise((resolve) => setTimeout(resolve, 0))
+    if (closing) {
+      abort(taskID, reservationID, reserved.value.task.version, task.generation)
+      return
+    }
+    if (!(await delegatedOkay(taskID))) {
+      abort(taskID, reservationID, reserved.value.task.version, task.generation)
+      return
+    }
     if (closing) {
       abort(taskID, reservationID, reserved.value.task.version, task.generation)
       return
@@ -240,6 +263,25 @@ export function createCorrectionExecutor(options: CorrectionExecutorOptions): Co
     options.refreshObservation === undefined
       ? options.observationFor(taskID)
       : await options.refreshObservation(taskID)
+
+  const delegatedOkay = async (taskID: string): Promise<boolean> => {
+    if (!options.authority.isDelegatedTask(taskID)) return true
+    if (options.checkDelegatedAuthority === undefined) {
+      options.warn("a delegated child has no fresh authority hook; no correction was sent")
+      return false
+    }
+    try {
+      const checked = await options.checkDelegatedAuthority(taskID)
+      if (checked.required && !checked.allowed) {
+        options.warn("the delegated child authority refused this correction round; no send was attempted")
+        return false
+      }
+      return true
+    } catch {
+      options.warn("the delegated child authority check failed; no correction was sent")
+      return false
+    }
+  }
 
   const gateInput = (
     task: WatchTaskRecord,

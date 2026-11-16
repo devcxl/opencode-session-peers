@@ -712,7 +712,9 @@ export function delegatedEnroll(host: DelegationLedgerHost, input: DelegatedEnro
     verifiedParentID,
     verifiedDirectory,
     verifiedScope,
-    input.verifiedScopeSource,
+    // The provenance of the scope (recorded vs configured) is audit metadata,
+    // not a request parameter: a fallback that later gains a roster record
+    // must not turn the same request into a conflict.
   ])
   const existingRequest = host.db
     .query("SELECT * FROM enrollment_requests WHERE initiator_session_id = ? AND request_id = ?")
@@ -866,7 +868,11 @@ export function assertDelegatedCorrectionAuthority(
     readonly taskID: string
     readonly targetSessionID: string
     readonly ownerActivation: string
-    readonly generation: number
+    /** The child task's generation. */
+    readonly childGeneration: number
+    /** The child correction grant's own generation; bound to the child, not the parent. */
+    readonly grantGeneration: number
+    readonly grantMode: string
     readonly sourceGrantID: string | null
     readonly sourceGrantVersion: number | null
   },
@@ -895,9 +901,18 @@ export function assertDelegatedCorrectionAuthority(
     source.parent_session_id !== link.parent_session_id ||
     source.scope_target_session_id !== input.targetSessionID ||
     source.scope_directory !== link.verified_directory ||
-    source.scope_peer_scope !== link.verified_scope
+    source.scope_peer_scope !== link.verified_scope ||
+    link.verified_parent_id !== source.parent_session_id ||
+    link.target_session_id !== input.targetSessionID
   ) {
     return { required: true, ok: false, reason: "the source delegation grant no longer covers this child" }
+  }
+  if (
+    source.mode !== "limited-correction" ||
+    source.deployment_statement !== "single-host-same-location" ||
+    input.grantMode !== "limited-correction"
+  ) {
+    return { required: true, ok: false, reason: "the source grant mode or deployment does not cover this correction" }
   }
   const currentDigest = delegationTermsDigest({
     parentTaskID: source.parent_task_id,
@@ -921,13 +936,21 @@ export function assertDelegatedCorrectionAuthority(
     parent.initiator_session_id !== parent.target_session_id ||
     parent.target_session_id !== link.parent_session_id ||
     parent.owner_activation !== input.ownerActivation ||
-    parent.generation !== input.generation
+    source.owner_activation !== parent.owner_activation ||
+    source.generation !== parent.generation
   ) {
     return { required: true, ok: false, reason: "the parent task is no longer eligible for this child" }
   }
   const child = host.taskRow(input.taskID)
-  if (child === null || child.target_session_id !== input.targetSessionID || child.task_id !== input.taskID) {
-    return { required: true, ok: false, reason: "the child task identity changed" }
+  if (
+    child === null ||
+    child.target_session_id !== input.targetSessionID ||
+    child.task_id !== input.taskID ||
+    child.mode !== "limited-correction" ||
+    child.generation !== input.childGeneration ||
+    input.grantGeneration !== child.generation
+  ) {
+    return { required: true, ok: false, reason: "the child task or correction generation changed" }
   }
   return { required: true, ok: true, reason: null }
 }
