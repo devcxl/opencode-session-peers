@@ -32,6 +32,10 @@ const authority: CorrectionExecutorAuthority = {
     const snapshot = ledger.correction(id)
     return snapshot.ok ? snapshot.value : undefined
   },
+  isDelegatedTask(id) {
+    const link = ledger.delegatedTaskLink(id)
+    return !link.ok || link.value !== null
+  },
   reserve(input: ReserveCorrectionInput) {
     return ledger.reserveCorrection(input)
   },

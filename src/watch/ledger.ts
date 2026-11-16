@@ -64,6 +64,46 @@ import {
   type WatchTaskRecord,
   type WatchedTaskState,
 } from "../domain/watch.ts"
+import type {
+  DelegatedAuthoritySnapshot,
+  DelegatedChildRecord,
+  DelegatedTaskLink,
+  DelegationChallenge,
+  DelegationGrantRecord,
+} from "./delegation.ts"
+import {
+  DELEGATION_DDL,
+  DELEGATION_REQUIRED_TABLES,
+  LedgerDelegationFailure,
+  REQUIRED_DELEGATED_TASK_COLUMNS,
+  REQUIRED_DELEGATION_CHALLENGE_COLUMNS,
+  REQUIRED_DELEGATION_GRANT_COLUMNS,
+  assertDelegatedCorrectionAuthority,
+  assertDelegationIntegrity,
+  confirmDelegationGrant,
+  delegatedAuthority,
+  delegatedEnroll,
+  delegatedTaskLink,
+  delegationGrantFor,
+  delegationGrantsFor,
+  listDelegatedChildren,
+  prepareDelegationGrant,
+  revokeDelegationGrant,
+  type ConfirmDelegationGrantInput,
+  type DelegatedEnrollInput,
+  type DelegatedEnrollResult,
+  type DelegationLedgerHost,
+  type PrepareDelegationGrantInput,
+  type RevokeDelegationGrantInput,
+} from "./ledger-delegation.ts"
+
+export type {
+  ConfirmDelegationGrantInput,
+  DelegatedEnrollInput,
+  DelegatedEnrollResult,
+  PrepareDelegationGrantInput,
+  RevokeDelegationGrantInput,
+} from "./ledger-delegation.ts"
 
 export const WATCH_LEDGER_SCHEMA_VERSION = 10
 export const WATCH_LEDGER_PROTOCOL_VERSION = 1
@@ -253,6 +293,11 @@ export interface RecordCorrectionReceiptInput {
   readonly currentActivationId: string
   /** The opaque correlation bound when the reservation was made. Never a caller-chosen id. */
   readonly correlation: string
+  /**
+   * Internal refusal from a fresh delegated-authority check. It records the
+   * receipt as seen without a permit and cannot be supplied by a model field.
+   */
+  readonly authorityRefusalReason?: string
   readonly at: number
 }
 
@@ -297,6 +342,8 @@ export interface WatchLedger {
   readonly filesystem: string
   enroll(input: EnrollWatchTaskInput): LedgerResult<{ readonly task: WatchTaskRecord; readonly created: boolean }>
   show(input: { readonly taskID?: string; readonly sessionID: string }): LedgerResult<WatchTaskRecord | null>
+  /** The task this session is the target of, without exposing a delegated child. */
+  ownTask(sessionID: string): LedgerResult<WatchTaskRecord | null>
   report(input: ReportWatchTaskInput): LedgerResult<{ readonly task: WatchTaskRecord; readonly duplicate: boolean }>
   control(input: ControlWatchTaskInput): LedgerResult<{ readonly task: WatchTaskRecord; readonly changed: boolean }>
   /** Active tasks the observer may sample; paused tasks create no new alerts. */
@@ -364,6 +411,29 @@ export interface WatchLedger {
   }>
   /** Read grants and permanent attempts without exposing the challenge nonce. */
   correction(taskID: string): LedgerResult<WatchCorrectionSnapshot>
+  /** Controlled direct-child delegation grant; never reachable from a model tool call. */
+  prepareDelegationGrant(input: PrepareDelegationGrantInput): LedgerResult<DelegationChallenge>
+  confirmDelegationGrant(input: ConfirmDelegationGrantInput): LedgerResult<{
+    readonly task: WatchTaskRecord
+    readonly grant: DelegationGrantRecord
+    readonly created: boolean
+  }>
+  revokeDelegationGrant(input: RevokeDelegationGrantInput): LedgerResult<{
+    readonly grant: DelegationGrantRecord
+    readonly changed: boolean
+    readonly childTaskIDs: readonly string[]
+  }>
+  /** Enroll one child task under an active delegation grant in the same transaction. */
+  delegatedEnroll(input: DelegatedEnrollInput): LedgerResult<DelegatedEnrollResult>
+  delegationGrantFor(input: {
+    readonly parentTaskID: string
+    readonly targetSessionID: string
+  }): LedgerResult<DelegationGrantRecord | null>
+  delegationGrantsFor(parentTaskID: string): LedgerResult<readonly DelegationGrantRecord[]>
+  delegatedTaskLink(taskID: string): LedgerResult<DelegatedTaskLink | null>
+  /** Atomic ledger facts for a fresh delegated-authority check. */
+  delegatedAuthority(taskID: string): LedgerResult<DelegatedAuthoritySnapshot>
+  listDelegatedChildren(parentTaskID: string): LedgerResult<readonly DelegatedChildRecord[]>
   close(): void
 }
 
@@ -434,6 +504,8 @@ interface CorrectionGrantRow {
   readonly deployment_statement: string
   readonly terms_digest: string
   readonly confirmation_id: string
+  readonly source_delegation_grant_id: string | null
+  readonly source_delegation_grant_version: number | null
   readonly granted_at: number
   readonly revoked_at: number | null
 }
@@ -612,8 +684,11 @@ CREATE TABLE IF NOT EXISTS watch_correction_grants (
   deployment_statement TEXT NOT NULL CHECK (deployment_statement = 'single-host-same-location'),
   terms_digest TEXT NOT NULL,
   confirmation_id TEXT NOT NULL,
+  source_delegation_grant_id TEXT,
+  source_delegation_grant_version INTEGER,
   granted_at INTEGER NOT NULL,
-  revoked_at INTEGER
+  revoked_at INTEGER,
+  CHECK ((source_delegation_grant_id IS NULL) = (source_delegation_grant_version IS NULL))
 );
 
 CREATE TABLE IF NOT EXISTS watch_correction_challenges (
@@ -681,7 +756,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS one_pending_correction_attempt
 
 CREATE INDEX IF NOT EXISTS correction_attempts_by_task
   ON watch_correction_attempts(task_id, attempt_no);
-`
+` + DELEGATION_DDL
 
 const REQUIRED_TABLES = [
   "meta",
@@ -693,6 +768,7 @@ const REQUIRED_TABLES = [
   "watch_correction_grants",
   "watch_correction_challenges",
   "watch_correction_attempts",
+  ...DELEGATION_REQUIRED_TABLES,
 ]
 const REQUIRED_TASK_COLUMNS = [
   "task_id",
@@ -744,6 +820,8 @@ const REQUIRED_CORRECTION_GRANT_COLUMNS = [
   "deployment_statement",
   "terms_digest",
   "confirmation_id",
+  "source_delegation_grant_id",
+  "source_delegation_grant_version",
   "granted_at",
   "revoked_at",
 ]
@@ -1038,6 +1116,9 @@ function openOnce(options: OpenWatchLedgerOptions): OpenWatchLedgerResult {
       assertColumns(db, "watch_correction_grants", REQUIRED_CORRECTION_GRANT_COLUMNS)
       assertColumns(db, "watch_correction_challenges", REQUIRED_CORRECTION_CHALLENGE_COLUMNS)
       assertColumns(db, "watch_correction_attempts", REQUIRED_CORRECTION_ATTEMPT_COLUMNS)
+      assertColumns(db, "watch_delegation_grants", REQUIRED_DELEGATION_GRANT_COLUMNS)
+      assertColumns(db, "watch_delegation_challenges", REQUIRED_DELEGATION_CHALLENGE_COLUMNS)
+      assertColumns(db, "watch_delegated_tasks", REQUIRED_DELEGATED_TASK_COLUMNS)
     }
 
     const metadata = readMetadata(db)
@@ -1061,6 +1142,7 @@ function openOnce(options: OpenWatchLedgerOptions): OpenWatchLedgerResult {
       throw new LedgerFailure("ledger_mismatch", "task rows carry a different ledger id")
     }
     assertAttemptsIntegrity(db)
+    assertDelegationIntegrity(db)
     if (anchor !== undefined) {
       if (anchor.ledgerId !== metadata.ledgerId) {
         throw new LedgerFailure(
@@ -1354,6 +1436,19 @@ class SqliteWatchLedger implements WatchLedger {
            ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
         )
         .get(sessionID, sessionID) as TaskRow | null
+      return row === null ? null : taskFromRow(row, this.reportedWaits(row.task_id))
+    })
+  }
+
+  ownTask(sessionID: string): LedgerResult<WatchTaskRecord | null> {
+    const id = requiredIdentifier(sessionID, "sessionID")
+    return this.read(() => {
+      const row = this.db
+        .query(
+          `SELECT * FROM watch_tasks WHERE target_session_id = ?
+           ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
+        )
+        .get(id) as TaskRow | null
       return row === null ? null : taskFromRow(row, this.reportedWaits(row.task_id))
     })
   }
@@ -1677,6 +1772,12 @@ class SqliteWatchLedger implements WatchLedger {
       if (task.watch_state === "ended" || task.task_state === "completed") {
         throw new LedgerFailure("invalid_transition", "a completed or ended task cannot receive a grant")
       }
+      if (this.isDelegatedTask(task.task_id)) {
+        throw new LedgerFailure(
+          "not_granted",
+          "a delegated child's correction grant is derived from its delegation grant; revoke and re-grant delegation instead",
+        )
+      }
       const existingGrant = this.correctionGrantRow(task.task_id)
       if (existingGrant?.state === "granted") {
         throw new LedgerFailure("grant_active", "an active correction grant already exists; downgrade it first")
@@ -1749,6 +1850,12 @@ class SqliteWatchLedger implements WatchLedger {
       }
       if (task.version !== input.expectedVersion || task.generation !== input.generation) {
         throw new LedgerFailure("stale_version", "the task version or generation changed")
+      }
+      if (this.isDelegatedTask(task.task_id)) {
+        throw new LedgerFailure(
+          "not_granted",
+          "a delegated child's correction grant is derived from its delegation grant; revoke and re-grant delegation instead",
+        )
       }
       const activeGrant = this.correctionGrantRow(task.task_id)
       if (activeGrant?.state === "granted") {
@@ -1943,6 +2050,19 @@ class SqliteWatchLedger implements WatchLedger {
       ) {
         throw new LedgerFailure("invalid_input", "the correction policy must be bounded positive integers")
       }
+      const delegated = assertDelegatedCorrectionAuthority(this.delegationHost(), {
+        taskID: task.task_id,
+        targetSessionID: task.target_session_id,
+        ownerActivation: owner,
+        childGeneration: task.generation,
+        grantGeneration: grant.generation,
+        grantMode: grant.mode,
+        sourceGrantID: grant.source_delegation_grant_id,
+        sourceGrantVersion: grant.source_delegation_grant_version,
+      })
+      if (!delegated.ok) {
+        throw new LedgerFailure("not_granted", delegated.reason ?? "the delegated authority is no longer active")
+      }
       const counts = this.db
         .query("SELECT COUNT(*) AS used, COALESCE(MAX(attempt_no), 0) AS highest FROM watch_correction_attempts WHERE task_id = ?")
         .get(task.task_id) as { used: number; highest: number }
@@ -2114,6 +2234,19 @@ class SqliteWatchLedger implements WatchLedger {
       ) {
         throw new LedgerFailure("not_granted", "the reservation's original grant is no longer active")
       }
+      const delegated = assertDelegatedCorrectionAuthority(this.delegationHost(), {
+        taskID: task.task_id,
+        targetSessionID: task.target_session_id,
+        ownerActivation: owner,
+        childGeneration: task.generation,
+        grantGeneration: grant.generation,
+        grantMode: grant.mode,
+        sourceGrantID: grant.source_delegation_grant_id,
+        sourceGrantVersion: grant.source_delegation_grant_version,
+      })
+      if (!delegated.ok) {
+        throw new LedgerFailure("not_granted", delegated.reason ?? "the delegated authority is no longer active")
+      }
       if (row.state !== "reserved" || row.claimed_at !== null) {
         throw new LedgerFailure("claim_taken", "the one send slot for this reservation is already claimed")
       }
@@ -2215,6 +2348,14 @@ class SqliteWatchLedger implements WatchLedger {
       const caller = requiredIdentifier(input.callerSessionId, "callerSessionId")
       const correlation = requiredIdentifier(input.correlation, "correlation")
       const currentActivation = requiredIdentifier(input.currentActivationId, "currentActivationId")
+      if (
+        input.authorityRefusalReason !== undefined &&
+        (typeof input.authorityRefusalReason !== "string" ||
+          input.authorityRefusalReason.trim().length === 0 ||
+          input.authorityRefusalReason.length > 200)
+      ) {
+        throw new LedgerFailure("invalid_input", "authorityRefusalReason must be a bounded non-empty string")
+      }
       const task = this.taskRow(taskID)
       if (task === null) throw new LedgerFailure("unknown_task", taskID)
       this.checkLedger(task)
@@ -2278,14 +2419,31 @@ class SqliteWatchLedger implements WatchLedger {
         task.mode === "limited-correction" &&
         task.owner_activation === row.owner_activation &&
         task.owner_activation === currentActivation
+      const delegated =
+        grant === null
+          ? { required: false, ok: true, reason: null }
+          : assertDelegatedCorrectionAuthority(this.delegationHost(), {
+              taskID: task.task_id,
+              targetSessionID: task.target_session_id,
+              ownerActivation: currentActivation,
+              childGeneration: task.generation,
+              grantGeneration: grant.generation,
+              grantMode: grant.mode,
+              sourceGrantID: grant.source_delegation_grant_id,
+              sourceGrantVersion: grant.source_delegation_grant_version,
+            })
       const refusal =
         task.watch_state !== "active"
           ? `task-${task.watch_state}`
           : task.task_state === "completed"
             ? "task-completed"
-            : originalGrantOk
-              ? null
-              : "grant-changed"
+            : input.authorityRefusalReason !== undefined
+              ? input.authorityRefusalReason
+              : originalGrantOk
+                ? delegated.ok
+                  ? null
+                  : "delegation-changed"
+                : "grant-changed"
       const permitAt = refusal === null ? input.at : null
       try {
         this.db
@@ -2483,6 +2641,100 @@ class SqliteWatchLedger implements WatchLedger {
         sessionUnresolved: unresolved !== null,
       }
     })
+  }
+
+  prepareDelegationGrant(input: PrepareDelegationGrantInput): LedgerResult<DelegationChallenge> {
+    return this.immediate(() => prepareDelegationGrant(this.delegationHost(), input))
+  }
+
+  confirmDelegationGrant(input: ConfirmDelegationGrantInput): LedgerResult<{
+    readonly task: WatchTaskRecord
+    readonly grant: DelegationGrantRecord
+    readonly created: boolean
+  }> {
+    return this.immediate(() => confirmDelegationGrant(this.delegationHost(), input))
+  }
+
+  revokeDelegationGrant(input: RevokeDelegationGrantInput): LedgerResult<{
+    readonly grant: DelegationGrantRecord
+    readonly changed: boolean
+    readonly childTaskIDs: readonly string[]
+  }> {
+    return this.immediate(() => revokeDelegationGrant(this.delegationHost(), input))
+  }
+
+  delegatedEnroll(input: DelegatedEnrollInput): LedgerResult<DelegatedEnrollResult> {
+    return this.immediate(() => {
+      const enrolled = delegatedEnroll(this.delegationHost(), input)
+      if (enrolled.created && enrolled.deriveCorrection) {
+        const task = this.taskRow(enrolled.task.taskID)
+        if (task === null) throw new LedgerFailure("corrupt", "the delegated task disappeared before its correction grant")
+        if (enrolled.grant.deployment === undefined) {
+          throw new LedgerFailure("not_granted", "the delegation grant has no deployment declaration")
+        }
+        const digest = correctionTermsDigest(task, enrolled.grant.deployment)
+        this.db
+          .query(
+            `INSERT INTO watch_correction_grants (
+              task_id, grant_id, mode, state, version, generation,
+              scope_target_session_id, review_summary, deployment_statement, terms_digest,
+              confirmation_id, source_delegation_grant_id, source_delegation_grant_version,
+              granted_at
+            ) VALUES (?, ?, 'limited-correction', 'granted', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            task.task_id,
+            randomUUID(),
+            task.generation,
+            task.target_session_id,
+            WATCH_CORRECTION_TERMS,
+            enrolled.grant.deployment,
+            digest,
+            enrolled.grant.confirmationID,
+            enrolled.grant.grantID,
+            enrolled.grant.version,
+            this.now(),
+          )
+      }
+      return enrolled
+    })
+  }
+
+  delegationGrantFor(input: {
+    readonly parentTaskID: string
+    readonly targetSessionID: string
+  }): LedgerResult<DelegationGrantRecord | null> {
+    return this.read(() => delegationGrantFor(this.delegationHost(), input))
+  }
+
+  delegationGrantsFor(parentTaskID: string): LedgerResult<readonly DelegationGrantRecord[]> {
+    return this.read(() => delegationGrantsFor(this.delegationHost(), parentTaskID))
+  }
+
+  delegatedTaskLink(taskID: string): LedgerResult<DelegatedTaskLink | null> {
+    return this.read(() => delegatedTaskLink(this.delegationHost(), taskID))
+  }
+
+  delegatedAuthority(taskID: string): LedgerResult<DelegatedAuthoritySnapshot> {
+    return this.read(() => delegatedAuthority(this.delegationHost(), taskID))
+  }
+
+  listDelegatedChildren(parentTaskID: string): LedgerResult<readonly DelegatedChildRecord[]> {
+    return this.read(() => listDelegatedChildren(this.delegationHost(), parentTaskID))
+  }
+
+  private delegationHost(): DelegationLedgerHost {
+    return {
+      db: this.db,
+      ledgerId: this.ledgerId,
+      now: () => this.now(),
+      taskRow: (taskID) => this.taskRow(taskID),
+      task: (taskID) => this.task(taskID),
+    }
+  }
+
+  private isDelegatedTask(taskID: string): boolean {
+    return this.db.query("SELECT 1 AS yes FROM watch_delegated_tasks WHERE task_id = ?").get(taskID) !== null
   }
 
   private correctionGrantRow(taskID: string): CorrectionGrantRow | null {
@@ -3037,6 +3289,7 @@ function versionAtLeast(actual: string, minimum: string): boolean {
 
 function mapError(error: unknown): { readonly code: WatchLedgerErrorCode; readonly detail: string } {
   if (error instanceof LedgerFailure) return { code: error.code, detail: error.detail }
+  if (error instanceof LedgerDelegationFailure) return { code: error.code, detail: error.detail }
   const code = (error as { code?: unknown } | null)?.code
   const text = error instanceof Error ? error.message : String(error)
   if (typeof code === "string") {

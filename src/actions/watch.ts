@@ -9,7 +9,6 @@
  */
 
 import {
-  DELEGATION_UNAVAILABLE_REASON,
   MANUAL_CORRECTION_UNAVAILABLE_REASON,
   RECOVERY_UNAVAILABLE_REASON,
   TRANSFER_UNAVAILABLE_REASON,
@@ -23,7 +22,13 @@ import type { ActionResult } from "../domain/types.ts"
 import type { SessionLookup } from "../host/session.ts"
 import type { ToolCall } from "../host/tools.ts"
 import { sessionAtLocation } from "../watch/access.ts"
-import { emptyWatchAlerts, type WatchApplication, type WatchObservationSource, type WatchOutcome } from "../watch/service.ts"
+import {
+  emptyWatchAlerts,
+  type WatchApplication,
+  type WatchObservationSource,
+  type WatchOutcome,
+  type WatchReceiptOutcome,
+} from "../watch/service.ts"
 import { watchCapability, watchControls } from "../watch/view.ts"
 
 export interface WatchActionDeps {
@@ -80,7 +85,16 @@ const OPERATIONS = [
 type Operation = (typeof OPERATIONS)[number]
 
 /** Operations that read or mutate the ledger, and therefore need a local session. */
-const LOCAL_OPERATIONS: readonly Operation[] = ["show", "enroll", "report", "pause", "end", "ack", "receipt"]
+const LOCAL_OPERATIONS: readonly Operation[] = [
+  "show",
+  "enroll",
+  "report",
+  "pause",
+  "end",
+  "ack",
+  "receipt",
+  "delegate",
+]
 
 export async function watchAction(deps: WatchActionDeps, call: ToolCall, input: unknown): Promise<ActionResult> {
   if (deps.watch === undefined) return outcomeResult(failure("E_WATCH_DISABLED", "Session peers is disabled by configuration."))
@@ -125,7 +139,7 @@ export async function watchAction(deps: WatchActionDeps, call: ToolCall, input: 
         return outcomeResult(failure("E_WATCH_INVALID", "receipt needs taskID, attemptID and correlation"))
       }
       return receiptResult(
-        deps.watch.receipt({
+        await deps.watch.receipt({
           callerSessionID: call.sessionID,
           taskID: request.taskID,
           attemptID: request.attemptID,
@@ -134,7 +148,31 @@ export async function watchAction(deps: WatchActionDeps, call: ToolCall, input: 
       )
     }
     case "delegate":
-      return outcomeResult(failure("E_WATCH_UNSUPPORTED", DELEGATION_UNAVAILABLE_REASON))
+      if (
+        request.taskID === undefined ||
+        request.targetSessionID === undefined ||
+        request.requestID === undefined ||
+        request.goal === undefined ||
+        request.expectedVersion === undefined
+      ) {
+        return outcomeResult(
+          failure(
+            "E_WATCH_INVALID",
+            "delegate needs taskID (the parent task), targetSessionID, requestId, goal and expectedVersion",
+          ),
+        )
+      }
+      return outcomeResult(
+        await deps.watch.delegate({
+          callerSessionID: call.sessionID,
+          parentTaskID: request.taskID,
+          targetSessionID: request.targetSessionID,
+          requestID: request.requestID,
+          goal: request.goal,
+          expectedVersion: request.expectedVersion,
+          ...(request.mode === undefined ? {} : { mode: request.mode }),
+        }),
+      )
     case "transfer":
       return outcomeResult(failure("E_WATCH_UNSUPPORTED", TRANSFER_UNAVAILABLE_REASON))
     case "resume":
@@ -144,7 +182,35 @@ export async function watchAction(deps: WatchActionDeps, call: ToolCall, input: 
     case "enroll": {
       const target = request.targetSessionID
       if (target !== undefined && target !== call.sessionID) {
-        return outcomeResult(failure("E_WATCH_UNSUPPORTED", DELEGATION_UNAVAILABLE_REASON))
+        if (
+          request.requestID === undefined ||
+          request.goal === undefined ||
+          request.expectedVersion === undefined
+        ) {
+          return outcomeResult(
+            failure(
+              "E_WATCH_INVALID",
+              "a non-self enroll needs requestId, goal and expectedVersion; it is a direct-child delegation",
+            ),
+          )
+        }
+        const parentTaskID = request.taskID ?? deps.watch.show({ sessionID: call.sessionID }).task?.taskID
+        if (parentTaskID === undefined) {
+          return outcomeResult(
+            failure("E_WATCH_INVALID", "a non-self enroll needs taskID of the parent task"),
+          )
+        }
+        return outcomeResult(
+          await deps.watch.delegate({
+            callerSessionID: call.sessionID,
+            parentTaskID,
+            targetSessionID: target,
+            requestID: request.requestID,
+            goal: request.goal,
+            expectedVersion: request.expectedVersion,
+            ...(request.mode === undefined ? {} : { mode: request.mode }),
+          }),
+        )
       }
       if (request.requestID === undefined || request.goal === undefined) {
         return outcomeResult(failure("E_WATCH_INVALID", "enroll needs requestId and goal"))
@@ -357,7 +423,7 @@ function outcomeResult(outcome: WatchOutcome): ActionResult {
   }
 }
 
-function receiptResult(outcome: ReturnType<WatchApplication["receipt"]>): ActionResult {
+function receiptResult(outcome: WatchReceiptOutcome): ActionResult {
   const text = !outcome.ok
     ? `${outcome.failure?.reason ?? "The correction receipt was refused."}\n\nCode: ${outcome.failure?.code ?? "E_WATCH_UNAVAILABLE"}. No continuation was authorized.`
     : outcome.continuePermit

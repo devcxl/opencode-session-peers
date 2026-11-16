@@ -223,7 +223,7 @@ function attemptOf(result: ReturnType<WatchLedger["correction"]>): readonly Watc
 }
 
 describeCorrection("correction ledger", () => {
-  test("schema 10 carries permanent attempts, grants and the fixed episode budget", () => {
+  test("schema 10 carries permanent attempts, grants, the fixed episode budget and delegation tables", () => {
     const clock = { value: 1_000 }
     const ledger = open(clock)
     try {

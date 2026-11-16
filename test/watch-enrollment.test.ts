@@ -657,14 +657,18 @@ describeSafe("cross-location isolation", () => {
 })
 
 describe("explicit unavailable capabilities", () => {
-  test("correction, delegation, transfer and recovery are refused; receipt is a bounded entry", async () => {
+  test("correction, transfer and recovery are refused; delegation needs a controlled grant and the reserved fields", async () => {
     const { host, unload } = await loaded({ sessions: [CALLER_SESSION_ID, "ses_child"] })
     try {
-      for (const operation of ["grant", "correct", "delegate", "transfer", "resume"]) {
+      for (const operation of ["grant", "correct", "transfer", "resume"]) {
         const data = watchDetails(await watch(host, { operation }))
         expect(data).toMatchObject({ ok: false, failure: { code: "E_WATCH_UNSUPPORTED" } })
         expect(String((data.failure as Record<string, unknown>)["reason"]).length).toBeGreaterThan(0)
       }
+
+      const delegateMissing = watchDetails(await watch(host, { operation: "delegate" }))
+      expect(delegateMissing).toMatchObject({ ok: false, failure: { code: "E_WATCH_INVALID" } })
+      expect(String((delegateMissing.failure as Record<string, unknown>)["reason"])).toContain("delegate needs")
 
       const manualCorrect = watchDetails(await watch(host, { operation: "correct" }))
       expect(manualCorrect).toMatchObject({ ok: false, failure: { code: "E_WATCH_UNSUPPORTED" } })
@@ -687,7 +691,8 @@ describe("explicit unavailable capabilities", () => {
           targetSessionID: "ses_child",
         }),
       )
-      expect(child).toMatchObject({ ok: false, failure: { code: "E_WATCH_UNSUPPORTED" } })
+      expect(child).toMatchObject({ ok: false, failure: { code: "E_WATCH_INVALID" } })
+      expect(String((child.failure as Record<string, unknown>)["reason"])).toContain("non-self enroll")
       expectNoAgentCalls(host)
     } finally {
       await unload()

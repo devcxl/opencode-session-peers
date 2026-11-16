@@ -15,6 +15,7 @@ import {
   isCorrectionAttemptOpen,
   readGoal,
   readIdentifier,
+  type Checked,
   type WatchActivityView,
   type WatchAlertRecord,
   type WatchAlertsView,
@@ -28,6 +29,17 @@ import {
   type WatchTaskRecord,
   type WatchTaskView,
 } from "../domain/watch.ts"
+import {
+  delegationEnrollmentGate,
+  delegationGrantGate,
+  readDelegationMode,
+  readDelegationScope,
+  WATCH_DELEGATION_TERMS,
+  type DelegationChallenge,
+  type DelegationStopReason,
+} from "./delegation.ts"
+import { delegatedChildView, delegationGrantView, type WatchDelegationView } from "./delegation-view.ts"
+import type { DelegatedAuthorityCheck, DelegationAuthority } from "./delegation-authority.ts"
 import type { CorrectionExecutorAuthority } from "./executor.ts"
 import {
   openWatchLedger,
@@ -82,6 +94,32 @@ export interface WatchGrantOutcome {
   readonly failure: WatchFailure | null
 }
 
+/** The independent controlled delegation review; no model tool can reach it. */
+export interface WatchDelegationGrantOutcome {
+  readonly ok: boolean
+  readonly challenge: DelegationChallenge | null
+  readonly grant: ReturnType<typeof delegationGrantView> | null
+  readonly task: WatchTaskView | null
+  readonly capability: ReturnType<typeof watchCapability>
+  readonly controls: ReturnType<typeof watchControls>
+  readonly review: {
+    readonly delegationTerms: string
+    readonly correctionTerms: string
+    readonly deploymentRequired: boolean
+    /** True only for a limited grant, which derives the child correction grant. */
+    readonly derivesCorrectionGrant: boolean
+  }
+  readonly failure: WatchFailure | null
+}
+
+/** The typed fresh verdict a parent/executor must await before a delegated action. */
+export interface DelegatedAuthorityVerdict {
+  readonly required: boolean
+  readonly allowed: boolean
+  readonly reason: string | null
+  readonly check: DelegatedAuthorityCheck | null
+}
+
 export interface WatchLedgerStatus {
   readonly available: boolean
   /** The exact cause when the ledger is not usable; `null` when it is. */
@@ -115,6 +153,54 @@ export interface WatchApplication {
     readonly kind: WatchReportKind
     readonly evidence: WatchEvidence
   }): WatchOutcome
+  /** Enroll one host-verified direct child under an active controlled delegation grant. */
+  delegate(input: {
+    readonly callerSessionID: string
+    readonly parentTaskID: string
+    readonly targetSessionID: string
+    readonly requestID: string
+    readonly goal: string
+    readonly mode?: WatchMode | string
+    readonly expectedVersion: number
+  }): Promise<WatchOutcome>
+  /** Controlled-surface delegation review; never a model tool path. */
+  prepareDelegationGrant(input: {
+    readonly callerSessionID: string
+    readonly parentTaskID: string
+    readonly expectedVersion: number
+    readonly targetSessionID: string
+    readonly mode: WatchMode | string
+    readonly deployment?: "single-host-same-location"
+  }): Promise<WatchDelegationGrantOutcome>
+  confirmDelegationGrant(input: {
+    readonly callerSessionID: string
+    readonly parentTaskID: string
+    readonly expectedVersion: number
+    readonly generation: number
+    readonly targetSessionID: string
+    readonly mode: WatchMode | string
+    readonly scopeDirectory: string
+    readonly scopePeerScope: string
+    readonly termsDigest: string
+    readonly challenge: string
+    readonly deployment?: "single-host-same-location"
+  }): Promise<WatchDelegationGrantOutcome>
+  revokeDelegationGrant(input: {
+    readonly callerSessionID: string
+    readonly parentTaskID: string
+    readonly targetSessionID: string
+    readonly expectedVersion: number
+  }): Promise<WatchDelegationGrantOutcome>
+  /** The parent's active, read-only child view. It never prompts. */
+  delegationView(input: {
+    readonly sessionID: string
+    readonly parentTaskID: string
+  }): Promise<WatchDelegationView>
+  /**
+   * Fresh delegated authority for a reserve/claim/receipt caller. A self task
+   * needs no check; a delegated task with no helper is refused, not opened.
+   */
+  checkDelegatedAuthority(taskID: string): Promise<DelegatedAuthorityVerdict>
   control(input: {
     readonly callerSessionID: string
     readonly taskID: string
@@ -128,7 +214,7 @@ export interface WatchApplication {
     readonly taskID: string
     readonly attemptID: string
     readonly correlation: string
-  }): WatchReceiptOutcome
+  }): Promise<WatchReceiptOutcome>
   /** The one serial executor's ledger authority; absent when the ledger is unavailable. */
   correctionAuthority(): CorrectionExecutorAuthority | undefined
   /** Synchronously close mutations before waiting for in-flight executor work. */
@@ -197,6 +283,14 @@ export interface WatchApplicationOptions {
   readonly sessionAtLocation?: (sessionID: string) => Promise<boolean>
   /** The observer's current reading for the gate; absent before the observer starts. */
   readonly observationFor?: (taskID: string) => WatchObservationView | null
+  /**
+   * Fresh delegated-child checks; absent means a delegated action is refused.
+   * A factory receives the application's own ledger handle, so a caller does
+   * not open a second authority database or pass a stale handle.
+   */
+  readonly delegation?:
+    | DelegationAuthority
+    | ((ledger: Pick<WatchLedger, "delegatedAuthority">) => DelegationAuthority)
 }
 
 interface LedgerState {
@@ -286,12 +380,25 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
         ),
       }
     }
-    const shown = current.ledger.show({ sessionID, ...(taskID === undefined ? {} : { taskID }) })
+    const shown =
+      taskID === undefined
+        ? current.ledger.ownTask(sessionID)
+        : current.ledger.show({ sessionID, taskID })
     if (!shown.ok) {
       return { outcome: failureOutcome(mapLedgerFailure(shown.code, shown.detail)), ledger: current.ledger }
     }
     let task: WatchTaskView | null = null
     if (shown.value !== null) {
+      if (isDelegatedChild(current.ledger, shown.value, sessionID)) {
+        return {
+          outcome: failureOutcome({
+            code: "E_WATCH_UNSUPPORTED",
+            reason:
+              "A delegated child's details are available only through the delegation view after a fresh authority check.",
+          }),
+          ledger: current.ledger,
+        }
+      }
       const built = taskView(shown.value, current.ledger)
       if ("failure" in built) return { outcome: failureOutcome(built.failure), ledger: current.ledger }
       task = built.view
@@ -317,6 +424,49 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
       options.onChanged?.()
     } catch {
       // A UI nudge is not part of the mutation; the ledger commit already holds.
+    }
+  }
+
+  let delegationInstance: DelegationAuthority | undefined
+  const delegationFor = (ledger: WatchLedger): DelegationAuthority | undefined => {
+    if (options.delegation === undefined) return undefined
+    if (typeof options.delegation !== "function") return options.delegation
+    delegationInstance ??= options.delegation(ledger)
+    return delegationInstance
+  }
+
+  const checkDelegated = async (taskID: string): Promise<DelegatedAuthorityVerdict> => {
+    const current = ensure()
+    if (current.ledger === undefined) {
+      return {
+        required: true,
+        allowed: false,
+        reason: `ledger ${current.failure?.code ?? "ledger_error"}`,
+        check: null,
+      }
+    }
+    const snapshot = current.ledger.delegatedAuthority(taskID)
+    if (!snapshot.ok) {
+      return { required: true, allowed: false, reason: `ledger ${snapshot.code}`, check: null }
+    }
+    if (snapshot.value.link === null) {
+      return { required: false, allowed: true, reason: null, check: null }
+    }
+    if (closing) return { required: true, allowed: false, reason: "closing", check: null }
+    const delegation = delegationFor(current.ledger)
+    if (delegation === undefined) {
+      return { required: true, allowed: false, reason: "delegation-guard-unavailable", check: null }
+    }
+    try {
+      const check = await delegation.check(taskID)
+      return {
+        required: check.required,
+        allowed: check.allowed,
+        reason: check.allowed ? null : (check.missingEvidence ?? check.stopReason ?? "delegated authority is not valid"),
+        check,
+      }
+    } catch {
+      return { required: true, allowed: false, reason: "delegation-guard-failed", check: null }
     }
   }
 
@@ -453,7 +603,469 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
       }
     },
 
-    receipt(input) {
+    async delegate(input) {
+      if (closing) return failureOutcome(closingFailure())
+      const caller = readIdentifier(input.callerSessionID, "callerSessionID")
+      if (!caller.ok) return failureOutcome(invalid(caller.reason))
+      const parentTaskID = readIdentifier(input.parentTaskID, "parentTaskID")
+      if (!parentTaskID.ok) return failureOutcome(invalid(parentTaskID.reason))
+      const target = readIdentifier(input.targetSessionID, "targetSessionID")
+      if (!target.ok) return failureOutcome(invalid(target.reason))
+      const requestID = readIdentifier(input.requestID, "requestID")
+      if (!requestID.ok) return failureOutcome(invalid(requestID.reason))
+      const goal = readGoal(input.goal)
+      if (!goal.ok) return failureOutcome(invalid(goal.reason))
+      const mode = readDelegationMode(input.mode ?? "alert")
+      if (!mode.ok) return failureOutcome(invalid(mode.reason))
+      if (!Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 1) {
+        return failureOutcome(invalid("expectedVersion must be a positive integer"))
+      }
+      const current = ensure()
+      if (current.ledger === undefined) {
+        return failureOutcome(mapLedgerFailure(current.failure?.code ?? "ledger_error", current.failure?.detail ?? "unknown"))
+      }
+      const delegation = delegationFor(current.ledger)
+      if (delegation === undefined) {
+        return failureOutcome(unsupported("The delegated-authority guard is not wired at this location; no child was enrolled."))
+      }
+      const parentShown = current.ledger.show({ sessionID: caller.value, taskID: parentTaskID.value })
+      if (!parentShown.ok) return failureOutcome(mapLedgerFailure(parentShown.code, parentShown.detail))
+      if (parentShown.value === null) {
+        return failureOutcome({ code: "E_WATCH_NOT_FOUND", reason: "No parent task matches that id for this session." })
+      }
+      const parentTask = parentShown.value
+      const grantResult = current.ledger.delegationGrantFor({
+        parentTaskID: parentTask.taskID,
+        targetSessionID: target.value,
+      })
+      if (!grantResult.ok) return failureOutcome(mapLedgerFailure(grantResult.code, grantResult.detail))
+      const children = current.ledger.listDelegatedChildren(parentTask.taskID)
+      if (!children.ok) return failureOutcome(mapLedgerFailure(children.code, children.detail))
+      // A completed/ended child is history: an explicit new delegation may
+      // create a new task, and a repeated request is resolved by the ledger's
+      // idempotency below. Only a live task can occupy the child's one slot.
+      const existingLink = children.value.find(
+        (entry) =>
+          entry.task.targetSessionID === target.value &&
+          (entry.task.watchState === "active" || entry.task.watchState === "paused"),
+      )
+      const existingChild =
+        existingLink === undefined
+          ? null
+          : {
+              task: existingLink.task,
+              delegatedByThisGrant:
+                grantResult.value !== null && existingLink.link.grantID === grantResult.value.grantID,
+            }
+
+      const [parentFacts, childFacts] = await Promise.all([
+        delegation.facts(parentTask.targetSessionID),
+        delegation.facts(target.value),
+      ])
+      if (closing) return failureOutcome(closingFailure())
+      const gate = delegationEnrollmentGate(
+        {
+          parentTask,
+          parent: parentFacts.session,
+          child: childFacts.session,
+          parentScope: parentFacts.scope?.scope ?? null,
+          childScope: childFacts.scope?.scope ?? null,
+          grant: grantResult.value,
+          existingChild,
+          ownerActivation: options.activationID,
+          closing,
+        },
+        {
+          parentTaskID: parentTask.taskID,
+          targetSessionID: target.value,
+          mode: mode.value,
+          requestID: requestID.value,
+          goal: goal.value,
+        },
+      )
+      if (!gate.allowed) {
+        return failureOutcome(delegationFailure(gate.stopReason, gate.missingEvidence))
+      }
+      if (parentFacts.session === null || childFacts.session === null || childFacts.scope === null) {
+        return failureOutcome(delegationFailure("authority-unknown", "fresh host facts disappeared before enrollment"))
+      }
+      if (grantResult.value === null) {
+        return failureOutcome(delegationFailure("grant-missing", "the delegation grant disappeared before enrollment"))
+      }
+      const enrolled = current.ledger.delegatedEnroll({
+        requestId: requestID.value,
+        initiatorSessionId: caller.value,
+        targetSessionId: target.value,
+        parentTaskId: parentTask.taskID,
+        goal: goal.value,
+        mode: mode.value,
+        ownerActivation: options.activationID,
+        expectedVersion: input.expectedVersion,
+        grantId: grantResult.value.grantID,
+        grantVersion: grantResult.value.version,
+        verifiedParentId: parentFacts.session.id,
+        verifiedDirectory: childFacts.session.directory,
+        verifiedScope: childFacts.scope.scope,
+        verifiedScopeSource: childFacts.scope.source,
+      })
+      if (!enrolled.ok) return failureOutcome(mapLedgerFailure(enrolled.code, enrolled.detail))
+      if (enrolled.value.created) notify()
+      const built = taskView(enrolled.value.task, current.ledger)
+      if ("failure" in built) return failureOutcome(built.failure)
+      const task = built.view
+      return {
+        ok: true,
+        task,
+        capability: capabilityFor(task),
+        controls: watchControls(task),
+        alerts: alertsFor(task.taskID),
+        failure: null,
+        created: enrolled.value.created,
+        duplicate: !enrolled.value.created,
+        changed: enrolled.value.created,
+      }
+    },
+
+    async prepareDelegationGrant(input) {
+      if (closing) return delegationGrantFailure(closingFailure())
+      const validation = readDelegationGrantRequest(input)
+      if (!validation.ok) return delegationGrantFailure(invalid(validation.reason))
+      const current = ensure()
+      if (current.ledger === undefined) {
+        return delegationGrantFailure(mapLedgerFailure(current.failure?.code ?? "ledger_error", current.failure?.detail ?? "unknown"))
+      }
+      const delegation = delegationFor(current.ledger)
+      if (delegation === undefined) {
+        return delegationGrantFailure(unsupported("The delegated-authority guard is not wired at this location; no challenge was prepared."))
+      }
+      const parent = current.ledger.show({ sessionID: validation.value.callerSessionID, taskID: validation.value.parentTaskID })
+      if (!parent.ok) return delegationGrantFailure(mapLedgerFailure(parent.code, parent.detail))
+      if (parent.value === null) {
+        return delegationGrantFailure({ code: "E_WATCH_NOT_FOUND", reason: "No parent task matches that id for this session." })
+      }
+      const existing = current.ledger.delegationGrantFor({
+        parentTaskID: validation.value.parentTaskID,
+        targetSessionID: validation.value.targetSessionID,
+      })
+      if (!existing.ok) return delegationGrantFailure(mapLedgerFailure(existing.code, existing.detail))
+      const [parentFacts, childFacts] = await Promise.all([
+        delegation.facts(parent.value.targetSessionID),
+        delegation.facts(validation.value.targetSessionID),
+      ])
+      if (closing) return delegationGrantFailure(closingFailure())
+      const gate = delegationGrantGate({
+        parentTask: parent.value,
+        callerSessionID: validation.value.callerSessionID,
+        ownerActivation: options.activationID,
+        expectedVersion: validation.value.expectedVersion,
+        targetSessionID: validation.value.targetSessionID,
+        mode: validation.value.mode,
+        parent: parentFacts.session,
+        child: childFacts.session,
+        parentScope: parentFacts.scope?.scope ?? null,
+        childScope: childFacts.scope?.scope ?? null,
+        existingGrant: existing.value,
+        closing,
+      })
+      if (!gate.allowed) {
+        return delegationGrantFailure(delegationFailure(gate.stopReason, gate.missingEvidence))
+      }
+      if (childFacts.session === null || childFacts.scope === null) {
+        return delegationGrantFailure(delegationFailure("authority-unknown", "fresh host facts disappeared before the review"))
+      }
+      const prepared = current.ledger.prepareDelegationGrant({
+        taskId: parent.value.taskID,
+        callerSessionId: validation.value.callerSessionID,
+        ownerActivation: options.activationID,
+        expectedVersion: validation.value.expectedVersion,
+        targetSessionId: validation.value.targetSessionID,
+        mode: validation.value.mode,
+        scopeDirectory: childFacts.session.directory,
+        scopePeerScope: childFacts.scope.scope,
+        ...(validation.value.deployment === undefined ? {} : { deployment: validation.value.deployment }),
+        at: options.now?.() ?? Date.now(),
+      })
+      if (!prepared.ok) return delegationGrantFailure(mapLedgerFailure(prepared.code, prepared.detail))
+      const built = taskView(parent.value, current.ledger)
+      if ("failure" in built) return delegationGrantFailure(built.failure)
+      return {
+        ...delegationGrantSuccess(built.view),
+        challenge: prepared.value,
+        review: {
+          delegationTerms: WATCH_DELEGATION_TERMS,
+          correctionTerms: WATCH_CORRECTION_TERMS,
+          deploymentRequired: validation.value.mode === "limited-correction",
+          derivesCorrectionGrant: validation.value.mode === "limited-correction",
+        },
+      }
+    },
+
+    async confirmDelegationGrant(input) {
+      if (closing) return delegationGrantFailure(closingFailure())
+      const challenge = readIdentifier(input.challenge, "challenge")
+      if (!challenge.ok) return delegationGrantFailure(invalid(challenge.reason))
+      const parentTaskID = readIdentifier(input.parentTaskID, "parentTaskID")
+      if (!parentTaskID.ok) return delegationGrantFailure(invalid(parentTaskID.reason))
+      const target = readIdentifier(input.targetSessionID, "targetSessionID")
+      if (!target.ok) return delegationGrantFailure(invalid(target.reason))
+      const scopeDirectory = readDelegationScopeText(input.scopeDirectory, "scopeDirectory")
+      if (!scopeDirectory.ok) return delegationGrantFailure(invalid(scopeDirectory.reason))
+      const scopePeerScope = readDelegationScopeText(input.scopePeerScope, "scopePeerScope")
+      if (!scopePeerScope.ok) return delegationGrantFailure(invalid(scopePeerScope.reason))
+      const termsDigest = readIdentifier(input.termsDigest, "termsDigest")
+      if (!termsDigest.ok) return delegationGrantFailure(invalid(termsDigest.reason))
+      const mode = readDelegationMode(input.mode)
+      if (!mode.ok) return delegationGrantFailure(invalid(mode.reason))
+      if (!Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 1) {
+        return delegationGrantFailure(invalid("expectedVersion must be a positive integer"))
+      }
+      if (!Number.isSafeInteger(input.generation) || input.generation < 1) {
+        return delegationGrantFailure(invalid("generation must be a positive integer"))
+      }
+      const current = ensure()
+      if (current.ledger === undefined) {
+        return delegationGrantFailure(mapLedgerFailure(current.failure?.code ?? "ledger_error", current.failure?.detail ?? "unknown"))
+      }
+      const delegation = delegationFor(current.ledger)
+      if (delegation === undefined) {
+        return delegationGrantFailure(unsupported("The delegated-authority guard is not wired at this location; no grant was confirmed."))
+      }
+      const parent = current.ledger.show({ sessionID: input.callerSessionID, taskID: parentTaskID.value })
+      if (!parent.ok) return delegationGrantFailure(mapLedgerFailure(parent.code, parent.detail))
+      if (parent.value === null) {
+        return delegationGrantFailure({ code: "E_WATCH_NOT_FOUND", reason: "No parent task matches that id for this session." })
+      }
+      const existing = current.ledger.delegationGrantFor({
+        parentTaskID: parentTaskID.value,
+        targetSessionID: target.value,
+      })
+      if (!existing.ok) return delegationGrantFailure(mapLedgerFailure(existing.code, existing.detail))
+      const [parentFacts, childFacts] = await Promise.all([
+        delegation.facts(parent.value.targetSessionID),
+        delegation.facts(target.value),
+      ])
+      if (closing) return delegationGrantFailure(closingFailure())
+      const gate = delegationGrantGate({
+        parentTask: parent.value,
+        callerSessionID: input.callerSessionID,
+        ownerActivation: options.activationID,
+        expectedVersion: input.expectedVersion,
+        targetSessionID: target.value,
+        mode: mode.value,
+        parent: parentFacts.session,
+        child: childFacts.session,
+        parentScope: parentFacts.scope?.scope ?? null,
+        childScope: childFacts.scope?.scope ?? null,
+        existingGrant: existing.value,
+        closing,
+      })
+      if (!gate.allowed) return delegationGrantFailure(delegationFailure(gate.stopReason, gate.missingEvidence))
+      if (
+        parentFacts.session === null ||
+        childFacts.session === null ||
+        parentFacts.scope === null ||
+        childFacts.scope === null
+      ) {
+        return delegationGrantFailure(delegationFailure("authority-unknown", "fresh host facts disappeared before confirmation"))
+      }
+      if (
+        parentFacts.session.directory !== scopeDirectory.value ||
+        childFacts.session.directory !== scopeDirectory.value
+      ) {
+        return delegationGrantFailure(
+          delegationFailure("location-mismatch", "the current host location differs from the reviewed challenge"),
+        )
+      }
+      if (parentFacts.scope.scope !== scopePeerScope.value || childFacts.scope.scope !== scopePeerScope.value) {
+        return delegationGrantFailure(
+          delegationFailure("scope-mismatch", "the current scope differs from the reviewed challenge"),
+        )
+      }
+      // Host facts were awaited above; re-read the durable facts and closing
+      // before consuming the challenge. A changed task version means the
+      // reviewed challenge no longer describes the same parent state.
+      if (closing) return delegationGrantFailure(closingFailure())
+      const after = current.ledger.show({ sessionID: input.callerSessionID, taskID: parentTaskID.value })
+      if (!after.ok) return delegationGrantFailure(mapLedgerFailure(after.code, after.detail))
+      if (
+        after.value === null ||
+        after.value.version !== input.expectedVersion ||
+        after.value.generation !== input.generation
+      ) {
+        return delegationGrantFailure(
+          delegationFailure("grant-stale", "the parent task changed during the confirmation"),
+        )
+      }
+      const afterGrant = current.ledger.delegationGrantFor({
+        parentTaskID: parentTaskID.value,
+        targetSessionID: target.value,
+      })
+      if (!afterGrant.ok) return delegationGrantFailure(mapLedgerFailure(afterGrant.code, afterGrant.detail))
+      if (afterGrant.value?.state === "granted") {
+        return delegationGrantFailure(delegationFailure("grant-active", "another delegation grant won the race"))
+      }
+      const confirmed = current.ledger.confirmDelegationGrant({
+        challenge: challenge.value,
+        taskId: parentTaskID.value,
+        callerSessionId: input.callerSessionID,
+        ownerActivation: options.activationID,
+        expectedVersion: input.expectedVersion,
+        generation: input.generation,
+        targetSessionId: target.value,
+        mode: mode.value,
+        scopeDirectory: scopeDirectory.value,
+        scopePeerScope: scopePeerScope.value,
+        termsDigest: termsDigest.value,
+        ...(input.deployment === undefined ? {} : { deployment: input.deployment }),
+        at: options.now?.() ?? Date.now(),
+      })
+      if (!confirmed.ok) return delegationGrantFailure(mapLedgerFailure(confirmed.code, confirmed.detail))
+      notify()
+      const built = taskView(confirmed.value.task, current.ledger)
+      if ("failure" in built) return delegationGrantFailure(built.failure)
+      return {
+        ...delegationGrantSuccess(built.view),
+        challenge: null,
+        grant: delegationGrantView(confirmed.value.grant),
+        review: {
+          delegationTerms: WATCH_DELEGATION_TERMS,
+          correctionTerms: WATCH_CORRECTION_TERMS,
+          deploymentRequired: mode.value === "limited-correction",
+          derivesCorrectionGrant: mode.value === "limited-correction",
+        },
+      }
+    },
+
+    async revokeDelegationGrant(input) {
+      if (closing) return delegationGrantFailure(closingFailure())
+      const parentTaskID = readIdentifier(input.parentTaskID, "parentTaskID")
+      if (!parentTaskID.ok) return delegationGrantFailure(invalid(parentTaskID.reason))
+      const target = readIdentifier(input.targetSessionID, "targetSessionID")
+      if (!target.ok) return delegationGrantFailure(invalid(target.reason))
+      if (!Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 1) {
+        return delegationGrantFailure(invalid("expectedVersion must be a positive integer"))
+      }
+      const current = ensure()
+      if (current.ledger === undefined) {
+        return delegationGrantFailure(mapLedgerFailure(current.failure?.code ?? "ledger_error", current.failure?.detail ?? "unknown"))
+      }
+      const revoked = current.ledger.revokeDelegationGrant({
+        parentTaskId: parentTaskID.value,
+        targetSessionId: target.value,
+        callerSessionId: input.callerSessionID,
+        ownerActivation: options.activationID,
+        expectedVersion: input.expectedVersion,
+        at: options.now?.() ?? Date.now(),
+      })
+      if (!revoked.ok) return delegationGrantFailure(mapLedgerFailure(revoked.code, revoked.detail))
+      if (revoked.value.changed) notify()
+      const shown = current.ledger.show({ sessionID: input.callerSessionID, taskID: parentTaskID.value })
+      if (!shown.ok) return delegationGrantFailure(mapLedgerFailure(shown.code, shown.detail))
+      const built = shown.value === null ? undefined : taskView(shown.value, current.ledger)
+      if (built !== undefined && "failure" in built) return delegationGrantFailure(built.failure)
+      return {
+        ...delegationGrantSuccess(built?.view ?? null),
+        challenge: null,
+        grant: delegationGrantView(revoked.value.grant),
+        review: {
+          delegationTerms: WATCH_DELEGATION_TERMS,
+          correctionTerms: WATCH_CORRECTION_TERMS,
+          deploymentRequired: revoked.value.grant.mode === "limited-correction",
+          derivesCorrectionGrant: revoked.value.grant.mode === "limited-correction",
+        },
+      }
+    },
+
+    async delegationView(input) {
+      const sessionID = readIdentifier(input.sessionID, "sessionID")
+      if (!sessionID.ok) return delegationViewFailure("E_WATCH_INVALID", sessionID.reason, "")
+      const parentTaskID = readIdentifier(input.parentTaskID, "parentTaskID")
+      if (!parentTaskID.ok) return delegationViewFailure("E_WATCH_INVALID", parentTaskID.reason, "")
+      const current = ensure()
+      if (current.ledger === undefined) {
+        return delegationViewFailure(
+          "E_WATCH_UNAVAILABLE",
+          current.failure?.detail ?? "the watch ledger is unavailable",
+          parentTaskID.value,
+        )
+      }
+      const parent = current.ledger.show({ sessionID: sessionID.value, taskID: parentTaskID.value })
+      if (!parent.ok) return delegationViewFailure("E_WATCH_UNAVAILABLE", parent.detail, parentTaskID.value)
+      if (parent.value === null) return delegationViewFailure("E_WATCH_NOT_FOUND", "no such parent task", parentTaskID.value)
+      const parentTask = parent.value
+      if (
+        parentTask.initiatorSessionID !== sessionID.value ||
+        parentTask.targetSessionID !== sessionID.value
+      ) {
+        return delegationViewFailure(
+          "E_WATCH_UNSUPPORTED",
+          "only the parent's own self-enrolled task has a delegation view",
+          parentTaskID.value,
+        )
+      }
+      const grants = current.ledger.delegationGrantsFor(parentTask.taskID)
+      if (!grants.ok) return delegationViewFailure("E_WATCH_UNAVAILABLE", grants.detail, parentTask.taskID)
+      const children = current.ledger.listDelegatedChildren(parentTask.taskID)
+      if (!children.ok) return delegationViewFailure("E_WATCH_UNAVAILABLE", children.detail, parentTask.taskID)
+      const views = []
+      for (const child of children.value) {
+        const verdict = await checkDelegated(child.task.taskID)
+        if (closing) return delegationViewFailure("E_WATCH_UNAVAILABLE", "the watch application is closing", parentTask.taskID)
+        const grant = grants.value.find((entry) => entry.grantID === child.link.grantID) ?? null
+        const checked =
+          verdict.check ??
+          deniedAuthorityCheck({
+            taskID: child.task.taskID,
+            targetSessionID: child.task.targetSessionID,
+            taskVersion: child.task.version,
+            generation: child.task.generation,
+            parentTaskID: child.link.parentTaskID,
+            grantID: child.link.grantID,
+            grantVersion: child.link.grantVersion,
+            reason: verdict.reason ?? "delegated authority is unavailable",
+            checkedAt: options.now?.() ?? Date.now(),
+          })
+        let taskViewValue: WatchTaskView | null = null
+        let alerts: WatchAlertsView | null = null
+        if (checked.required && checked.allowed) {
+          const built = taskView(child.task, current.ledger)
+          if (!("failure" in built)) {
+            taskViewValue = built.view
+            alerts = alertsFor(child.task.taskID)
+          }
+        }
+        views.push(
+          delegatedChildView({
+            taskID: child.task.taskID,
+            parentTaskID: child.link.parentTaskID,
+            parentSessionID: child.link.parentSessionID,
+            targetSessionID: child.task.targetSessionID,
+            grant,
+            checked,
+            task: taskViewValue,
+            alerts,
+          }),
+        )
+      }
+      return {
+        ok: true,
+        parentTaskID: parentTask.taskID,
+        parentSessionID: parentTask.targetSessionID,
+        grants: grants.value.map(delegationGrantView),
+        children: views,
+        failure: null,
+      }
+    },
+
+    checkDelegatedAuthority(taskID) {
+      const id = readIdentifier(taskID, "taskID")
+      if (!id.ok) {
+        return Promise.resolve({ required: true, allowed: false, reason: id.reason, check: null })
+      }
+      return checkDelegated(id.value)
+    },
+
+    async receipt(input) {
       if (closing) return receiptFailure(closingFailure())
       const caller = readIdentifier(input.callerSessionID, "callerSessionID")
       if (!caller.ok) return receiptFailure(invalid(caller.reason))
@@ -467,12 +1079,23 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
       if (current.ledger === undefined) {
         return receiptFailure(mapLedgerFailure(current.failure?.code ?? "ledger_error", current.failure?.detail ?? "unknown"))
       }
+      let authorityRefusalReason: string | undefined
+      const link = current.ledger.delegatedTaskLink(taskID.value)
+      if (!link.ok) return receiptFailure(mapLedgerFailure(link.code, link.detail))
+      if (link.value !== null) {
+        const verdict = await checkDelegated(taskID.value)
+        if (closing) return receiptFailure(closingFailure())
+        if (!verdict.allowed) {
+          authorityRefusalReason = `delegation-${verdict.reason ?? "authority-unknown"}`
+        }
+      }
       const received = current.ledger.recordCorrectionReceipt({
         taskId: taskID.value,
         reservationId: attemptID.value,
         callerSessionId: caller.value,
         currentActivationId: options.activationID,
         correlation: correlation.value,
+        ...(authorityRefusalReason === undefined ? {} : { authorityRefusalReason }),
         at: options.now?.() ?? Date.now(),
       })
       if (!received.ok) return receiptFailure(mapLedgerFailure(received.code, received.detail))
@@ -508,6 +1131,10 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
         snapshot(taskID) {
           const snapshot = ledger.correction(taskID)
           return snapshot.ok ? snapshot.value : undefined
+        },
+        isDelegatedTask(taskID) {
+          const link = ledger.delegatedTaskLink(taskID)
+          return !link.ok || link.value !== null
         },
         reserve(input) {
           return ledger.reserveCorrection(input)
@@ -551,6 +1178,9 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
       })
       if (!controlled.ok) return failureOutcome(mapLedgerFailure(controlled.code, controlled.detail))
       if (controlled.value.changed) notify()
+      if (isDelegatedChild(current.ledger, controlled.value.task, caller.value)) {
+        return redactedDelegatedOutcome(controlled.value.changed)
+      }
       const built = taskView(controlled.value.task, current.ledger)
       if ("failure" in built) return failureOutcome(built.failure)
       const task = built.view
@@ -587,6 +1217,9 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
       const shown = current.ledger.show({ taskID: acked.value.alert.taskID, sessionID: caller.value })
       if (!shown.ok) return failureOutcome(mapLedgerFailure(shown.code, shown.detail))
       if (shown.value === null) return failureOutcome(invalid("the alert has no visible task"))
+      if (isDelegatedChild(current.ledger, shown.value, caller.value)) {
+        return redactedDelegatedOutcome(acked.value.changed)
+      }
       const built = taskView(shown.value, current.ledger)
       if ("failure" in built) return failureOutcome(built.failure)
       const task = built.view
@@ -736,7 +1369,9 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
       if (!(await options.sessionAtLocation(sessionID))) return undefined
       const current = ensure()
       if (current.ledger === undefined) return undefined
-      const shown = current.ledger.show({ sessionID })
+      // Only the session's own target task belongs in its next normal context;
+      // a parent does not receive a delegated child's notice through this hook.
+      const shown = current.ledger.ownTask(sessionID)
       if (!shown.ok || shown.value === null) return undefined
       const task = shown.value
       if (task.watchState === "ended" || task.taskState === "completed") return undefined
@@ -848,6 +1483,25 @@ function grantFailure(failure: WatchFailure): WatchGrantOutcome {
   }
 }
 
+/**
+ * A successful control/ack for a delegated child must not return the child's
+ * goal or report rows to the parent before the delegation view re-authorizes
+ * them. The mutation facts are kept; the content is not.
+ */
+function redactedDelegatedOutcome(changed: boolean): WatchOutcome {
+  return {
+    ok: true,
+    task: null,
+    capability: watchCapability(),
+    controls: watchControls(null),
+    alerts: emptyWatchAlerts(true, null),
+    failure: null,
+    created: false,
+    duplicate: false,
+    changed,
+  }
+}
+
 function failureOutcome(failure: WatchFailure): WatchOutcome {
   return {
     ok: false,
@@ -859,6 +1513,168 @@ function failureOutcome(failure: WatchFailure): WatchOutcome {
     created: false,
     duplicate: false,
     changed: false,
+  }
+}
+
+function isDelegatedChild(ledger: WatchLedger, task: WatchTaskRecord, sessionID: string): boolean {
+  if (task.targetSessionID === sessionID) return false
+  const link = ledger.delegatedTaskLink(task.taskID)
+  // A failed link read cannot prove this is an ordinary self task; redact.
+  return !link.ok || link.value !== null
+}
+
+function readDelegationScopeText(value: string, field: string): Checked<string> {
+  return readDelegationScope(value, field)
+}
+
+interface DelegationGrantRequest {
+  readonly callerSessionID: string
+  readonly parentTaskID: string
+  readonly expectedVersion: number
+  readonly targetSessionID: string
+  readonly mode: WatchMode
+  readonly deployment?: "single-host-same-location"
+}
+
+function readDelegationGrantRequest(input: {
+  readonly callerSessionID: string
+  readonly parentTaskID: string
+  readonly expectedVersion: number
+  readonly targetSessionID: string
+  readonly mode: WatchMode | string
+  readonly deployment?: "single-host-same-location"
+}): Checked<DelegationGrantRequest> {
+  const caller = readIdentifier(input.callerSessionID, "callerSessionID")
+  if (!caller.ok) return caller
+  const parent = readIdentifier(input.parentTaskID, "parentTaskID")
+  if (!parent.ok) return parent
+  const target = readIdentifier(input.targetSessionID, "targetSessionID")
+  if (!target.ok) return target
+  const mode = readDelegationMode(input.mode)
+  if (!mode.ok) return mode
+  if (!Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 1) {
+    return { ok: false, reason: "expectedVersion must be a positive integer" }
+  }
+  if (input.deployment !== undefined && input.deployment !== "single-host-same-location") {
+    return { ok: false, reason: "deployment must be single-host-same-location" }
+  }
+  return {
+    ok: true,
+    value: {
+      callerSessionID: caller.value,
+      parentTaskID: parent.value,
+      expectedVersion: input.expectedVersion,
+      targetSessionID: target.value,
+      mode: mode.value,
+      ...(input.deployment === undefined ? {} : { deployment: input.deployment }),
+    },
+  }
+}
+
+function delegationFailure(stopReason: DelegationStopReason | null, missingEvidence: string | null): WatchFailure {
+  const reason = missingEvidence ?? stopReason ?? "the delegation request is not allowed"
+  switch (stopReason) {
+    case "parent-not-direct":
+    case "parent-unknown":
+      return {
+        code: "E_WATCH_CALLER_MISMATCH",
+        reason: `The host does not prove the requested direct parent: ${reason}`,
+      }
+    case "grant-stale":
+    case "parent-version-stale":
+    case "authority-unknown":
+      return { code: "E_WATCH_STALE", reason: `The delegation facts changed or are unknown: ${reason}` }
+    case "closing":
+      return closingFailure()
+    case "parent-not-self":
+      return {
+        code: "E_WATCH_INVALID_TRANSITION",
+        reason: `Only a self-enrolled parent task may delegate, one level: ${reason}`,
+      }
+    case "child-completed":
+    case "child-busy":
+      return { code: "E_WATCH_INVALID_TRANSITION", reason: `The child cannot be enrolled now: ${reason}` }
+    case "grant-active":
+      return { code: "E_WATCH_INVALID_TRANSITION", reason: `A delegation grant is already active: ${reason}` }
+    default:
+      return { code: "E_WATCH_UNSUPPORTED", reason: `The delegation request is refused: ${reason}` }
+  }
+}
+
+function delegationGrantFailure(failure: WatchFailure): WatchDelegationGrantOutcome {
+  return {
+    ok: false,
+    challenge: null,
+    grant: null,
+    task: null,
+    capability: watchCapability(),
+    controls: watchControls(null),
+    review: {
+      delegationTerms: WATCH_DELEGATION_TERMS,
+      correctionTerms: WATCH_CORRECTION_TERMS,
+      deploymentRequired: false,
+      derivesCorrectionGrant: false,
+    },
+    failure,
+  }
+}
+
+function delegationGrantSuccess(task: WatchTaskView | null): WatchDelegationGrantOutcome {
+  return {
+    ok: true,
+    challenge: null,
+    grant: null,
+    task,
+    capability: watchCapability(task?.mode ?? "alert", task?.correction.actual ?? "unavailable"),
+    controls: watchControls(task),
+    review: {
+      delegationTerms: WATCH_DELEGATION_TERMS,
+      correctionTerms: WATCH_CORRECTION_TERMS,
+      deploymentRequired: false,
+      derivesCorrectionGrant: false,
+    },
+    failure: null,
+  }
+}
+
+function delegationViewFailure(code: string, reason: string, parentTaskID: string): WatchDelegationView {
+  return {
+    ok: false,
+    parentTaskID,
+    parentSessionID: "",
+    grants: [],
+    children: [],
+    failure: { code, reason },
+  }
+}
+
+function deniedAuthorityCheck(input: {
+  readonly taskID: string
+  readonly targetSessionID: string
+  readonly taskVersion: number
+  readonly generation: number
+  readonly parentTaskID: string
+  readonly grantID: string | null
+  readonly grantVersion: number | null
+  readonly reason: string
+  readonly checkedAt: number
+}): DelegatedAuthorityCheck {
+  return {
+    required: true,
+    allowed: false,
+    stopReason: "authority-unknown",
+    missingEvidence: input.reason,
+    gates: [],
+    taskID: input.taskID,
+    targetSessionID: input.targetSessionID,
+    taskVersion: input.taskVersion,
+    generation: input.generation,
+    parentTaskID: input.parentTaskID,
+    parentVersion: null,
+    grantID: input.grantID,
+    grantVersion: input.grantVersion,
+    scopeSource: "unknown",
+    checkedAt: input.checkedAt,
   }
 }
 

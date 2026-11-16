@@ -307,7 +307,7 @@ describeObserver("bounded policy through the observer and executor", () => {
       const first = sent[0]
       if (first === undefined) throw new Error("missing first send")
       await host.advance(1_000)
-      const receipt = app.receipt({
+      const receipt = await app.receipt({
         callerSessionID: CALLER_SESSION_ID,
         taskID,
         attemptID: first.attemptID,
