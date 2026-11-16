@@ -141,15 +141,17 @@ export function createCorrectionExecutor(options: CorrectionExecutorOptions): Co
     ) {
       return
     }
-    // Fresh delegated authority runs before this round's observation; every
-    // observation used below is sampled after this await.
-    if (!(await delegatedOkay(taskID))) return
-    if (closing) return
     const sameLocation = await options.sameLocation(initialTask.targetSessionID)
     if (closing) return
-    const observation = await freshObservation(taskID)
+    const refreshed = await freshObservation(taskID)
     if (closing) return
-    const checked = checkedObservation(taskID, observation)
+    // The final authority check is the last await before the synchronous
+    // reservation decision. Any observation used below is read synchronously
+    // after it, so activity during this await cannot leave a trusted stale view.
+    if (!(await delegatedOkay(taskID))) return
+    if (closing) return
+    const checked = finalObservation(refreshed, options.observationFor(taskID))
+    if (checked === null) return
     const task = options.authority.liveTasks().find((candidate) => candidate.taskID === taskID)
     const snapshot = task === undefined ? undefined : options.authority.snapshot(taskID)
     if (task === undefined || snapshot === undefined) return
@@ -178,6 +180,17 @@ export function createCorrectionExecutor(options: CorrectionExecutorOptions): Co
       abort(taskID, reservationID, reserved.value.task.version, task.generation)
       return
     }
+    const sameAgain = await options.sameLocation(task.targetSessionID)
+    if (closing) {
+      abort(taskID, reservationID, reserved.value.task.version, task.generation)
+      return
+    }
+    const refreshedAgain = await freshObservation(taskID)
+    if (closing) {
+      abort(taskID, reservationID, reserved.value.task.version, task.generation)
+      return
+    }
+    // Last await before the synchronous claim decision.
     if (!(await delegatedOkay(taskID))) {
       abort(taskID, reservationID, reserved.value.task.version, task.generation)
       return
@@ -186,20 +199,19 @@ export function createCorrectionExecutor(options: CorrectionExecutorOptions): Co
       abort(taskID, reservationID, reserved.value.task.version, task.generation)
       return
     }
-    const sameAgain = await options.sameLocation(task.targetSessionID)
-    if (closing) {
+    const checkedAgain = finalObservation(refreshedAgain, options.observationFor(taskID))
+    if (checkedAgain === null) {
       abort(taskID, reservationID, reserved.value.task.version, task.generation)
       return
     }
-    const observationAgain = await freshObservation(taskID)
-    if (closing) {
-      abort(taskID, reservationID, reserved.value.task.version, task.generation)
-      return
-    }
-    const checkedAgain = checkedObservation(taskID, observationAgain)
     const current = options.authority.liveTasks().find((candidate) => candidate.taskID === taskID)
     const currentSnapshot = current === undefined ? undefined : options.authority.snapshot(taskID)
-    if (current === undefined || currentSnapshot === undefined) {
+    if (
+      current === undefined ||
+      currentSnapshot === undefined ||
+      current.version !== reserved.value.task.version ||
+      current.generation !== reserved.value.task.generation
+    ) {
       abort(taskID, reservationID, reserved.value.task.version, task.generation)
       return
     }
@@ -249,30 +261,51 @@ export function createCorrectionExecutor(options: CorrectionExecutorOptions): Co
     record(taskID, reservationID, outcome)
   }
 
-  const checkedObservation = (
-    taskID: string,
-    refreshed: WatchObservationView | null,
-  ): WatchObservationView | null => {
-    const current = options.observationFor(taskID)
-    if (current === null) return null
-    if (refreshed === null) return current
-    return (current.observedAt ?? 0) > (refreshed.observedAt ?? 0) ? current : refreshed
-  }
-
   const freshObservation = async (taskID: string): Promise<WatchObservationView | null> =>
     options.refreshObservation === undefined
       ? options.observationFor(taskID)
       : await options.refreshObservation(taskID)
 
+  /**
+   * The pre-check sample may only make the decision stricter. The stored view
+   * is read synchronously after the final await; on an equal timestamp it wins.
+   */
+  const finalObservation = (
+    beforeCheck: WatchObservationView | null,
+    latest: WatchObservationView | null,
+  ): WatchObservationView | null => {
+    if (beforeCheck === null || latest === null) return null
+    const idleCompatible = (view: WatchObservationView): boolean =>
+      view.trusted &&
+      view.state === "idle-candidate" &&
+      !view.waitsPartial &&
+      !view.waitsTruncated &&
+      view.waits.every(
+        (wait) => wait.status !== "active" && wait.status !== "overdue" && wait.status !== "unknown",
+      )
+    if (!idleCompatible(beforeCheck)) return beforeCheck
+    if (!idleCompatible(latest)) return latest
+    return (latest.observedAt ?? 0) >= (beforeCheck.observedAt ?? 0) ? latest : beforeCheck
+  }
+
   const delegatedOkay = async (taskID: string): Promise<boolean> => {
-    if (!options.authority.isDelegatedTask(taskID)) return true
+    let delegated: boolean
+    try {
+      delegated = options.authority.isDelegatedTask(taskID)
+    } catch {
+      options.warn("the delegation link could not be read; no correction was sent")
+      return false
+    }
+    if (!delegated) return true
     if (options.checkDelegatedAuthority === undefined) {
       options.warn("a delegated child has no fresh authority hook; no correction was sent")
       return false
     }
     try {
       const checked = await options.checkDelegatedAuthority(taskID)
-      if (checked.required && !checked.allowed) {
+      // A delegated task must positively report required + allowed. A false
+      // `required` from a helper that cannot see the link is not a pass.
+      if (!checked.required || !checked.allowed) {
         options.warn("the delegated child authority refused this correction round; no send was attempted")
         return false
       }

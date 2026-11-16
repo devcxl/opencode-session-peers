@@ -116,6 +116,21 @@ call. The executor awaits the same helper before its pre-reserve gate and again
 after reserve before claim; the ledger's internal check still guards any race
 between the helper and the claim.
 
+The executor order is now: `sameLocation` → `refreshObservation` → final
+delegated-authority await → synchronous `observationFor`/task/snapshot/gate →
+reserve; after reserve, `sameLocation` → `refreshObservation` → final
+delegated-authority await → synchronous reads/gate/claim. There is no await
+between the final authority check and the synchronous claim decision. Activity,
+a wait or a task version that changes during that final await invalidates the
+observer's stored view (`observationFor` returns null or the new non-idle
+state) and aborts. The pre-check sample may only tighten the result; if either
+the pre-check or the post-await stored view is missing, untrusted, waiting or
+not an idle candidate, the round is refused. A tie on the same `observedAt`
+uses the current stored view, not a pre-await refreshed one. `isDelegatedTask`
+true requires the helper to return both `required` and `allowed`; a missing
+hook or a false `required` is refused. A reserved attempt that fails this final
+check is aborted and left spent, never refunded.
+
 Known race, stated honestly: the final host-fact check and host enqueue are
 not one transaction. The ledger prevents a new reservation/claim/permit based
 on an old persisted outcome, but it cannot prove the host has not enqueued a
@@ -225,9 +240,11 @@ Targeted red/green:
   controlled grant, public delegate, child begin/waiting, parent view, revoke,
   only-child report/receipt, model grant refusal, non-self reserved fields,
   one real queue and child receipt permit, revoke-before-receipt no permit).
-- `test/watch-delegation-executor.test.ts`: 4 pass (scope change and source
-  revoke during the pre-reserve authority await, revoke after reserve before
-  claim, unknown delivery retained and not replayed after revoke).
+- `test/watch-delegation-executor.test.ts`: 6 pass (scope/parentID change
+  during the final post-reserve refresh with an aborted spent attempt, activity/
+  wait/task-version change during the final authority await, scope change and
+  source revoke during the pre-reserve authority await, revoke after reserve
+  before claim, unknown delivery retained and not replayed after revoke).
 - `test/tui-watch-delegation.test.ts`: 4 pass (authorized rows, unauthorized
   redaction, revoked grant notes, failure tone).
 - `test/watch-delegation-policy.test.ts` and `test/watch-delegation-ledger.test.ts`
