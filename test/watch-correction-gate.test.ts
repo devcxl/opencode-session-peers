@@ -75,7 +75,7 @@ const runtime: CorrectionRuntimeFacts = {
 }
 
 describe("correction gate", () => {
-  test("keeps automatic sending closed until a runtime tuple is actually verified", () => {
+  test("keeps stock 2.3.0 closed because its lifecycle provenance protocol failed", () => {
     const result = correctionGate({
       task,
       snapshot,
@@ -95,6 +95,29 @@ describe("correction gate", () => {
       required: expect.stringContaining("verified app tuple"),
     })
     expect(result.gates.filter((gate) => gate.gate !== "runtime" && gate.gate !== "executor").every((gate) => gate.ok)).toBe(true)
+  })
+
+  test("accepts only the version-distinct repaired host after its real protocol passed", () => {
+    const input = {
+      task,
+      snapshot,
+      observation,
+      runtime: { ...runtime, appVersion: "2.3.0-watchdog-location.1" },
+      ownerActivation: "activation-a",
+      sameLocation: true,
+      singleHostDeclared: true,
+      closing: false,
+      executorReady: true,
+    }
+    expect(correctionGate(input).eligible).toBe(true)
+    for (const appVersion of ["2.3.0", "2.3.0-watchdog-location.2", "2.3.1"]) {
+      expect(correctionGate({ ...input, runtime: { ...input.runtime, appVersion } }).eligible).toBe(false)
+    }
+    expect(correctionGate({ ...input, runtime: { ...input.runtime, filesystem: "nfs" } }).eligible).toBe(false)
+    expect(correctionGate({ ...input, runtime: { ...input.runtime, synchronous: 1 } }).eligible).toBe(false)
+    expect(correctionGate({ ...input, sameLocation: false }).eligible).toBe(false)
+    expect(correctionGate({ ...input, singleHostDeclared: false }).eligible).toBe(false)
+    expect(correctionGate({ ...input, observation: { ...observation, trusted: false } }).eligible).toBe(false)
   })
 
   test("rejects paused tasks, unresolved session history and a mismatched grant", () => {

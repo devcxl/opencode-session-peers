@@ -22,8 +22,10 @@ both cases.
 opencode loads a plugin from a local directory or from a package it installs itself. Only an
 opencode v2 server is needed: the plugin is TypeScript source with no build step and no runtime
 dependencies. Messaging is developed and measured against opencode 2.0.29; the watchdog
-candidate runtime was additionally measured on opencode 2.3.0 with embedded
-SQLite 3.53.4, which is candidate evidence rather than a support claim.
+runtime was additionally measured on opencode 2.3.0 with embedded SQLite 3.53.4.
+Stock 2.3.0 failed lifecycle provenance verification; only the separately built
+`2.3.0-watchdog-location.1/linux/x64` passed the automatic-correction protocol.
+See [the exact source, artifact and evidence](docs/research/watchdog-61-protocol-plan.md).
 `docs/research/README.md` records the pinned versions and the host drift behind
 each measurement.
 
@@ -162,8 +164,9 @@ peers({ action: "watch", watch: {
 
 The default mode is **alert-only**. Enrollment, reading, pausing and ending never prompt a model,
 generate text or interrupt a session. Limited correction exists behind a separate controlled grant
-and a verified-runtime gate; a normal install in this repository has no verified runtime tuple and
-therefore stays alert-only. No config, environment variable or model input can enable it. The executing session sees the task
+and a verified-runtime gate; stock hosts remain alert-only. Only the exact repaired
+host tuple documented below is supported. No config, environment variable or model input
+can bypass the runtime gate. The executing session sees the task
 reference and reporting protocol in its next normal model context; no extra turn is started, and
 the raw goal is not copied into that system notice (read it with `watch show`). Completion is not
 the same as ending supervision: a `completed` report ends the watch because the business task is
@@ -212,11 +215,11 @@ predate observation.
 **Limited correction is explicit and currently closed by default.** The ledger has a permanent cap
 of three attempts, but this build's automatic executor may use only the first attempt. Before any
 send it requires a controlled grant, the current activation, a trusted idle candidate, no wait or
-new input, a same-location target, an unfinished task and a verified runtime tuple. The production
-whitelist is empty in this repository; only an isolated candidate build may statically add a tuple
-for verification. The server never accepts a model-reported consent, a config switch or a
-`forceCapability` value. Until the real host protocol passes, the panel reports automatic correction
-as unavailable rather than pretending it is enabled. When that task's own gates are ready on a
+new input, a same-location target, an unfinished task and a verified runtime tuple. The static
+whitelist contains only `2.3.0-watchdog-location.1/linux/x64`, the isolated repaired-host build
+whose full protocol passed; it does not include stock `2.3.0` or imply support for later versions.
+The server never accepts model-reported consent, a config switch or a `forceCapability` value.
+Unsupported runtimes report automatic correction as unavailable. When that task's own gates are ready on a
 verified runtime, the capability payload says `correction: "first-attempt"`; it never opens manual
 `correct`. The `recovery` capability still means resume/ownership recovery, not the evidence-based
 recovery confirmation of an existing attempt, and a displayed safety pause is not a resume control.

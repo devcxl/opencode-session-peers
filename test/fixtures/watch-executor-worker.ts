@@ -4,7 +4,7 @@
  *
  * The parent test reopens the ledger: the attempt must remain sending, must not
  * replay and must not refund. This is a test-only controlled fact gate; the
- * production whitelist stays empty.
+ * production whitelist is not changed by this fixture.
  */
 
 import { appendFileSync } from "node:fs"

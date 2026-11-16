@@ -3,8 +3,8 @@
 Status: executed by the parent; stock-host runs failed, while the first
 version-distinct repaired-host candidate passed the positive protocol.
 The parent owns the verification worktree and its static candidate tuple.
-The production whitelist remains empty. No live binary or live session was
-modified.
+The static whitelist now contains only the exact repaired tuple after its final
+rerun passed. No live binary or live session was modified.
 
 ## What this must prove
 
@@ -223,3 +223,21 @@ guard, canonical UI terms, final full suite and two-axis review must finish,
 followed by a candidate rerun. The production tuple remains empty meanwhile.
 Real host SIGKILL, receipt-before-accepted race, stale-generation and power-loss
 durability are not claimed by this run.
+
+### Final candidate rerun and tuple acceptance
+
+After the closed-round recovery guard (`60ae674`) and canonical UI terms
+(`71a13b1`) were integrated, the parent reran the full protocol without the
+optional event tracer. Candidate source included both changes
+(`watchdog-61-patched-verification` at `a051a6b`, plus only the static tuple).
+The same checks **passed again**: one queue, one permanent attempt, one permit,
+new-result recovery, duplicate no-permit, wrong caller refused, and normal show
+without correlation. Child `3999409` and stub stopped, both ports closed, and the
+live registry digest was unchanged.
+Evidence: `/tmp/opencode/watchdog-61-positive-ApPF6r/`.
+
+The exact `2.3.0-watchdog-location.1/linux/x64` tuple is therefore accepted into
+the static list. Stock `2.3.0` and all other versions stay unsupported; this is
+not a config/env/model override, nor a claim that an upstream release contains
+the fix. #61 still requires the final full suite and two-axis review before
+acceptance. The evidence limitations above remain unchanged.

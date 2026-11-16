@@ -1,6 +1,6 @@
 # One first automatic correction, behind a controlled grant and verified runtime
 
-Status: proposed (implementation closed; real host candidate verification pending)
+Status: proposed (repaired-host protocol passed; final implementation review pending)
 
 The watchdog now has a real side-effect path, but it must not become an
 unbounded wakeup mechanism. This ADR records the chosen boundary for #61.
@@ -34,10 +34,11 @@ unbounded wakeup mechanism. This ADR records the chosen boundary for #61.
   it. A correct receipt without a permit records seen/refused without starting
   business. Evidence-based recovery is not resume, ownership recovery or
   transfer; a displayed safety pause is not a resume control.
-- Automatic sending requires a static verified runtime tuple. The production
-  tuple is empty; no config, environment variable or model input can enable it.
-  A candidate tuple may be added only in an isolated verification build, and
-  only after the real host protocol passes may it be accepted here.
+- Automatic sending requires a static verified runtime tuple. Only
+  `2.3.0-watchdog-location.1/linux/x64` is accepted after the real repaired-host
+  protocol passed; stock `2.3.0` failed and remains unsupported. No config,
+  environment variable or model input can bypass this gate. New candidate tuples
+  belong only in isolated verification builds until their real protocol passes.
 - Closing is synchronous before any await: mutation, receipt and grant entries
   close first, the observer stops scheduling, tracked executor work settles,
   and the ledger closes last. A late outcome may be recorded monotonically; no

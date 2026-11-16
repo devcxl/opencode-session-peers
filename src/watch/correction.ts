@@ -2,9 +2,8 @@
  * Pure correction eligibility gates.
  *
  * It reports observed and required facts, never a boolean bypass. The real
- * runtime tuple whitelist stays empty until the isolated production protocol
- * has been executed and accepted; pass 1 therefore keeps automatic sending
- * closed even when every other fact looks perfect.
+ * runtime tuples are accepted only after the isolated production protocol
+ * passes. Stock versions remain closed even when every other fact is present.
  */
 
 import {
@@ -19,8 +18,8 @@ import {
   type WatchTaskRecord,
 } from "../domain/watch.ts"
 
-/** No app/platform tuple is verified until the isolated protocol passes. */
-const VERIFIED_APP_TUPLES: readonly string[] = []
+/** Exact repaired-host protocol evidence: docs/research/watchdog-61-protocol-plan.md. */
+const VERIFIED_APP_TUPLES: readonly string[] = ["2.3.0-watchdog-location.1/linux/x64"]
 
 /** Local filesystem allowlist; unknown or network filesystems stay closed. */
 const LOCAL_FILESYSTEMS = new Set(["ext4", "xfs", "btrfs", "tmpfs", "zfs", "overlay"])
@@ -64,7 +63,7 @@ export function correctionGate(input: CorrectionGateInput): CorrectionGateResult
 
 /**
  * A source-level factory for an isolated candidate harness. Production uses
- * the empty whitelist above; no model/config/env path can call this.
+ * the static whitelist above; no model/config/env path can call this.
  */
 export function correctionGateWithVerifiedTuples(
   verified: readonly string[],

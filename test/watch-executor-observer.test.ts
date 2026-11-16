@@ -1,7 +1,7 @@
 /**
  * The full observer + executor path with the real SQLite ledger and the same
  * fresh-sampling implementation production uses. The gate is the only test
- * seam: the static tuple is supplied here instead of the empty production
+ * seam: the static tuple is supplied here instead of the verified production
  * whitelist. The observer, ledger, executor, clock and events are real.
  */
 
