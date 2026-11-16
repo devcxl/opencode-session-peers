@@ -98,9 +98,13 @@ when the panel is read:
 3. `delegatedAuthorityGate` applies the same direct-parent/location/scope/mode
    policy to the current facts.
 4. The ledger repeats the durable part inside reserve/claim/receipt:
-   source grant active and version-bound to the link, one-hop link still
-   present, parent active/self/uncompleted/owned, and the child task identity
-   unchanged.
+   source grant active and version-bound to the link, source owner equal to the
+   parent owner and the current activation, source generation equal to the
+   parent generation, one-hop link still present, parent
+   active/self/uncompleted/owned, child task identity unchanged, and the child
+   correction grant's generation separately bound to the child generation.
+   Parent and child generations are never assumed equal; the source grant's
+   mode and deployment must cover the derived correction.
 
 The service `receipt` path is `async`: it awaits the fresh check before the
 ledger receipt, and on refusal passes an internal `authorityRefusalReason` so

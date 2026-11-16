@@ -2054,7 +2054,9 @@ class SqliteWatchLedger implements WatchLedger {
         taskID: task.task_id,
         targetSessionID: task.target_session_id,
         ownerActivation: owner,
-        generation: task.generation,
+        childGeneration: task.generation,
+        grantGeneration: grant.generation,
+        grantMode: grant.mode,
         sourceGrantID: grant.source_delegation_grant_id,
         sourceGrantVersion: grant.source_delegation_grant_version,
       })
@@ -2236,7 +2238,9 @@ class SqliteWatchLedger implements WatchLedger {
         taskID: task.task_id,
         targetSessionID: task.target_session_id,
         ownerActivation: owner,
-        generation: task.generation,
+        childGeneration: task.generation,
+        grantGeneration: grant.generation,
+        grantMode: grant.mode,
         sourceGrantID: grant.source_delegation_grant_id,
         sourceGrantVersion: grant.source_delegation_grant_version,
       })
@@ -2422,7 +2426,9 @@ class SqliteWatchLedger implements WatchLedger {
               taskID: task.task_id,
               targetSessionID: task.target_session_id,
               ownerActivation: currentActivation,
-              generation: task.generation,
+              childGeneration: task.generation,
+              grantGeneration: grant.generation,
+              grantMode: grant.mode,
               sourceGrantID: grant.source_delegation_grant_id,
               sourceGrantVersion: grant.source_delegation_grant_version,
             })
