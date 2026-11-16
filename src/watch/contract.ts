@@ -1631,3 +1631,15 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined
   return value as Record<string, unknown>
 }
+
+/**
+ * The delegation sibling's readers reuse these exact validators instead of a
+ * shallow cast. They are not a second wire contract: their types and rules stay
+ * the ones the existing `watch` payload already uses.
+ */
+export {
+  readAlerts as readWatchAlertsView,
+  readCapability as readWatchCapabilityView,
+  readControls as readWatchControlsView,
+  readTask as readWatchTaskView,
+}

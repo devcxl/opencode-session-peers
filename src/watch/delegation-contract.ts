@@ -18,6 +18,12 @@ import type {
 import { WATCH_CORRECTION_TERMS } from "../domain/watch.ts"
 import type { DelegatedChildView, WatchDelegationView } from "./delegation-view.ts"
 import { WATCH_DELEGATION_TERMS } from "./delegation.ts"
+import {
+  readWatchAlertsView,
+  readWatchCapabilityView,
+  readWatchControlsView,
+  readWatchTaskView,
+} from "./contract.ts"
 
 export interface DelegationChallengeView {
   readonly challenge: string
@@ -232,9 +238,9 @@ export function readWatchDelegationGrantPayload(value: unknown): WatchDelegation
   const ok = record["ok"]
   const challenge = record["challenge"] === null ? null : readChallenge(record["challenge"])
   const grant = record["grant"] === null ? null : readGrant(record["grant"])
-  const task = record["task"] === null ? null : readTask(record["task"])
-  const capability = readCapability(record["capability"])
-  const controls = readControls(record["controls"])
+  const task = record["task"] === null ? null : readWatchTaskView(record["task"])
+  const capability = readWatchCapabilityView(record["capability"])
+  const controls = readWatchControlsView(record["controls"])
   const review = readReview(record["review"])
   const failure = record["failure"] === null ? null : readFailure(record["failure"])
   if (typeof ok !== "boolean" || challenge === undefined || grant === undefined) return undefined
@@ -412,34 +418,6 @@ function readGrant(value: unknown): WatchDelegationGrantPayload["grant"] | undef
   }
 }
 
-function readTask(value: unknown): WatchTaskView | undefined {
-  const record = asRecord(value)
-  if (record === undefined) return undefined
-  // The existing task contract validates the full shape at the panel boundary;
-  // this reader only refuses a missing identity or a non-object here.
-  const taskID = record["taskID"]
-  const initiatorSessionID = record["initiatorSessionID"]
-  const targetSessionID = record["targetSessionID"]
-  const goal = record["goal"]
-  if (typeof taskID !== "string" || typeof initiatorSessionID !== "string") return undefined
-  if (typeof targetSessionID !== "string" || typeof goal !== "string") return undefined
-  return record as unknown as WatchTaskView
-}
-
-function readCapability(value: unknown): WatchCapability | undefined {
-  const record = asRecord(value)
-  if (record === undefined) return undefined
-  if (typeof record["mode"] !== "string" || typeof record["monitoring"] !== "string") return undefined
-  return record as unknown as WatchCapability
-}
-
-function readControls(value: unknown): WatchControls | undefined {
-  const record = asRecord(value)
-  if (record === undefined) return undefined
-  if (typeof record["pause"] !== "object" && typeof record["pause"] !== "boolean") return undefined
-  return record as unknown as WatchControls
-}
-
 function readReview(value: unknown): DelegationReviewView | undefined {
   const record = asRecord(value)
   if (record === undefined) return undefined
@@ -548,10 +526,19 @@ function readChild(value: unknown): DelegatedChildView | undefined {
   ) {
     return undefined
   }
-  const task = record["task"] === null ? null : readTask(record["task"])
-  const alerts = record["alerts"] === null ? null : asRecord(record["alerts"])
+  const task = record["task"] === null ? null : readWatchTaskView(record["task"])
+  const alerts = record["alerts"] === null ? null : readWatchAlertsView(record["alerts"])
   if (task === undefined || alerts === undefined) return undefined
+  if (authorized !== allowed) return undefined
   if (!authorized && (task !== null || alerts !== null)) return undefined
+  if (
+    task !== null &&
+    (task.taskID !== taskID ||
+      task.targetSessionID !== targetSessionID ||
+      task.initiatorSessionID !== parentSessionID)
+  ) {
+    return undefined
+  }
   return {
     taskID,
     parentTaskID,
@@ -570,7 +557,7 @@ function readChild(value: unknown): DelegatedChildView | undefined {
       checkedAt,
     },
     task,
-    alerts: alerts === null ? null : (alerts as unknown as DelegatedChildView["alerts"]),
+    alerts,
   }
 }
 

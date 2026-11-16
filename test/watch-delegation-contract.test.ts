@@ -16,6 +16,9 @@ import {
 } from "../src/watch/delegation-contract.ts"
 import { WATCH_DELEGATION_TERMS } from "../src/watch/delegation.ts"
 import { watchDelegationRpc, watchDelegationViewRpc } from "../src/actions/watch-delegation-rpc.ts"
+import { emptyWatchAlerts } from "../src/watch/service.ts"
+import { watchCapability, watchControls } from "../src/watch/view.ts"
+import { task as fullTask } from "./tui-watch-fake.ts"
 
 const review = {
   delegationTerms: WATCH_DELEGATION_TERMS,
@@ -24,27 +27,12 @@ const review = {
   derivesCorrectionGrant: true,
 }
 
-const task = {
+const task = fullTask({
   taskID: "task-child",
   initiatorSessionID: "ses_parent",
   targetSessionID: "ses_child",
   goal: "Deliver the child work",
-  mode: "limited-correction",
-  watchState: "active",
-  taskState: "not-started",
-  version: 1,
-  generation: 1,
-  ownership: "this-instance",
-  participation: "not-seen",
-  attempts: { used: 0, limit: 3 },
-  correction: { actual: "unavailable" },
-  pause: null,
-  lastReport: null,
-  createdAt: 1_000,
-  updatedAt: 1_000,
-  completedAt: null,
-  endedAt: null,
-}
+})
 
 const challenge = {
   challenge: "opaque-nonce",
@@ -84,8 +72,8 @@ function preparePayload(overrides: Record<string, unknown> = {}) {
     challenge,
     grant: null,
     task,
-    capability: { mode: "limited-correction", monitoring: "observer-alerts" },
-    controls: { pause: { enabled: true, reason: null } },
+    capability: watchCapability("limited-correction", "unavailable"),
+    controls: watchControls(null),
     review,
     failure: null,
     ...overrides,
@@ -206,6 +194,68 @@ describe("delegation contract readers", () => {
 
   test("the view reader rejects an extra challenge field", () => {
     expect(readWatchDelegationViewPayload(viewPayload({ challenge }))).toBeUndefined()
+  })
+
+  test("the delegation readers reuse the full task, capability and controls validators", () => {
+    const missingCorrection = viewPayload({
+      children: [{ ...viewPayload().children[0]!, task: { ...task, correction: undefined } }],
+    })
+    expect(readWatchDelegationViewPayload(missingCorrection)).toBeUndefined()
+
+    const badCapability = preparePayload({
+      capability: { ...watchCapability(), delegation: "available" },
+    })
+    expect(readWatchDelegationGrantPayload(badCapability)).toBeUndefined()
+
+    const badControls = preparePayload({
+      controls: { ...watchControls(null), pause: null },
+    })
+    expect(readWatchDelegationGrantPayload(badControls)).toBeUndefined()
+  })
+
+  test("an authorized child with malformed alerts or contradictory authorization is rejected", () => {
+    const badAlerts = viewPayload({
+      children: [
+        {
+          ...viewPayload().children[0]!,
+          alerts: { ...emptyWatchAlerts(true, null), items: "not-an-array" },
+        },
+      ],
+    })
+    expect(readWatchDelegationViewPayload(badAlerts)).toBeUndefined()
+
+    const contradiction = viewPayload({
+      children: [
+        {
+          ...viewPayload().children[0]!,
+          authorized: true,
+          authorization: { ...viewPayload().children[0]!.authorization, allowed: false },
+        },
+      ],
+    })
+    expect(readWatchDelegationViewPayload(contradiction)).toBeUndefined()
+  })
+
+  test("a nested task must match the child identity", () => {
+    const wrongTask = viewPayload({
+      children: [
+        {
+          ...viewPayload().children[0]!,
+          task: { ...task, taskID: "task-other" },
+        },
+      ],
+    })
+    expect(readWatchDelegationViewPayload(wrongTask)).toBeUndefined()
+
+    const wrongTarget = viewPayload({
+      children: [
+        {
+          ...viewPayload().children[0]!,
+          task: { ...task, targetSessionID: "ses_other" },
+        },
+      ],
+    })
+    expect(readWatchDelegationViewPayload(wrongTarget)).toBeUndefined()
   })
 })
 
