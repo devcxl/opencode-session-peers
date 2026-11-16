@@ -712,7 +712,9 @@ export function delegatedEnroll(host: DelegationLedgerHost, input: DelegatedEnro
     verifiedParentID,
     verifiedDirectory,
     verifiedScope,
-    input.verifiedScopeSource,
+    // The provenance of the scope (recorded vs configured) is audit metadata,
+    // not a request parameter: a fallback that later gains a roster record
+    // must not turn the same request into a conflict.
   ])
   const existingRequest = host.db
     .query("SELECT * FROM enrollment_requests WHERE initiator_session_id = ? AND request_id = ?")
