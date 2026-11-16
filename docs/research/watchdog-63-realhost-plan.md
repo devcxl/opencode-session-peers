@@ -1,8 +1,9 @@
-# #63 real-host no-extra-wakeup plan (not executed)
+# #63 real-host no-extra-wakeup plan (runner implemented, not executed)
 
-Status: script plan only. This lane did not start a real host, TUI, service or
-live API. The parent owns the isolated real-host run after review; reuse the
-existing #61 harness safety pattern rather than inventing a second one.
+Status: runner and pure stub tests implemented; not executed. This lane did not
+start a real host, TUI, service or live API. The parent owns the isolated
+real-host run after review; the runner reuses the existing #61 harness safety
+pattern rather than inventing a second one.
 
 ## What this must prove, and what it must not claim
 
@@ -116,19 +117,104 @@ any other platform/arch. A config/env/model override must not lower the gate.
 - Real host is not evidence for exactly-once, retraction, power-loss
   durability, multi-host uniqueness or a stop-proof.
 
-## Commands (parent runs after review)
+## Implemented runner and stub
 
-The script should refuse to start without both an explicit confirmation and a
-scratch plugin path, e.g.:
+This lane adds `scripts/research/watchdog-63/no-extra-wakeup.ts`, its pure
+`protocol.ts`, and `stub.ts`. They reuse the #61 harness for scratch
+`HOME`/four XDG dirs, the literal stub provider, explicit loopback, owned child
+stop and the live-registry digest. No shared client, source, schema, runtime
+gate or host database is changed.
+
+### Child creation fact
+
+The typed public `SessionCreateInput` has no `parentID`; `SessionInfo` reports
+it. The typed `SessionImportInput` (`POST /api/experimental/session/import`)
+does accept `parentID`, but it imports a transcript and is not the ordinary
+business path. The runner therefore uses the plan's fallback: one real
+`subagent` tool turn driven by the deterministic stub creates the direct child,
+and the runner reads the child back through the public session list/get API and
+asserts `parentID === parent.id`. It does not use the experimental import, does
+not fake a lookup and does not write the host database. The subagent's first
+turn is idle; it never reports a task begin before the parent task is enrolled.
+
+### Count baseline
+
+Immediately before the explicit public `delegate` driver turn, the runner
+snapshots parent and child user/assistant counts, correction user messages,
+inbox counts/deliveries and the last outcomes. The explicit delegate driver may
+add one parent user message and its own driver generation; the child user count,
+child generation count, correction prompt count and parent/child inbox counts
+must not change. A bounded settle after the driver turn must show no further
+user/inbox/correction growth. Enroll, reads, grant prepare/confirm/revoke and
+view reads add no prompt. The explicit parent/child driver turns are reported
+separately; they are not called plugin extra wakes.
+
+### Scenarios
+
+- `WATCH63_SCENARIO=positive`: A-C. Real subagent child, RPC enroll, real parent
+  begin, controlled `watchDelegation` prepare/confirm with exact canonical
+  reviews and `derivesCorrectionGrant=true`, real public `delegate`, child begin,
+  one trusted-idle queue, real child receipt permit, progress recovery, duplicate
+  receipt without a second permit, parent wrong-caller receipt refused.
+- `WATCH63_SCENARIO=revoke`: fresh child/task. The stub holds the first
+  correction response behind a bounded latch; the runner revokes the source
+  delegation through the controlled RPC, then releases the original receipt
+  turn. The receipt records seen without a permit (`duplicate=false`,
+  `continuePermit=false`, delegation reason); the parent view redacts task and
+  alerts.
+- `WATCH63_SCENARIO=scope`: fresh child/task. The same latch is released only
+  after the public `setScope` RPC moves the child scope; the receipt gets no
+  permit and the parent view is redacted. No watch/view is read while the
+  receipt is latched.
+
+The runner does not wait five minutes or try to spend all three attempts; the
+#62 controlled-clock public entry already proves the three-attempt limit. It
+does not claim retraction, exactly-once delivery, a stop proof, multi-host
+uniqueness or power-loss durability.
+
+### Commands (parent runs after review)
+
+The runner refuses without an explicit confirmation, plugin path and approved
+allocation; it also refuses without the patched binary path.
 
 ```bash
 TMPDIR=/tmp WATCH63_REAL_CONFIRM=1 \
-WATCH63_PLUGIN=/path/to/watchdog-63-worktree \
+WATCH63_PLUGIN=/path/to/parent-final-reviewed-worktree \
+WATCH63_OPENCODE_BIN=/home/devcxl/Projects/OpenCodePlugins/opencode-session-peers/.worktrees/watchdog-61-verification/.host-source/packages/cli/dist/cli-linux-x64/bin/opencode \
+WATCH63_SCENARIO=positive \
 bun scripts/research/watchdog-63/no-extra-wakeup.ts
 ```
 
-No runner is added by this lane. The script must reuse the existing #61
-harness helpers for scratch `HOME`/four XDG dirs, the literal stub, explicit
-loopback, owned child stop and registry digest. It must not write the main
-checkout, the live service, the host database, credentials or the parent's
-integration tree.
+Use `WATCH63_SCENARIO=revoke` or `scope` for the fresh refusal cases. Add
+`WATCH63_KEEP_SCRATCH=1` to keep a successful scratch; failures are kept
+automatically. The report prints only bounded booleans, counts, ids, version
+facts, paths and a generic/controlled failure; no prompt, goal, challenge,
+correlation, credential or password.
+
+The runner requires the approved patched binary by its fixed SHA-256
+(`93c16b937359c226eb77691c7453c5fdadb2b716e1b6da7434d7cc8fc6c5cb7a`), then reads
+the real `watch` RPC ledger facts and requires
+`2.3.0-watchdog-location.1/linux/x64`, embedded SQLite `3.53.4`, WAL, FULL and a
+positive busy timeout. It does not inject a candidate tuple or force a config
+gate. `WATCH63_PLUGIN` must point at the parent's final reviewed plugin, not at
+the earlier #63 writer tree; the runner dynamically reads that plugin's
+canonical terms and uses loose bounded readers for the payload fields it needs,
+so a later integrated plugin is not rejected by an older strict reader.
+
+### Evidence split
+
+- Real host should prove: complete entry load, controlled grant over the real
+  RPC, public delegate over the real tool, no delegation-time wakeup, one
+  trusted-idle queue, child receipt permit, revoke-before-receipt refusal,
+  scope-change refusal, isolation.
+- Fake/unit evidence already covers: revoked-before-claim and
+  revoke-during-authority-lookup races, unknown delivery retention, hard
+  attempt limits, schema/idempotency, RPC readers, view redaction and the
+  no-guard fail-closed path.
+- Real host is not evidence for exactly-once, retraction, power-loss
+  durability, multi-host uniqueness or a stop-proof.
+- `test/watch-delegation-research.test.ts` only exercises the pure scripted
+  model/directive plan and the latch predicate; it starts no host or model.
+  Targeted result in this lane: 9 pass, 0 fail, 42 expectations; overall
+  `tsc --noEmit` and `git diff --check` are clean. The runner itself was not
+  executed.
