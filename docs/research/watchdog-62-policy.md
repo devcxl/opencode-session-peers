@@ -33,10 +33,13 @@ three permanent attempt rows.
 - After each attempt, another attempt is allowed only at or after the persisted
   observation boundary. The next attempt still needs a trusted continuous idle
   candidate and all existing gates; the one-open constraint prevents overlap.
-  The observation uses the latest attempt's persisted `episode_observation_ms`
-  even after its episode was closed by recovery or normal wait, so a later
-  config downchange cannot shorten the promised cooldown. A new episode's
-  deadline and observation use the then-current config only after that cooldown.
+  The cooldown uses the persisted `episode_observation_ms` of the true previous
+  attempt (filtering out the executor's own reservation for this lookup), not
+  the current episode's policy. A closed episode therefore keeps its promised
+  observation after a config downchange, and a new episode's longer observation
+  cannot be re-applied to the old attempt's cooldown. The current round still
+  uses its configured values for its own deadline/window and for the display;
+  only the prior-attempt cooldown reads the prior attempt's snapshot.
 - The ledger enforces the time facts atomically with the reservation and the
   send claim: a continuing episode rejects a reserve before its fixed start or
   at/after its fixed deadline, rejects a reserve before the latest attempt's
@@ -76,13 +79,13 @@ final schema-10 union with the delegation tables is parent-owned. A schema-9
 database or identity anchor is rejected (`unsupported_schema`), with no shim.
 
 `WatchCorrectionSnapshot.episode` carries the active fixed snapshot to the
-policy gate. `WatchCorrectionSnapshot.lastAttemptPolicy` carries the latest
-attempt's persisted observation/window values even after the episode ends, so
-the post-attempt cooldown and the view's `nextAttemptAt` do not fall back to a
-newly changed config. The view exposes the effective policy and the fixed
-window; the attempt history exposes `normal-wait` / `task-completed` closure
-through the existing stop-reason field, and recovery through the existing
-recovery view.
+policy gate. Each internal `WatchCorrectionAttemptRecord` also carries its
+persisted `episodePolicy` (not a public view/DTO field). After filtering the
+executor's own reservation, the gate takes the true previous attempt's anchor
+and persisted observation for the cooldown, while the view exposes the current
+round's policy and the old `nextAttemptAt` boundary separately. The attempt
+history exposes `normal-wait` / `task-completed` closure through the existing
+stop-reason field, and recovery through the existing recovery view.
 
 ## Configuration
 
@@ -132,7 +135,7 @@ imports the canonical value; no copy exists.
 
 Targeted run (Bun 1.4.4):
 
-- 22 watch/config/TUI files: 303 pass, 0 fail, 1776 expectations.
+- 22 watch/config/TUI files: 305 pass, 0 fail, 1795 expectations.
 - `entry`, `rpc`, `boundaries`: 33 pass, 0 fail, 180 expectations.
 - Overall `tsc --noEmit` and `git diff --check`: clean.
 
@@ -140,9 +143,11 @@ New coverage includes real SQLite/ledger tests for the persisted episode and
 config reload, the normal-wait round and remaining quota, the recovery round,
 schema-10 columns and schema-9 rejection, executor tests for three actual sends
 and no fourth, first-reservation deadline expiry before claim, abort-then-full-
-observation, concurrent kicks, reserve/claim fixed-deadline rejection, and
-observer+executor tests for normal-wait clear → new idle episode and for three
-spent attempts → idle alert only. `test/watch-policy.test.ts` also drives the
+observation, concurrent kicks, reserve/claim fixed-deadline rejection, a real
+ledger+executor cross-round test where a closed attempt's 5-minute cooldown and
+a new episode's 10-minute policy must not be conflated, and observer+executor
+tests for normal-wait clear → new idle episode and for three spent attempts →
+idle alert only. `test/watch-policy.test.ts` also drives the
 full plugin entry with a test-only supported app-version fixture (real ledger,
 real runtime facts, real queue, tool receipts/progress, controlled clock): three
 automatic queue sends and no fourth.
@@ -153,8 +158,10 @@ Red evidence while developing (temporary reversions, then restored):
   deadline, and first-reservation recheck tests fail with `eligible: true`.
 - Treating `normal-wait` as non-terminal made the ledger new-episode test fail.
 - Removing the attempt-limit success note made the TUI third-success test fail.
-- Removing the `lastAttemptPolicy` fallback made the closed-episode cooldown
-  gate test fail.
+- Using the own reservation's episode policy for the prior cooldown made the
+  own-reservation gate test and the real ledger+executor cross-round test fail:
+  the old 5-minute cooldown became 10 minutes and the second attempt was
+  aborted without a send.
 - Removing the reserve cooldown check made the normal-wait cooldown test fail;
   removing the claim deadline check made the boundary test fail.
 - Removing the grant-review effective line made the custom-policy review test

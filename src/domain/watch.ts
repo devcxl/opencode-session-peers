@@ -239,6 +239,8 @@ export interface WatchCorrectionAttemptRecord {
   readonly closedAt?: number
   readonly closedReason?: string
   readonly stopReason?: WatchCorrectionStopReason
+  /** The policy persisted with this attempt's episode; internal, not a public view. */
+  readonly episodePolicy?: WatchCorrectionPolicySnapshot
 }
 
 /** The persisted timestamps that make one attempt's latest observation anchor. */
@@ -310,11 +312,6 @@ export interface WatchCorrectionSnapshot {
   readonly attempts: readonly WatchCorrectionAttemptRecord[]
   /** The active problem budget, or null before it starts or after it ended. */
   readonly episode: WatchCorrectionEpisodeSnapshot | null
-  /**
-   * The latest attempt's persisted policy, even after its episode ended. The
-   * post-attempt observation uses this snapshot until it completes.
-   */
-  readonly lastAttemptPolicy: WatchCorrectionPolicySnapshot | null
   /** An older task for the same target still has an unresolved attempt. */
   readonly sessionUnresolved: boolean
 }

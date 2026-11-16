@@ -934,3 +934,104 @@ describeExecutor("bounded automatic-attempt policy", () => {
     }
   })
 })
+
+describeExecutor("cross-round cooldown boundary", () => {
+  test("the new episode's longer observation does not block the old attempt's cooldown", async () => {
+    for (const closeKind of ["recovered", "normal-wait"] as const) {
+      const clock = { value: 1_000 }
+      const ledger = open(clock)
+      try {
+        const task = seed(ledger, clock)
+        const oldPolicy = { observationMs: 300_000, windowMs: 1_200_000 }
+        const reserved = ledger.reserveCorrection({
+          taskId: task.taskID,
+          callerSessionId: "ses_a",
+          ownerActivation: "activation-a",
+          expectedVersion: task.version,
+          generation: task.generation,
+          reservationId: `prior-${closeKind}`,
+          at: clock.value,
+          policy: oldPolicy,
+        })
+        if (!reserved.ok) throw new Error(`${reserved.code}: ${reserved.detail}`)
+        const claimed = ledger.claimCorrection({
+          taskId: task.taskID,
+          reservationId: `prior-${closeKind}`,
+          ownerActivation: "activation-a",
+          expectedVersion: reserved.value.task.version,
+          generation: task.generation,
+          at: clock.value,
+        })
+        if (!claimed.ok) throw new Error(`${claimed.code}: ${claimed.detail}`)
+        clock.value += 1
+        const receipt = ledger.recordCorrectionReceipt({
+          taskId: task.taskID,
+          reservationId: `prior-${closeKind}`,
+          callerSessionId: "ses_a",
+          currentActivationId: "activation-a",
+          correlation: claimed.value.correlation,
+          at: clock.value,
+        })
+        expect(receipt).toMatchObject({ ok: true, value: { continuePermit: true } })
+        const shown = ledger.show({ taskID: task.taskID, sessionID: "ses_a" })
+        if (!shown.ok || shown.value === null) throw new Error("task missing")
+        clock.value += 1
+        const closed = ledger.report({
+          taskId: task.taskID,
+          callerSessionId: "ses_a",
+          expectedVersion: shown.value.version,
+          reportId: `prior-close-${closeKind}`,
+          kind: closeKind === "recovered" ? "progress" : "waiting",
+          evidence:
+            closeKind === "recovered"
+              ? { summary: "real prior result", reference: "prior-result" }
+              : {
+                  waitKind: "human",
+                  waitFor: "reviewer",
+                  reason: "review",
+                  reference: "prior-wait-ref",
+                  waitID: "prior-wait",
+                  waitUntil: clock.value + 60_000,
+                },
+        })
+        expect(closed.ok).toBe(true)
+        const closedAt = clock.value
+        const sent: CorrectionDeliveryRequest[] = []
+        const executor = createCorrectionExecutor({
+          authority: authority(ledger),
+          observationFor: () => observation(),
+          sameLocation: async () => true,
+          runtime: () => runtime,
+          gate: correctionGateWithVerifiedTuples(["2.3.0/linux/x64"]),
+          delivery: {
+            async send(request) {
+              sent.push(request)
+              return { kind: "accepted", admissionID: `cross-round-${closeKind}` }
+            },
+          },
+          activationID: "activation-a",
+          now: () => clock.value,
+          policy: { observationMs: 600_000, windowMs: 1_200_000 },
+          warn: () => {},
+        })
+        clock.value = closedAt + 300_000
+        executor.kick(task.taskID)
+        await executor.settle()
+        expect(sent).toHaveLength(1)
+        const history = attempts(ledger, task.taskID)
+        expect(history).toHaveLength(2)
+        expect(history.at(-1)).toMatchObject({ phase: "accepted" })
+        expect(history[0]).toMatchObject({
+          phase: closeKind === "recovered" ? "recovered" : "receipted",
+          ...(closeKind === "recovered" ? { closedReason: "recovered" } : { closedReason: "normal-wait" }),
+        })
+        expect(history.at(-1)?.episodePolicy).toEqual({ observationMs: 600_000, windowMs: 1_200_000 })
+        const snapshot = ledger.correction(task.taskID)
+        expect(snapshot.ok && snapshot.value.episode).toMatchObject({ observationMs: 600_000 })
+        await executor.close()
+      } finally {
+        ledger.close()
+      }
+    }
+  })
+})
