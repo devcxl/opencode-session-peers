@@ -46,8 +46,11 @@
  *   task/capability/controls, observation/activity snapshots (nullable), and a
  *   required bounded alerts view with availability, counts and retained history.
  *   `report` stays on the tool path because it must carry the host-supplied calling session. Correction,
- *   delegation, transfer and recovery are not part of this method: this build
- *   refuses them on the tool path rather than pretending to accept them.
+ *   delegation, transfer and resume are not part of this method: this build
+ *   refuses them on the tool path rather than pretending to accept them. A
+ *   separate private `watchGrant` method is the controlled-surface prepare/
+ *   confirm/downgrade path; the same-OS-user boundary still applies, and the
+ *   deployment declaration is not authentication.
  *
  *   event `changed`, data `{ at: number }`: the roster this definition's handler
  *   answers from may have changed, so a reader should take a fresh snapshot.

@@ -666,6 +666,10 @@ describe("explicit unavailable capabilities", () => {
         expect(String((data.failure as Record<string, unknown>)["reason"]).length).toBeGreaterThan(0)
       }
 
+      const manualCorrect = watchDetails(await watch(host, { operation: "correct" }))
+      expect(manualCorrect).toMatchObject({ ok: false, failure: { code: "E_WATCH_UNSUPPORTED" } })
+      expect(String((manualCorrect.failure as Record<string, unknown>)["reason"])).toContain("Manual correction")
+
       const missingReceipt = watchDetails(await watch(host, { operation: "receipt" }))
       expect(missingReceipt).toMatchObject({ ok: false, failure: { code: "E_WATCH_INVALID" } })
       expect(String((missingReceipt.failure as Record<string, unknown>)["reason"])).toContain("receipt needs")

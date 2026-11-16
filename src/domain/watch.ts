@@ -235,7 +235,29 @@ export interface WatchCorrectionAttemptRecord {
   readonly recoveryReportID?: string
   readonly recoveryReference?: string
   readonly recoveredAt?: number
+  readonly closedAt?: number
+  readonly closedReason?: string
   readonly stopReason?: WatchCorrectionStopReason
+}
+
+/** One unresolved attempt: any in-flight phase, or a receipted attempt whose permit is not recovered. */
+export function isCorrectionAttemptOpen(attempt: {
+  readonly phase: WatchCorrectionAttemptPhase
+  readonly receiptPermitAt?: number
+  readonly closedAt?: number
+}): boolean {
+  if (
+    attempt.phase === "reserved" ||
+    attempt.phase === "sending" ||
+    attempt.phase === "accepted" ||
+    attempt.phase === "unknown"
+  ) {
+    return true
+  }
+  if (attempt.phase === "receipted") {
+    return attempt.receiptPermitAt !== undefined && attempt.closedAt === undefined
+  }
+  return false
 }
 
 export interface WatchCorrectionSnapshot {
@@ -246,7 +268,7 @@ export interface WatchCorrectionSnapshot {
 }
 
 export const WATCH_CORRECTION_TERMS =
-  "Correction grant terms: limited correction with at most three permanent attempts in total; this build's automatic executor may use only the first attempt; automatic sends require one OpenCode service, the same OS user and the same location; the explicit deployment statement is a declaration, not proof that no other service is running; the controlled RPC is not same-user human authentication; any unsupported or uncertain condition means alert-only; a safety pause never stops business work; reading, receipt, recovery, reload, transfer or re-granting never resets spent attempts."
+  "Correction grant: up to three permanent attempts; this build may use only the first automatic one. Automatic sending requires one OpenCode service, same OS user and location. The single-host declaration is not proof of uniqueness; the controlled channel is not human authentication. Any unknown or unsupported condition means alert-only. A safety pause stops automatic correction, not business work, and never resets spent attempts. Queue admission is not consumption and cannot be retracted."
 
 /**
  * A short-lived challenge returned only to the controlled TUI surface by the
@@ -543,6 +565,9 @@ export const WATCH_LIMITS = {
 
 /** The hard cap the parent specification fixes for one watched task. */
 export const WATCH_CORRECTION_LIMIT = 3
+/** This build may use only the first automatic attempt. */
+export const WATCH_AUTOMATIC_ATTEMPT_LIMIT = 1
+export const WATCH_MIN_SQLITE = "3.51.3"
 export const WATCH_ALERT_SUMMARY_LIMIT = 300
 export const WATCH_ALERT_REASON_LIMIT = 500
 

@@ -9,8 +9,8 @@
  */
 
 import {
-  CORRECTION_UNAVAILABLE_REASON,
   DELEGATION_UNAVAILABLE_REASON,
+  MANUAL_CORRECTION_UNAVAILABLE_REASON,
   RECOVERY_UNAVAILABLE_REASON,
   TRANSFER_UNAVAILABLE_REASON,
   type WatchAlertsView,
@@ -115,7 +115,7 @@ export async function watchAction(deps: WatchActionDeps, call: ToolCall, input: 
         ),
       )
     case "correct":
-      return outcomeResult(failure("E_WATCH_UNSUPPORTED", CORRECTION_UNAVAILABLE_REASON))
+      return outcomeResult(failure("E_WATCH_UNSUPPORTED", MANUAL_CORRECTION_UNAVAILABLE_REASON))
     case "receipt": {
       if (
         request.taskID === undefined ||

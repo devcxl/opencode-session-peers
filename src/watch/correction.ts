@@ -7,16 +7,17 @@
  * closed even when every other fact looks perfect.
  */
 
-import type {
-  WatchCorrectionGateView,
-  WatchCorrectionSnapshot,
-  WatchCorrectionStopReason,
-  WatchObservationView,
-  WatchTaskRecord,
+import {
+  WATCH_AUTOMATIC_ATTEMPT_LIMIT,
+  WATCH_CORRECTION_LIMIT,
+  WATCH_MIN_SQLITE,
+  isCorrectionAttemptOpen,
+  type WatchCorrectionGateView,
+  type WatchCorrectionSnapshot,
+  type WatchCorrectionStopReason,
+  type WatchObservationView,
+  type WatchTaskRecord,
 } from "../domain/watch.ts"
-
-/** Mirrors the ledger's runtime requirement; the ledger remains authoritative. */
-const MIN_SQLITE = "3.51.3"
 
 /** No app/platform tuple is verified until the isolated protocol passes. */
 const VERIFIED_APP_TUPLES: readonly string[] = []
@@ -74,12 +75,7 @@ export function correctionGateWithVerifiedTuples(
 function evaluate(input: CorrectionGateInput, verified: readonly string[]): CorrectionGateResult {
   const { task, snapshot, observation, runtime } = input
   const open = snapshot.attempts.find(
-    (attempt) =>
-      attempt.reservationID !== input.ignoreAttemptID &&
-      (attempt.phase === "reserved" ||
-        attempt.phase === "sending" ||
-        attempt.phase === "accepted" ||
-        attempt.phase === "unknown"),
+    (attempt) => attempt.reservationID !== input.ignoreAttemptID && isCorrectionAttemptOpen(attempt),
   )
   const used = snapshot.attempts.filter((attempt) => attempt.reservationID !== input.ignoreAttemptID).length
   const runtimeTuple = `${runtime.appVersion ?? "?"}/${runtime.platform ?? "?"}/${runtime.arch ?? "?"}`
@@ -88,7 +84,7 @@ function evaluate(input: CorrectionGateInput, verified: readonly string[]): Corr
     runtime.arch === "x64" &&
     verified.includes(runtimeTuple) &&
     runtime.sqliteVersion !== null &&
-    versionAtLeast(runtime.sqliteVersion, MIN_SQLITE) &&
+    versionAtLeast(runtime.sqliteVersion, WATCH_MIN_SQLITE) &&
     runtime.journalMode === "wal" &&
     runtime.synchronous === 2 &&
     (runtime.busyTimeoutMs ?? 0) > 0 &&
@@ -120,7 +116,7 @@ function evaluate(input: CorrectionGateInput, verified: readonly string[]): Corr
   const ownerOk = task.ownerActivation === input.ownerActivation
   const gates: WatchCorrectionGateView[] = [
     gate("grant", grantOk, snapshot.grant === null ? "not-granted" : `${snapshot.grant.state} version ${snapshot.grant.version}`, "an active limited-correction grant"),
-    gate("attempts", used < 3, `${used}/3 permanent attempts`, "fewer than three permanent attempts"),
+    gate("attempts", used < WATCH_CORRECTION_LIMIT, `${used}/${WATCH_CORRECTION_LIMIT} permanent attempts`, `fewer than ${WATCH_CORRECTION_LIMIT} permanent attempts`),
     gate("pending-attempt", open === undefined, open === undefined ? "none" : `attempt ${open.ordinal} ${open.phase}`, "no unresolved attempt"),
     gate("business-unfinished", businessOk, task.taskState, "not completed or explicitly blocked"),
     gate("task-active", taskActive, task.watchState, "an active watch"),
@@ -161,7 +157,7 @@ function evaluate(input: CorrectionGateInput, verified: readonly string[]): Corr
     if (item.ok || item.gate === "executor") continue
     return result(gates, stopForGate(item.gate, task, open, used, observation))
   }
-  if (used >= 1) {
+  if (used >= WATCH_AUTOMATIC_ATTEMPT_LIMIT) {
     return result(gates, { reason: "first-attempt-policy", missingEvidence: "this build's automatic executor may use only the first attempt" })
   }
   if (!input.executorReady) {
@@ -213,6 +209,12 @@ function stopForGate(
       if (open.phase === "reserved") return { reason: "reservation-pending", missingEvidence: "the reservation has not claimed its send slot" }
       if (open.phase === "sending") return { reason: "sending-unaccounted", missingEvidence: "the claimed send has no outcome" }
       if (open.phase === "accepted") return { reason: "accepted-without-receipt", missingEvidence: "the target has not submitted a receipt" }
+      if (open.phase === "receipted") {
+        return {
+          reason: "receipted-awaiting-recovery",
+          missingEvidence: "the permit is issued, but new progress and a new result reference have not confirmed recovery",
+        }
+      }
       return { reason: "unknown-result", missingEvidence: "the delivery outcome is unknown" }
     case "business-unfinished":
       if (task.taskState === "completed") return { reason: "task-completed", missingEvidence: "the business task is completed" }

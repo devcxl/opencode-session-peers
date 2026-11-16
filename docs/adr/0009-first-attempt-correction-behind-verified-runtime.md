@@ -25,9 +25,14 @@ unbounded wakeup mechanism. This ADR records the chosen boundary for #61.
   submit a receipt with its real tool-context session, task, attempt and
   correlation. The first valid receipt issues one continue permit; duplicates
   issue none. A receipt is not recovery.
-- Recovery requires new progress and a matching new result reference after the
-  receipt; a reused old reference is refused. Waiting/completion remain normal
-  target reports. Evidence-based recovery is not resume, ownership recovery or
+- A permit does not close the correction attempt automatically. A real report
+  from the current target after the receipt is required: progress with a new
+  result reference recovers; completed with a new result reference records
+  business completion while the attempt stays receipted; a new active waiting
+  report closes the round as a normal wait. Pause/end alone, activity only, an
+  old reference, a non-target reporter, or an overdue/cleared wait do not close
+  it. A correct receipt without a permit records seen/refused without starting
+  business. Evidence-based recovery is not resume, ownership recovery or
   transfer; a displayed safety pause is not a resume control.
 - Automatic sending requires a static verified runtime tuple. The production
   tuple is empty; no config, environment variable or model input can enable it.

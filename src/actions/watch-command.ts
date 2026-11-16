@@ -10,8 +10,8 @@
 import { randomUUID } from "node:crypto"
 
 import {
-  CORRECTION_UNAVAILABLE_REASON,
   DELEGATION_UNAVAILABLE_REASON,
+  MANUAL_CORRECTION_UNAVAILABLE_REASON,
   RECOVERY_UNAVAILABLE_REASON,
   TRANSFER_UNAVAILABLE_REASON,
 } from "../domain/watch.ts"
@@ -70,9 +70,15 @@ export async function watchCommand(deps: WatchCommandDeps, sessionID: string, in
     case "delegate":
       throw new Error(DELEGATION_UNAVAILABLE_REASON)
     case "grant":
+      throw new Error(
+        "A correction grant must be prepared and confirmed from the controlled TUI surface; this command cannot confirm it.",
+      )
     case "correct":
+      throw new Error(MANUAL_CORRECTION_UNAVAILABLE_REASON)
     case "receipt":
-      throw new Error(CORRECTION_UNAVAILABLE_REASON)
+      throw new Error(
+        "A correction receipt is submitted by the executing target through the peers tool; this command cannot submit one.",
+      )
     case "transfer":
       throw new Error(TRANSFER_UNAVAILABLE_REASON)
     case "resume":
