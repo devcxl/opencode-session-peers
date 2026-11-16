@@ -115,9 +115,9 @@ made.
 
 This lane owns only delegation DDL and the internal
 `source_delegation_*` columns; #62 owns its policy columns. The parent merges
-the final schema-10 union. Old schema 9 is rejected with
-`unsupported_schema`; there is no shim, fallback store or second authority
-database.
+the final schema-10 union. Old schema 9 is rejected (its missing delegation
+tables or the stored schema version closes the ledger); there is no shim,
+fallback store or second authority database.
 
 - `watch_delegation_grants`: `grant_id` PK, parent task/session, reviewed
   parent version, mode, state/version/generation, concrete target, directory,
