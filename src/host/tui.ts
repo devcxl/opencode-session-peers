@@ -78,6 +78,35 @@ export interface WatchGrantSource {
   call(request: WatchGrantCallRequest): Promise<unknown>
 }
 
+/** The controlled TUI-only delegation grant channel; never the model tool. */
+export interface WatchDelegationCallRequest {
+  readonly operation: "prepare" | "confirm" | "revoke"
+  readonly sessionID: string
+  readonly parentTaskID: string
+  readonly expectedVersion: number
+  readonly targetSessionID: string
+  readonly mode?: "alert" | "limited-correction"
+  readonly deployment?: "single-host-same-location"
+  readonly challenge?: string
+  readonly generation?: number
+  readonly termsDigest?: string
+  readonly scopeDirectory?: string
+  readonly scopePeerScope?: string
+}
+
+/** Which direct children to read: direct child tasks under this parent. */
+export interface WatchDelegationViewRequest {
+  readonly sessionID: string
+  readonly parentTaskID: string
+}
+
+export interface WatchDelegationSource {
+  /** One explicit prepare, confirm or revoke. Resolves with the raw answer. */
+  call(request: WatchDelegationCallRequest): Promise<unknown>
+  /** One read-only direct child snapshot. Resolves with the raw answer. */
+  read(request: WatchDelegationViewRequest): Promise<unknown>
+}
+
 /** The watch state, as the plugin at this location answers for it. */
 export interface WatchSource {
   /** One read-only snapshot. Resolves with the raw answer. */
@@ -112,6 +141,8 @@ export interface TuiPort {
   readonly watch: WatchSource
   /** The controlled grant review channel at this TUI's own location. */
   readonly watchGrant: WatchGrantSource
+  /** The controlled delegation review channel at this TUI's own location. */
+  readonly watchDelegation?: WatchDelegationSource
   /** Moves the session into a scope and reports the applied one. */
   setScope(sessionID: string, scope: string): Promise<unknown>
   /** A short message in the host's toast area, for a command with no dialog. */
@@ -209,6 +240,35 @@ export function createTuiPort(context: Plugin.Context): TuiPort {
             ...(request.generation === undefined ? {} : { generation: request.generation }),
             ...(request.termsDigest === undefined ? {} : { termsDigest: request.termsDigest }),
             ...(request.deployment === undefined ? {} : { deployment: request.deployment }),
+          },
+          call(),
+        ),
+    },
+
+    watchDelegation: {
+      call: (request) =>
+        client.watchDelegation(
+          {
+            operation: request.operation,
+            sessionID: request.sessionID,
+            parentTaskID: request.parentTaskID,
+            expectedVersion: request.expectedVersion,
+            targetSessionID: request.targetSessionID,
+            ...(request.mode === undefined ? {} : { mode: request.mode }),
+            ...(request.deployment === undefined ? {} : { deployment: request.deployment }),
+            ...(request.challenge === undefined ? {} : { challenge: request.challenge }),
+            ...(request.generation === undefined ? {} : { generation: request.generation }),
+            ...(request.termsDigest === undefined ? {} : { termsDigest: request.termsDigest }),
+            ...(request.scopeDirectory === undefined ? {} : { scopeDirectory: request.scopeDirectory }),
+            ...(request.scopePeerScope === undefined ? {} : { scopePeerScope: request.scopePeerScope }),
+          },
+          call(),
+        ),
+      read: (request) =>
+        client.watchDelegationView(
+          {
+            sessionID: request.sessionID,
+            parentTaskID: request.parentTaskID,
           },
           call(),
         ),

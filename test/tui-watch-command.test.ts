@@ -275,3 +275,353 @@ describe("the panel's own controls", () => {
     setup.renderer.destroy()
   })
 })
+
+describe("peers-watch children command", () => {
+  test("children opens delegation panel with 1 read and 0 writes", async () => {
+    const fake = fakePort()
+    const dispose = installWatch(fake.port)
+    // Run /peers-watch children
+    commandOf(fake).run("children")
+    await tick(0)
+
+    expect(fake.dialogShows()).toBeGreaterThan(0)
+    expect(fake.delegationReads).toHaveLength(1)
+    expect(fake.delegationCalls).toHaveLength(0)
+    expect(fake.calls).toHaveLength(0)
+
+    const setup = await testRender(() => {
+      const render = fake.shown()
+      if (render === undefined) throw new Error("the delegation panel was not opened")
+      return render()
+    }, { width: 100, height: 40 })
+    await setup.flush()
+
+    const text = setup.captureCharFrame().replace(/[│─┌┐└┘├┤┬┴┼]+/g, " ").replace(/\s+/g, " ")
+    expect(text).toContain("Session watch — delegation")
+    expect(text).toContain("g: grant delegation")
+    dispose()
+    setup.renderer.destroy()
+  })
+
+  test("children with childID and mode opens review stage without writing", async () => {
+    const fake = fakePort()
+    const dispose = installWatch(fake.port)
+    // Run /peers-watch children ses_child_prefill limited
+    commandOf(fake).run("children ses_child_prefill limited")
+    await tick(0)
+
+    expect(fake.delegationCalls).toHaveLength(0)
+    const setup = await testRender(() => {
+      const render = fake.shown()
+      if (render === undefined) throw new Error("the delegation panel was not opened")
+      return render()
+    }, { width: 100, height: 40 })
+    await setup.flush()
+
+    const text = setup.captureCharFrame().replace(/[│─┌┐└┘├┤┬┴┼]+/g, " ").replace(/\s+/g, " ")
+    expect(text).toContain("Session watch — delegation review")
+    expect(text).toContain("Target child session: ses_child_prefill")
+    expect(text).toContain("Delegation mode: limited-correction")
+    expect(text).toContain("y: declare + prepare challenge · e: change target/mode · n: cancel")
+    // Absolutely no prepare/confirm/grant write RPC was issued
+    expect(fake.delegationCalls).toHaveLength(0)
+    dispose()
+    setup.renderer.destroy()
+  })
+
+  test("pressing k in watch dialog opens delegation panel", async () => {
+    const fake = fakePort()
+    const dispose = installWatch(fake.port)
+    commandOf(fake).run()
+    await tick(0)
+
+    const setup = await testRender(() => {
+      const render = fake.shown()
+      return render ? render() : null
+    }, { width: 100, height: 40 })
+    await setup.flush()
+
+    // Press k from task watch view
+    setup.mockInput.pressKey("k")
+    await setup.flush()
+    await tick(10)
+    await setup.flush()
+
+    expect(fake.dialogShows()).toBe(2)
+    const delegationSetup = await testRender(() => {
+      const render = fake.shown()
+      if (render === undefined) throw new Error("the delegation panel was not opened")
+      return render()
+    }, { width: 100, height: 40 })
+    await delegationSetup.flush()
+
+    const text = delegationSetup.captureCharFrame().replace(/[│─┌┐└┘├┤┬┴┼]+/g, " ").replace(/\s+/g, " ")
+    expect(text).toContain("Session watch — delegation")
+    dispose()
+    setup.renderer.destroy()
+    delegationSetup.renderer.destroy()
+  })
+
+  test("deferred children read for session A does not overwrite session B after switch", async () => {
+    const { deferred } = await import("./tui-watch-fake.ts")
+    const slowA = deferred<unknown>()
+    const fake = fakePort({
+      sessionID: "ses_A",
+      read: async (req) => {
+        if (req.sessionID === "ses_A") return slowA.promise
+        return payload({
+          task: task({
+            taskID: "task_B",
+            initiatorSessionID: "ses_B",
+            targetSessionID: "ses_B",
+          }),
+        })
+      },
+    })
+    const dispose = installWatch(fake.port)
+
+    // 1. Open children for session A (read starts and hangs)
+    commandOf(fake).run("children")
+    await tick(0)
+    expect(fake.reads).toHaveLength(1)
+    expect(fake.reads[0]?.sessionID).toBe("ses_A")
+
+    // 2. Switch current session to B and open children for B
+    fake.setSession("ses_B")
+    commandOf(fake).run("children")
+    await tick(0)
+
+    expect(fake.dialogShows()).toBe(1)
+    expect(fake.delegationReads).toHaveLength(1)
+    expect(fake.delegationReads[0]?.parentTaskID).toBe("task_B")
+
+    // 3. Late response for A resolves
+    slowA.resolve(
+      payload({
+        task: task({
+          taskID: "task_A",
+          initiatorSessionID: "ses_A",
+          targetSessionID: "ses_A",
+        }),
+      }),
+    )
+    await tick(0)
+
+    // B remains on screen and A did not trigger delegation reads or replace B
+    expect(fake.delegationReads).toHaveLength(1)
+    expect(fake.delegationReads[0]?.parentTaskID).toBe("task_B")
+    dispose()
+  })
+
+  test("closing delegation dialog stops feeds and floor timer produces zero reads", async () => {
+    const fake = fakePort()
+    // Configure a short 25ms floor refresh to prove timer stops
+    const dispose = installWatch(fake.port, { refreshMs: 25 })
+    commandOf(fake).run("children")
+    await tick(0)
+
+    expect(fake.delegationReads).toHaveLength(1)
+    // While open, timer triggers additional reads
+    await new Promise((r) => setTimeout(r, 60))
+    expect(fake.delegationReads.length).toBeGreaterThan(1)
+
+    // Close dialog
+    fake.close()
+    await tick(0)
+
+    const readsBefore = fake.delegationReads.length
+    const parentReadsBefore = fake.reads.length
+    // Advance timer past multiple intervals
+    await new Promise((r) => setTimeout(r, 60))
+    // No further reads happen for either feed while closed
+    expect(fake.delegationReads.length).toBe(readsBefore)
+    expect(fake.reads.length).toBe(parentReadsBefore)
+    dispose()
+  })
+
+  test("transition from children to ordinary panel stops old child feed", async () => {
+    const fake = fakePort()
+    const dispose = installWatch(fake.port, { refreshMs: 25 })
+    // 1. Open children panel
+    commandOf(fake).run("children")
+    await tick(0)
+    expect(fake.delegationReads).toHaveLength(1)
+
+    // 2. Open ordinary watch panel for same session
+    commandOf(fake).run("")
+    await tick(0)
+
+    const delegationReadsBefore = fake.delegationReads.length
+    // Wait past floor timer interval
+    await new Promise((r) => setTimeout(r, 60))
+    // Delegation feed was closed by opening ordinary panel; no more delegation reads occur
+    expect(fake.delegationReads.length).toBe(delegationReadsBefore)
+
+    fake.close()
+    dispose()
+  })
+
+  test("advance parent version via snapshot cancels confirm stage, blocks old confirm and uses fresh version 4 for next prepare", async () => {
+    let currentVersion = 3
+    const fake = fakePort({
+      read: async () =>
+        payload({
+          task: task({
+            taskID: "task_0001",
+            version: currentVersion,
+            initiatorSessionID: SELF,
+            targetSessionID: SELF,
+          }),
+        }),
+    })
+    const dispose = installWatch(fake.port)
+    commandOf(fake).run("children ses_child_01 alert")
+    await tick(0)
+    await new Promise((r) => setTimeout(r, 20))
+
+    const setup = await testRender(() => {
+      const render = fake.shown()
+      if (render === undefined) throw new Error("not opened")
+      return render()
+    }, { width: 100, height: 40 })
+    await setup.flush()
+
+    // 1. In review stage, press y to prepare with version 3
+    setup.mockInput.pressKey("y")
+    await setup.flush()
+    await tick(20)
+    await setup.flush()
+
+    expect(fake.delegationCalls).toHaveLength(1)
+    expect(fake.delegationCalls[0]).toMatchObject({
+      operation: "prepare",
+      expectedVersion: 3,
+      targetSessionID: "ses_child_01",
+    })
+
+    const confirmText = setup.captureCharFrame().replace(/[│─┌┐└┘├┤┬┴┼]+/g, " ").replace(/\s+/g, " ")
+    expect(confirmText).toContain("Session watch — delegation confirmation")
+
+    // 2. Parent task advances from version 3 to 4 via new snapshot
+    currentVersion = 4
+    fake.announce()
+    await tick(20)
+    await setup.flush()
+
+    // Exits confirm stage reactively!
+    const textAfterAdvance = setup.captureCharFrame().replace(/[│─┌┐└┘├┤┬┴┼]+/g, " ").replace(/\s+/g, " ")
+    expect(textAfterAdvance).not.toContain("Session watch — delegation confirmation")
+    expect(textAfterAdvance).toContain("Session watch — delegation")
+
+    // 3. Pressing y does not confirm old challenge
+    setup.mockInput.pressKey("y")
+    await setup.flush()
+    expect(fake.delegationCalls.map((c) => c.operation)).toEqual(["prepare"])
+
+    // 4. Starting a new grant uses fresh version 4
+    setup.mockInput.pressKey("g")
+    await setup.flush()
+    for (let i = 0; i < 20; i++) setup.mockInput.pressBackspace()
+    for (const char of "ses_child_v4") {
+      setup.mockInput.pressKey(char)
+    }
+    setup.mockInput.pressEnter()
+    await setup.flush()
+
+    // Press y to prepare
+    setup.mockInput.pressKey("y")
+    await setup.flush()
+    await tick(20)
+    await setup.flush()
+
+    expect(fake.delegationCalls).toHaveLength(2)
+    expect(fake.delegationCalls[1]).toMatchObject({
+      operation: "prepare",
+      expectedVersion: 4,
+      targetSessionID: "ses_child_v4",
+    })
+
+    // Confirm uses fresh version 4
+    setup.mockInput.pressKey("y")
+    await setup.flush()
+    await tick(20)
+    await setup.flush()
+
+    expect(fake.delegationCalls).toHaveLength(3)
+    expect(fake.delegationCalls[2]).toMatchObject({
+      operation: "confirm",
+      expectedVersion: 4,
+      targetSessionID: "ses_child_v4",
+    })
+
+    dispose()
+    setup.renderer.destroy()
+  })
+
+  test("parent task disappearance cancels confirm stage and refuses fresh prepare", async () => {
+    let currentTask: ReturnType<typeof task> | null = task({
+      taskID: "task_0001",
+      version: 3,
+      initiatorSessionID: SELF,
+      targetSessionID: SELF,
+    })
+    const fake = fakePort({
+      read: async () => payload({ task: currentTask }),
+    })
+    const dispose = installWatch(fake.port)
+    commandOf(fake).run("children ses_child_01 alert")
+    await tick(0)
+    await new Promise((r) => setTimeout(r, 20))
+
+    const setup = await testRender(() => {
+      const render = fake.shown()
+      if (render === undefined) throw new Error("not opened")
+      return render()
+    }, { width: 100, height: 40 })
+    await setup.flush()
+
+    // In review stage, press y to prepare
+    setup.mockInput.pressKey("y")
+    await setup.flush()
+    await tick(20)
+    await setup.flush()
+
+    expect(setup.captureCharFrame()).toContain("Session watch — delegation confirmation")
+
+    // Parent task completes / vanishes
+    currentTask = null
+    fake.announce()
+    await tick(20)
+    await setup.flush()
+
+    // Confirm stage is cancelled and returns to table
+    expect(setup.captureCharFrame()).not.toContain("Session watch — delegation confirmation")
+
+    // Attempting to prepare when task is ended/gone is refused
+    setup.mockInput.pressKey("g")
+    await setup.flush()
+    setup.mockInput.pressEnter()
+    await setup.flush()
+    setup.mockInput.pressKey("y")
+    await setup.flush()
+    await tick(20)
+
+    expect(fake.toasts).toContainEqual({
+      message: "Parent task is not active; delegation operations are unavailable.",
+      variant: "warning",
+    })
+
+    dispose()
+    setup.renderer.destroy()
+  })
+
+  test("slash command delegate guides user to review children or peers delegate", () => {
+    const fake = fakePort()
+    const dispose = installWatch(fake.port)
+    commandOf(fake).run("delegate")
+    expect(fake.toasts).toHaveLength(1)
+    expect(fake.toasts[0]?.message).toContain("/peers-watch children")
+    expect(fake.toasts[0]?.message).toContain("peers delegate")
+    dispose()
+  })
+})

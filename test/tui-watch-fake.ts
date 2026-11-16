@@ -7,17 +7,28 @@
  * toasts and screens without binding to a private helper.
  */
 
+import { createSignal } from "solid-js"
 import { RGBA } from "@opentui/core"
 import { testRender } from "@opentui/solid"
 
 import { WATCH_CORRECTION_TERMS } from "../src/domain/watch.ts"
-import type { WatchGrantChallengeView, WatchGrantPayload, WatchPayload } from "../src/rpc.ts"
+import { WATCH_DELEGATION_TERMS } from "../src/watch/delegation.ts"
+import type {
+  DelegationChallengeView,
+  WatchDelegationGrantPayload,
+  WatchDelegationViewPayload,
+  WatchGrantChallengeView,
+  WatchGrantPayload,
+  WatchPayload,
+} from "../src/rpc.ts"
 import type {
   TuiCommand,
   TuiPalette,
   TuiPort,
   ToastVariant,
   WatchCallRequest,
+  WatchDelegationCallRequest,
+  WatchDelegationViewRequest,
   WatchGrantCallRequest,
   WatchReadRequest,
 } from "../src/host/tui.ts"
@@ -296,6 +307,61 @@ export function grantPayload(overrides: Partial<WatchGrantPayload> = {}): WatchG
   }
 }
 
+export function delegationChallenge(
+  overrides: Partial<DelegationChallengeView> = {},
+): DelegationChallengeView {
+  return {
+    challenge: "challenge-delegation-nonce",
+    parentTaskID: "task_parent_001",
+    expectedVersion: 3,
+    generation: 1,
+    mode: "alert",
+    targetSessionID: "ses_child_001",
+    scopeDirectory: "/tmp/opencode/project",
+    scopePeerScope: "project-a",
+    termsDigest: "delegation-terms-digest",
+    reviewSummary: WATCH_DELEGATION_TERMS,
+    expiresAt: Date.UTC(2026, 10, 16, 4, 45, 0),
+    ...overrides,
+  }
+}
+
+export function delegationGrantPayload(
+  overrides: Partial<WatchDelegationGrantPayload> = {},
+): WatchDelegationGrantPayload {
+  const isLimited = overrides.challenge?.mode === "limited-correction" || overrides.grant?.mode === "limited-correction"
+  return {
+    ok: true,
+    challenge: null,
+    grant: null,
+    task: task(),
+    capability: capability(),
+    controls: controls(),
+    review: {
+      delegationTerms: WATCH_DELEGATION_TERMS,
+      correctionTerms: WATCH_CORRECTION_TERMS,
+      deploymentRequired: isLimited,
+      derivesCorrectionGrant: isLimited,
+    },
+    failure: null,
+    ...overrides,
+  }
+}
+
+export function delegationViewPayload(
+  overrides: Partial<WatchDelegationViewPayload> = {},
+): WatchDelegationViewPayload {
+  return {
+    ok: true,
+    parentTaskID: "task_0001",
+    parentSessionID: SELF,
+    grants: [],
+    children: [],
+    failure: null,
+    ...overrides,
+  }
+}
+
 export function payload(overrides: Partial<WatchPayload> = {}): WatchPayload {
   return {
     enabled: true,
@@ -334,16 +400,22 @@ export interface FakeOptions {
   readonly read?: (request: WatchReadRequest) => Promise<unknown>
   readonly call?: (request: WatchCallRequest) => Promise<unknown>
   readonly grant?: (request: WatchGrantCallRequest) => Promise<unknown>
+  readonly delegation?: (request: WatchDelegationCallRequest) => Promise<unknown>
+  readonly delegationView?: (request: WatchDelegationViewRequest) => Promise<unknown>
+  /** When true, omits the `watchDelegation` source completely to test graceful degradation. */
+  readonly omitDelegation?: boolean
 }
 
 export function fakePort(options: FakeOptions = {}) {
   const reads: WatchReadRequest[] = []
   const calls: WatchCallRequest[] = []
   const grantCalls: WatchGrantCallRequest[] = []
+  const delegationCalls: WatchDelegationCallRequest[] = []
+  const delegationReads: WatchDelegationViewRequest[] = []
   const toasts: { message: string; variant: ToastVariant | undefined }[] = []
   const commands: TuiCommand[] = []
   const dialogSets: { size: string; centered: boolean }[] = []
-  let shown: Parameters<TuiPort["dialog"]["show"]>[0] | undefined
+  const [shown, setShown] = createSignal<Parameters<TuiPort["dialog"]["show"]>[0] | undefined>()
   let onClose: (() => void) | undefined
   let listener: (() => void) | undefined
   let rosterReads = 0
@@ -383,6 +455,37 @@ export function fakePort(options: FakeOptions = {}) {
         return options.grant?.(request) ?? Promise.resolve({})
       },
     },
+    ...(options.omitDelegation
+      ? {}
+      : {
+          watchDelegation: {
+            call: (request: WatchDelegationCallRequest) => {
+              delegationCalls.push(request)
+              if (options.delegation !== undefined) return options.delegation(request)
+              if (request.operation === "prepare") {
+                return Promise.resolve(
+                  delegationGrantPayload({
+                    challenge: delegationChallenge({
+                      parentTaskID: request.parentTaskID,
+                      expectedVersion: request.expectedVersion,
+                      targetSessionID: request.targetSessionID,
+                      mode: request.mode ?? "alert",
+                      ...(request.deployment !== undefined ? { deployment: request.deployment } : {}),
+                    }),
+                  }),
+                )
+              }
+              return Promise.resolve(delegationGrantPayload())
+            },
+            read: (request: WatchDelegationViewRequest) => {
+              delegationReads.push(request)
+              return (
+                options.delegationView?.(request) ??
+                Promise.resolve(delegationViewPayload({ parentTaskID: request.parentTaskID }))
+              )
+            },
+          },
+        }),
     setScope: async () => ({}),
     toast: (message, variant) => {
       toasts.push({ message, variant })
@@ -397,7 +500,7 @@ export function fakePort(options: FakeOptions = {}) {
     dialog: {
       show: (render, close) => {
         dialogShows += 1
-        shown = render
+        setShown(() => render)
         onClose = close
       },
       set: (presentation) => {
@@ -411,10 +514,12 @@ export function fakePort(options: FakeOptions = {}) {
     reads,
     calls,
     grantCalls,
+    delegationCalls,
+    delegationReads,
     toasts,
     commands,
     dialogSets,
-    shown: () => shown,
+    shown: () => shown(),
     dialogShows: () => dialogShows,
     rosterReads: () => rosterReads,
     setSession: (sessionID: string | undefined) => {

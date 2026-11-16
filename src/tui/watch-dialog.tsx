@@ -51,6 +51,8 @@ export interface WatchDialogProps {
   readonly onGrantCancel: () => void
   /** Downgrade an existing grant to alert-only. */
   readonly onDowngrade: () => Promise<void>
+  /** Open the direct-child delegation review panel. */
+  readonly onDelegation?: (taskID: string, version: number) => void
 }
 
 type GrantStage = "review" | "confirm" | "downgrade"
@@ -175,7 +177,7 @@ export function WatchDialog(props: WatchDialogProps) {
   const content = createMemo(() => {
     const focused = focusContent()
     if (focused !== undefined) return focused
-    return watchContent({
+    const base = watchContent({
       state: props.state(),
       sessionID: props.sessionID,
       pane: pane(),
@@ -188,6 +190,13 @@ export function WatchDialog(props: WatchDialogProps) {
       gatePageSize: gatePageSize(),
       compact: dimensions().height < 52,
     })
+    if (props.onDelegation !== undefined && pane() === "task" && payload()?.task != null) {
+      return {
+        ...base,
+        notes: [...base.notes, "k: delegated children"],
+      }
+    }
+    return base
   })
 
   const canPause = createMemo(
@@ -290,6 +299,14 @@ export function WatchDialog(props: WatchDialogProps) {
       }
       if (key.name === "x" && canEnd()) {
         setPending("end")
+        return
+      }
+      if (key.name === "k" && props.onDelegation !== undefined) {
+        const task = payload()?.task
+        if (task != null) {
+          props.onDelegation(task.taskID, task.version)
+          return
+        }
       }
       return
     }

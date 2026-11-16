@@ -106,6 +106,8 @@ export {
 export {
   readWatchDelegationGrantPayload,
   readWatchDelegationViewPayload,
+  watchDelegationRpcMethod,
+  watchDelegationViewRpcMethod,
   type DelegationChallengeView,
   type DelegationReviewView,
   type WatchDelegationGrantPayload,
@@ -119,7 +121,6 @@ export type {
   WatchDelegationFailure,
   WatchDelegationView,
 } from "./watch/delegation-view.ts"
-
 export const SESSION_PEERS_RPC_ID = "session-peers.v1"
 
 /** One peer, as the view reads it. */
