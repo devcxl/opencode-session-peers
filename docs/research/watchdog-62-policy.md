@@ -186,3 +186,8 @@ a real five-minute host wait. The #63 real-host positive and two negative
 protocols passed on the exact supported artifact; see
 `watchdog-63-realhost-plan.md` for evidence and limitations. Real-host SIGKILL,
 early-receipt race, stale-generation and power-loss durability remain unverified.
+
+Parent Standards and Spec reviews accepted the combined implementation and
+documentation (`2343425` plus `2adb009`) with no blocking finding. The reviewer
+explicitly rechecked the ignored-own-reservation/prior-policy cooldown and
+closed that old finding; historical #61 ADR wording is not the current policy.
