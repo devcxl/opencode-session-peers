@@ -76,6 +76,8 @@ export interface DelegationAuthority {
    * `checked` flag; the ledger repeats the durable part inside its transaction.
    */
   check(taskID: string): Promise<DelegatedAuthorityCheck>
+  /** Fresh host facts for one enrollment/prepare request; never cached as proof. */
+  facts(sessionID: string): Promise<{ readonly session: DelegationSessionFact | null; readonly scope: ScopeFact | null }>
 }
 
 export interface DelegationAuthorityOptions {
@@ -167,6 +169,14 @@ export function createDelegationAuthority(options: DelegationAuthorityOptions): 
         scopeSource: scopeSource(parentScope, childScope),
         checkedAt: now(),
       }
+    },
+
+    async facts(sessionID) {
+      const [session, scope] = await Promise.all([
+        sessionFact(options.sessions, sessionID),
+        scopeFact(options.scopeOf, sessionID),
+      ])
+      return { session, scope }
     },
   }
 }

@@ -288,6 +288,11 @@ export interface RecordCorrectionReceiptInput {
   readonly currentActivationId: string
   /** The opaque correlation bound when the reservation was made. Never a caller-chosen id. */
   readonly correlation: string
+  /**
+   * Internal refusal from a fresh delegated-authority check. It records the
+   * receipt as seen without a permit and cannot be supplied by a model field.
+   */
+  readonly authorityRefusalReason?: string
   readonly at: number
 }
 
@@ -332,6 +337,8 @@ export interface WatchLedger {
   readonly filesystem: string
   enroll(input: EnrollWatchTaskInput): LedgerResult<{ readonly task: WatchTaskRecord; readonly created: boolean }>
   show(input: { readonly taskID?: string; readonly sessionID: string }): LedgerResult<WatchTaskRecord | null>
+  /** The task this session is the target of, without exposing a delegated child. */
+  ownTask(sessionID: string): LedgerResult<WatchTaskRecord | null>
   report(input: ReportWatchTaskInput): LedgerResult<{ readonly task: WatchTaskRecord; readonly duplicate: boolean }>
   control(input: ControlWatchTaskInput): LedgerResult<{ readonly task: WatchTaskRecord; readonly changed: boolean }>
   /** Active tasks the observer may sample; paused tasks create no new alerts. */
@@ -1400,6 +1407,19 @@ class SqliteWatchLedger implements WatchLedger {
     })
   }
 
+  ownTask(sessionID: string): LedgerResult<WatchTaskRecord | null> {
+    const id = requiredIdentifier(sessionID, "sessionID")
+    return this.read(() => {
+      const row = this.db
+        .query(
+          `SELECT * FROM watch_tasks WHERE target_session_id = ?
+           ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
+        )
+        .get(id) as TaskRow | null
+      return row === null ? null : taskFromRow(row, this.reportedWaits(row.task_id))
+    })
+  }
+
   report(input: ReportWatchTaskInput): LedgerResult<{ readonly task: WatchTaskRecord; readonly duplicate: boolean }> {
     return this.immediate(() => {
       const taskID = requiredIdentifier(input.taskId, "taskId")
@@ -2218,6 +2238,14 @@ class SqliteWatchLedger implements WatchLedger {
       const caller = requiredIdentifier(input.callerSessionId, "callerSessionId")
       const correlation = requiredIdentifier(input.correlation, "correlation")
       const currentActivation = requiredIdentifier(input.currentActivationId, "currentActivationId")
+      if (
+        input.authorityRefusalReason !== undefined &&
+        (typeof input.authorityRefusalReason !== "string" ||
+          input.authorityRefusalReason.trim().length === 0 ||
+          input.authorityRefusalReason.length > 200)
+      ) {
+        throw new LedgerFailure("invalid_input", "authorityRefusalReason must be a bounded non-empty string")
+      }
       const task = this.taskRow(taskID)
       if (task === null) throw new LedgerFailure("unknown_task", taskID)
       this.checkLedger(task)
@@ -2297,11 +2325,13 @@ class SqliteWatchLedger implements WatchLedger {
           ? `task-${task.watch_state}`
           : task.task_state === "completed"
             ? "task-completed"
-            : originalGrantOk
-              ? delegated.ok
-                ? null
-                : "delegation-changed"
-              : "grant-changed"
+            : input.authorityRefusalReason !== undefined
+              ? input.authorityRefusalReason
+              : originalGrantOk
+                ? delegated.ok
+                  ? null
+                  : "delegation-changed"
+                : "grant-changed"
       const permitAt = refusal === null ? input.at : null
       try {
         this.db
