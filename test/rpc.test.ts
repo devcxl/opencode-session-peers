@@ -68,7 +68,9 @@ describe("the registered surface", () => {
     const { host, unload } = await loaded()
     expect(host.rpcs).toHaveLength(1)
     expect(host.rpcs[0]?.id).toBe(SESSION_PEERS_RPC_ID)
-    expect(host.rpcs[0]?.methods).toEqual(["roster", "setScope", "watch", "watchGrant"])
+    expect(host.rpcs[0]?.methods).toEqual([
+      "roster", "setScope", "watch", "watchGrant", "watchDelegation", "watchDelegationView",
+    ])
     await unload()
   })
 
