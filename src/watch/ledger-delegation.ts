@@ -986,6 +986,18 @@ export function assertDelegationIntegrity(db: Database): void {
   if (missingSource.n !== 0) {
     throw new LedgerDelegationFailure("corrupt", "a correction grant names a missing delegation source")
   }
+  const missingDerived = db
+    .query(
+      `SELECT COUNT(*) AS n FROM watch_delegated_tasks l
+       JOIN watch_tasks t ON t.task_id = l.task_id
+       LEFT JOIN watch_correction_grants g
+         ON g.task_id = l.task_id AND g.source_delegation_grant_id IS NOT NULL
+       WHERE t.mode = 'limited-correction' AND g.task_id IS NULL`,
+    )
+    .get() as { n: number }
+  if (missingDerived.n !== 0) {
+    throw new LedgerDelegationFailure("corrupt", "a limited delegated child has no derived correction grant")
+  }
 }
 
 function activeGrantFor(db: Database, parentTaskID: string, target: string): DelegationGrantRow | null {
