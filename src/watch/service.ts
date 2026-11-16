@@ -1269,7 +1269,9 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
       if (!(await options.sessionAtLocation(sessionID))) return undefined
       const current = ensure()
       if (current.ledger === undefined) return undefined
-      const shown = current.ledger.show({ sessionID })
+      // Only the session's own target task belongs in its next normal context;
+      // a parent does not receive a delegated child's notice through this hook.
+      const shown = current.ledger.ownTask(sessionID)
       if (!shown.ok || shown.value === null) return undefined
       const task = shown.value
       if (task.watchState === "ended" || task.taskState === "completed") return undefined
