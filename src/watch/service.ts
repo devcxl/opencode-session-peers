@@ -11,6 +11,7 @@ import {
   CORRECTION_UNAVAILABLE_REASON,
   DELEGATION_UNAVAILABLE_REASON,
   WATCH_CORRECTION_TERMS,
+  isCorrectionAttemptOpen,
   readGoal,
   readIdentifier,
   type WatchActivityView,
@@ -807,7 +808,7 @@ function tryRecovery(
   const snapshot = ledger.correction(task.taskID)
   if (!snapshot.ok) return
   const receipted = snapshot.value.attempts.find(
-    (attempt) => attempt.phase === "receipted" && attempt.receiptPermitAt !== undefined,
+    (attempt) => attempt.phase === "receipted" && isCorrectionAttemptOpen(attempt),
   )
   if (receipted === undefined) return
   const recovered = ledger.recordCorrectionRecovery({
