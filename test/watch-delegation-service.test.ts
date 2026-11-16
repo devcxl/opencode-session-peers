@@ -416,6 +416,15 @@ describeService("delegation application", () => {
       })
       expect(report.ok).toBe(false)
       expect(report.failure?.code).toBe("E_WATCH_CALLER_MISMATCH")
+
+      const receipt = await h.app.receipt({
+        callerSessionID: PARENT,
+        taskID: child.taskID,
+        attemptID: "missing-attempt",
+        correlation: "missing-correlation",
+      })
+      expect(receipt.ok).toBe(false)
+      expect(receipt.failure?.code).toBe("E_WATCH_CALLER_MISMATCH")
     } finally {
       h.close()
     }
