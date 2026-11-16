@@ -237,7 +237,8 @@ describeCorrection("correction ledger", () => {
       expect(WATCH_CORRECTION_TERMS).toContain("5 min observation after each")
       expect(WATCH_CORRECTION_TERMS).toContain("same OS user/location")
       expect(WATCH_CORRECTION_TERMS).toContain("not human authentication")
-      expect(WATCH_CORRECTION_TERMS).toContain("never reset attempts or window")
+      expect(WATCH_CORRECTION_TERMS).toContain("never reset quota or window")
+      expect(WATCH_CORRECTION_TERMS).toContain("Unknown/unsupported = alert-only")
       expect(WATCH_CORRECTION_TERMS.length).toBeLessThanOrEqual(500)
     } finally {
       ledger.close()

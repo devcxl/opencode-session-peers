@@ -431,6 +431,46 @@ describe("bounded automatic-attempt policy", () => {
     expect(cleared.policy.windowStartedAt).toBeNull()
   })
 
+  test("an overdue still-uncleared wait keeps the round closed and sends nothing", () => {
+    const closed = attempt({
+      reservationID: "attempt-1",
+      ordinal: 1,
+      phase: "receipted",
+      receiptAt: 1_010,
+      receiptPermitAt: 1_010,
+      closedAt: 1_020,
+      closedReason: "normal-wait",
+    })
+    const overdue = {
+      ...observation,
+      state: "normal-waiting" as const,
+      waits: [
+        {
+          waitID: "wait-overdue",
+          source: "reported" as const,
+          object: "human",
+          reason: "review",
+          reference: "wait-ref",
+          startedAt: 1_020,
+          deadline: 2_000,
+          status: "overdue" as const,
+          clearEvidence: null,
+          denyEvidence: null,
+        },
+      ],
+    }
+    const result = correctionGate(
+      eligibleInput({
+        snapshot: { ...snapshot, attempts: [closed], episode: null },
+        observation: overdue,
+        now: 2_001,
+      }),
+    )
+    expect(result.eligible).toBe(false)
+    expect(result.stopReason).toBe("normal-wait")
+    expect(result.policy.used).toBe(1)
+  })
+
   test("a recovered third attempt stops for quota, never as a policy failure", () => {
     const attempts = [1, 2, 3].map((ordinal) =>
       attempt({

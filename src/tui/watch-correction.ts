@@ -243,6 +243,8 @@ function attemptText(attempt: Attempt): string {
     )
   } else if (
     attempt.phase === "receipted" &&
+    attempt.stopReason !== "normal-wait" &&
+    attempt.stopReason !== "task-completed" &&
     attempt.receipt?.continuePermitIssuedAt !== null &&
     attempt.receipt?.continuePermitIssuedAt !== undefined
   ) {

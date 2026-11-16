@@ -282,7 +282,7 @@ export interface WatchCorrectionSnapshot {
 }
 
 export const WATCH_CORRECTION_TERMS =
-  "Correction grant: 3 permanent auto attempts; 5 min observation after each; one problem max 20 min. Reload/reconfirm/regrant/activity never reset attempts or window; normal wait or recovery ends a round; new round needs cleared wait and all gates. One OpenCode service, same OS user/location; single-host declaration is not proof; channel is not human authentication. Unknown = alert-only. Safety pause stops auto correction, not business work. Queue admission is not consumption and is irreversible."
+  "Correction grant: 3 permanent auto attempts; 5 min observation after each; problem max 20 min. Reload/reconfirm/regrant/activity never reset quota or window; normal wait/recovery ends a round; new round needs a cleared wait and all gates. One OpenCode service, same OS user/location; single-host declaration is not proof; channel not human authentication. Unknown/unsupported = alert-only. Safety pause stops auto correction, not business work. Queue admission is not consumption and is irreversible."
 
 /**
  * A short-lived challenge returned only to the controlled TUI surface by the

@@ -92,7 +92,7 @@ views and the shared panel skeleton are untouched. The correction pane shows the
 configured policy, used/remaining permanent attempts, fixed window end, attempt
 closure reasons, unconfirmed recovery, and the third-success explanation.
 
-`WATCH_CORRECTION_TERMS` is the canonical 499-character text. It no longer says
+`WATCH_CORRECTION_TERMS` is the canonical 500-character text. It no longer says
 “first automatic attempt only”; it states the three-attempt permanent budget,
 the five-minute observation, the twenty-minute continuous-problem cap, the
 no-reset rule, the normal-wait/recovery round boundary, the single-service /
@@ -105,7 +105,7 @@ claim/receipt checks. The UI imports the canonical value; no copy exists.
 
 Targeted run (Bun 1.4.4):
 
-- 22 watch/config/TUI files: 297 pass, 0 fail, 1716 expectations.
+- 22 watch/config/TUI files: 298 pass, 0 fail, 1722 expectations.
 - `entry`, `rpc`, `boundaries`: 33 pass, 0 fail, 180 expectations.
 - Overall `tsc --noEmit` and `git diff --check`: clean.
 
