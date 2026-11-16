@@ -552,4 +552,93 @@ describe("delegation lifecycle isolation", () => {
 
     dispose()
   })
+
+  test("prepare reply during parent version change does not arm challenge", async () => {
+    let slowResolve: ((val: unknown) => void) | undefined
+    const slowPromise = new Promise((resolve) => {
+      slowResolve = resolve
+    })
+
+    const { fake, flow, setExpectedVersion, dispose } = setupFlow({
+      delegation: () => slowPromise,
+    })
+
+    const prepPromise = flow.prepare("ses_child_001", "alert")
+    expect(fake.delegationCalls).toHaveLength(1)
+
+    // Parent task version advances while prepare RPC is in flight
+    setExpectedVersion(4)
+
+    slowResolve?.(
+      delegationGrantPayload({
+        challenge: delegationChallenge({ expectedVersion: 3 }),
+      }),
+    )
+
+    const result = await prepPromise
+    expect(result).toBeUndefined()
+
+    // Confirm must NOT be armed
+    await flow.confirm()
+    expect(fake.delegationCalls).toHaveLength(1)
+    dispose()
+  })
+
+  test("route change without opening panel fences late confirm from toasting", async () => {
+    let slowConfirmResolve: ((val: unknown) => void) | undefined
+    const slowConfirmPromise = new Promise((resolve) => {
+      slowConfirmResolve = resolve
+    })
+
+    const { fake, flow, dispose } = setupFlow({
+      delegation: async (req) => {
+        if (req.operation === "prepare") {
+          return delegationGrantPayload({ challenge: delegationChallenge() })
+        }
+        return slowConfirmPromise
+      },
+    })
+
+    const prepared = await flow.prepare("ses_child_001", "alert")
+    expect(prepared).toBeDefined()
+
+    const confirmPromise = flow.confirm()
+    expect(fake.delegationCalls.map((c) => c.operation)).toEqual(["prepare", "confirm"])
+
+    // Route switches to another session before confirm response returns
+    fake.setSession("ses_other_user")
+
+    slowConfirmResolve?.(delegationGrantPayload({ ok: true }))
+    await confirmPromise
+
+    // Because route changed, confirm must NOT toast success or update state
+    expect(fake.toasts).toEqual([])
+    dispose()
+  })
+
+  test("feed fails closed and rejects payload for wrong parent task or session", async () => {
+    const { fakePort, delegationViewPayload } = await import("./tui-watch-fake.ts")
+    const { createWatchDelegationFeed } = await import("../src/tui/watch-delegation-feed.ts")
+
+    const fake = fakePort({
+      delegationView: async () =>
+        delegationViewPayload({
+          parentTaskID: "task_WRONG_PARENT", // Mismatched task ID
+          parentSessionID: SELF,
+        }),
+    })
+
+    const feed = createWatchDelegationFeed(fake.port.watchDelegation)
+    feed.open(SELF, "task_EXPECTED_PARENT")
+
+    // Allow read promise to settle
+    await new Promise((r) => setTimeout(r, 10))
+
+    const state = feed.state()
+    expect(state.kind).toBe("failed")
+    if (state.kind === "failed") {
+      expect(state.reason).toContain("belonged to another task or session")
+    }
+    feed.dispose()
+  })
 })

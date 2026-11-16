@@ -74,12 +74,14 @@ export function createDelegationFlow(deps: DelegationFlowDeps): DelegationFlow {
 
   const stillCurrent = (sessionID: string, parentTaskID: string, startedEpoch: number): boolean => {
     const panel = deps.panel()
+    const current = port.currentSession()
     return (
       !deps.isDisposed() &&
       deps.epoch() === startedEpoch &&
       panel.open &&
       panel.sessionID === sessionID &&
-      panel.parentTaskID === parentTaskID
+      panel.parentTaskID === parentTaskID &&
+      current.sessionID === sessionID
     )
   }
 
@@ -127,6 +129,11 @@ export function createDelegationFlow(deps: DelegationFlowDeps): DelegationFlow {
       return undefined
     }
     if (!stillCurrent(sessionID, parentTaskID, startedEpoch)) return undefined
+    if (deps.panel().expectedVersion !== expectedVersion) {
+      pending = undefined
+      feed.refresh()
+      return undefined
+    }
     const payload = readWatchDelegationGrantPayload(answer)
     if (payload === undefined) {
       port.toast(

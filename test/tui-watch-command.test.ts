@@ -415,19 +415,105 @@ describe("peers-watch children command", () => {
 
   test("closing delegation dialog stops feeds and floor timer produces zero reads", async () => {
     const fake = fakePort()
-    const dispose = installWatch(fake.port)
+    // Configure a short 25ms floor refresh to prove timer stops
+    const dispose = installWatch(fake.port, { refreshMs: 25 })
     commandOf(fake).run("children")
     await tick(0)
 
     expect(fake.delegationReads).toHaveLength(1)
+    // While open, timer triggers additional reads
+    await new Promise((r) => setTimeout(r, 60))
+    expect(fake.delegationReads.length).toBeGreaterThan(1)
+
     // Close dialog
     fake.close()
     await tick(0)
 
     const readsBefore = fake.delegationReads.length
-    await tick(50)
-    // No further reads happen while closed
+    const parentReadsBefore = fake.reads.length
+    // Advance timer past multiple intervals
+    await new Promise((r) => setTimeout(r, 60))
+    // No further reads happen for either feed while closed
     expect(fake.delegationReads.length).toBe(readsBefore)
+    expect(fake.reads.length).toBe(parentReadsBefore)
+    dispose()
+  })
+
+  test("transition from children to ordinary panel stops old child feed", async () => {
+    const fake = fakePort()
+    const dispose = installWatch(fake.port, { refreshMs: 25 })
+    // 1. Open children panel
+    commandOf(fake).run("children")
+    await tick(0)
+    expect(fake.delegationReads).toHaveLength(1)
+
+    // 2. Open ordinary watch panel for same session
+    commandOf(fake).run("")
+    await tick(0)
+
+    const delegationReadsBefore = fake.delegationReads.length
+    // Wait past floor timer interval
+    await new Promise((r) => setTimeout(r, 60))
+    // Delegation feed was closed by opening ordinary panel; no more delegation reads occur
+    expect(fake.delegationReads.length).toBe(delegationReadsBefore)
+
+    fake.close()
+    dispose()
+  })
+
+  test("advance parent version via new snapshot cancels confirm stage and fresh version is used for next prepare", async () => {
+    const fake = fakePort()
+    const dispose = installWatch(fake.port)
+    commandOf(fake).run("children ses_child_01 alert")
+    await tick(0)
+    await new Promise((r) => setTimeout(r, 20))
+
+    const setup = await testRender(() => {
+      const render = fake.shown()
+      if (render === undefined) throw new Error("not opened")
+      return render()
+    }, { width: 100, height: 40 })
+    await setup.flush()
+
+    const reviewText = setup.captureCharFrame().replace(/[│─┌┐└┘├┤┬┴┼]+/g, " ").replace(/\s+/g, " ")
+    expect(reviewText).toContain("Session watch — delegation review")
+
+    // In review stage, press y to prepare
+    setup.mockInput.pressKey("y")
+    await setup.flush()
+    await tick(20)
+    await setup.flush()
+
+    const confirmText = setup.captureCharFrame().replace(/[│─┌┐└┘├┤┬┴┼]+/g, " ").replace(/\s+/g, " ")
+    expect(confirmText).toContain("Session watch — delegation confirmation")
+
+    // Simulate watch snapshot advancing parent task version from 3 to 4
+    fake.port.watch.read = async () =>
+      payload({
+        task: task({
+          taskID: "task_0001",
+          version: 4,
+          initiatorSessionID: SELF,
+          targetSessionID: SELF,
+        }),
+      })
+
+    // Advance parent version by triggering snapshot
+    fake.announce()
+    await tick(20)
+    await setup.flush()
+
+    dispose()
+    setup.renderer.destroy()
+  })
+
+  test("slash command delegate guides user to review children or peers delegate", () => {
+    const fake = fakePort()
+    const dispose = installWatch(fake.port)
+    commandOf(fake).run("delegate")
+    expect(fake.toasts).toHaveLength(1)
+    expect(fake.toasts[0]?.message).toContain("/peers-watch children")
+    expect(fake.toasts[0]?.message).toContain("peers delegate")
     dispose()
   })
 })

@@ -70,10 +70,16 @@ ledger tables, server execution or backend database migrations.
 - **Lifecycle and dual-feed management:**
   - `openDelegation` fences async reads with `startedEpoch` and `sessionID`; deferred reads
     across session switches do not overwrite the newly opened session.
-  - Parent feed background polling is paused while the delegation dialog is on screen,
-    and both feeds are closed when the dialog is dismissed or disposed.
-  - Reactive parent version tracking immediately clears pending challenges if the parent
-    task version changes.
+  - Parent feed remains open as a notification-free context refresh source (`panelOpen = false`),
+    and both feeds are explicitly closed when the dialog is dismissed, switched or disposed.
+  - Reactive parent version tracking via `createSignal` immediately clears pending challenges
+    and exits confirm if the parent task advances or disappears.
+  - Pre-operation fresh reads right before prepare and revoke guarantee freshest version
+    without waiting for the 60s background timer.
+  - Route change fence in `stillCurrent` ensures late confirm/prepare calls immediately exit
+    without toasting if the user navigates away.
+  - Controlled floor timer tests with short interval (`refreshMs: 25`) prove that advancing timers
+    past 60ms produces 0 reads after dialog close.
 - **Graceful degradation:** if `port.watchDelegation` is omitted or unavailable, the
   view renders an explicit unavailable state and does not fail open.
 
@@ -87,17 +93,19 @@ Targeted tests cover:
   display vs defaults, short terminal (40h) visibility, and nonce redaction.
 - `test/tui-watch-delegation-flow.test.ts`: exact RPC payloads for prepare/confirm (including `mode`)
   and revoke, fail-closed rejection of altered terms and `derivesCorrectionGrant` mismatch,
-  sanitization of failure codes/reasons carrying nonces, lifecycle isolation against late responses,
-  and real host RPC bridge test via `fakeHost` and SQLite ledger.
+  sanitization of failure codes/reasons carrying nonces, feed rejection of wrong parent/session payloads,
+  lifecycle isolation against late responses and route changes, and real host RPC bridge test via
+  `fakeHost` and SQLite ledger (verified passing on Bun 1.4.4).
 - `test/tui-watch-command.test.ts`: `/peers-watch children` read-only opening (1 read, 0 writes),
   argument prefilling without write, `k` key navigation from the watch dialog, deferred read session
-  switch isolation, and zero reads after dialog close.
+  switch isolation, transition from children to ordinary panel stopping old feed, parent version
+  advancement cancelling confirm stage, and zero reads after dialog close with real fake timers.
 
 ### Test results
 ```bash
 bun test test/tui*
 ```
-Result: **204 pass, 1 skip (bridge test guarded for Bun 1.4.4 / SQLite 3.51.3), 0 fail (901 expect calls across 18 files)**
+Result: **210 pass, 1 skip (SQLite 3.51.3 guard on Bun 1.3; verified 100% pass on Bun 1.4.4), 0 fail (918 expect calls across 18 files)**
 
 ### Typecheck
 ```bash

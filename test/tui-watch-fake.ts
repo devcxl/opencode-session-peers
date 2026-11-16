@@ -461,7 +461,21 @@ export function fakePort(options: FakeOptions = {}) {
           watchDelegation: {
             call: (request: WatchDelegationCallRequest) => {
               delegationCalls.push(request)
-              return options.delegation?.(request) ?? Promise.resolve(delegationGrantPayload())
+              if (options.delegation !== undefined) return options.delegation(request)
+              if (request.operation === "prepare") {
+                return Promise.resolve(
+                  delegationGrantPayload({
+                    challenge: delegationChallenge({
+                      parentTaskID: request.parentTaskID,
+                      expectedVersion: request.expectedVersion,
+                      targetSessionID: request.targetSessionID,
+                      mode: request.mode ?? "alert",
+                      ...(request.deployment !== undefined ? { deployment: request.deployment } : {}),
+                    }),
+                  }),
+                )
+              }
+              return Promise.resolve(delegationGrantPayload())
             },
             read: (request: WatchDelegationViewRequest) => {
               delegationReads.push(request)
