@@ -1322,8 +1322,9 @@ function protocolNotice(task: WatchTaskView): string {
     `A watched task is enrolled for this session: ${task.taskID} (state version ${task.version}).`,
     `Task state: ${task.taskState}. Supervision: ${task.watchState}. Authorization: ${task.mode === "alert" ? "alert-only" : "limited-correction"}.`,
     `Automatic correction: ${correction.actual}; ${correction.actualReason}${stop}`,
+    "Automatic policy: up to three permanent attempts for this task, with a fixed problem window and post-attempt observation; no quota reset.",
     correction.actual === "ready"
-      ? "Only the first permanent attempt may be queued automatically; manual correction, resume and transfer remain unavailable."
+      ? "Each queue still requires every safety and time-policy gate; manual correction, resume and transfer remain unavailable."
       : "The automatic gate is closed, so no queue is sent; this is a verified-runtime/protocol gate, not a missing code path.",
     "The task goal is not repeated in this system notice; read it with",
     `peers({ action: "watch", watch: { operation: "show", taskID: ${JSON.stringify(task.taskID)} } }) when needed.`,

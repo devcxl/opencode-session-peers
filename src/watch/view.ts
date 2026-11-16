@@ -95,7 +95,7 @@ export function watchTaskView(
  * The correction pane contract: authorization, the task's actual gate and the
  * executor policy are separate. The executor exists but stays unavailable until
  * its runtime/protocol tuple and every task gate are verified; manual correction
- * remains unavailable even when the first automatic attempt is ready.
+ * remains unavailable even when the bounded automatic policy is ready.
  */
 export function watchCorrectionView(
   task: WatchTaskRecord,

@@ -1880,7 +1880,7 @@ describeCorrection("correction ledger", () => {
       expect(waiting.ok).toBe(true)
       const closed = ledger.correction(task.taskID)
       expect(closed.ok && closed.value.episode).toBeNull()
-      expect(closed.ok && closed.value.lastAttemptPolicy).toEqual({
+      expect(attemptOf(closed)[0]?.episodePolicy).toEqual({
         observationMs: 600_000,
         windowMs: 1_200_000,
       })
@@ -1921,7 +1921,7 @@ describeCorrection("correction ledger", () => {
         observationMs: 300_000,
         windowMs: 2_400_000,
       })
-      expect(fresh.ok && fresh.value.lastAttemptPolicy).toEqual({
+      expect(attemptOf(fresh).at(-1)?.episodePolicy).toEqual({
         observationMs: 300_000,
         windowMs: 2_400_000,
       })
@@ -1978,7 +1978,7 @@ describeCorrection("correction ledger", () => {
       expect(progress.ok).toBe(true)
       const recovered = ledger.correction(task.taskID)
       expect(recovered.ok && recovered.value.episode).toBeNull()
-      expect(recovered.ok && recovered.value.lastAttemptPolicy).toEqual({
+      expect(attemptOf(recovered)[0]?.episodePolicy).toEqual({
         observationMs: 600_000,
         windowMs: 1_200_000,
       })
@@ -2019,7 +2019,7 @@ describeCorrection("correction ledger", () => {
         observationMs: 300_000,
         windowMs: 2_400_000,
       })
-      expect(fresh.ok && fresh.value.lastAttemptPolicy).toEqual({
+      expect(attemptOf(fresh).at(-1)?.episodePolicy).toEqual({
         observationMs: 300_000,
         windowMs: 2_400_000,
       })
