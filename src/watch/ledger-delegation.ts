@@ -75,6 +75,7 @@ interface DelegationGrantRow {
   readonly parent_task_id: string
   readonly parent_session_id: string
   readonly parent_task_version: number
+  readonly owner_activation: string
   readonly mode: string
   readonly state: string
   readonly version: number
@@ -194,6 +195,7 @@ CREATE TABLE IF NOT EXISTS watch_delegation_grants (
   parent_task_id TEXT NOT NULL REFERENCES watch_tasks(task_id),
   parent_session_id TEXT NOT NULL,
   parent_task_version INTEGER NOT NULL CHECK (parent_task_version >= 1),
+  owner_activation TEXT NOT NULL,
   mode TEXT NOT NULL CHECK (mode IN ('alert','limited-correction')),
   state TEXT NOT NULL CHECK (state IN ('granted','revoked')),
   version INTEGER NOT NULL CHECK (version >= 1),
@@ -268,6 +270,7 @@ export const REQUIRED_DELEGATION_GRANT_COLUMNS = [
   "parent_task_id",
   "parent_session_id",
   "parent_task_version",
+  "owner_activation",
   "mode",
   "state",
   "version",
@@ -531,16 +534,18 @@ export function confirmDelegationGrant(
   host.db
     .query(
       `INSERT INTO watch_delegation_grants (
-        grant_id, parent_task_id, parent_session_id, parent_task_version, mode, state, version, generation,
+        grant_id, parent_task_id, parent_session_id, parent_task_version, owner_activation,
+        mode, state, version, generation,
         scope_target_session_id, scope_directory, scope_peer_scope, deployment_statement,
         review_summary, terms_digest, confirmation_id, granted_at
-      ) VALUES (?, ?, ?, ?, ?, 'granted', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, 'granted', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       grantID,
       task.task_id,
       task.target_session_id,
       task.version,
+      task.owner_activation,
       mode.value,
       task.generation,
       target,
@@ -678,6 +683,23 @@ export function delegatedEnroll(host: DelegationLedgerHost, input: DelegatedEnro
   }
   if (mode.value === "limited-correction" && grant.deployment_statement !== "single-host-same-location") {
     throw new LedgerDelegationFailure("not_granted", "a limited child needs the delegation's deployment declaration")
+  }
+  if (parent.owner_activation !== grant.owner_activation) {
+    throw new LedgerDelegationFailure("not_granted", "the delegation grant belongs to another activation")
+  }
+  const currentDigest = delegationTermsDigest({
+    parentTaskID: parent.task_id,
+    parentSessionID: parent.target_session_id,
+    targetSessionID: target,
+    mode: grant.mode as WatchMode,
+    directory: grant.scope_directory,
+    peerScope: grant.scope_peer_scope,
+    ownerActivation: grant.owner_activation,
+    generation: grant.generation,
+    version: grant.parent_task_version,
+  })
+  if (grant.terms_digest !== currentDigest) {
+    throw new LedgerDelegationFailure("not_granted", "the delegation terms changed; the old grant cannot enroll a child")
   }
 
   const fingerprint = canonicalJson([
@@ -877,6 +899,20 @@ export function assertDelegatedCorrectionAuthority(
   ) {
     return { required: true, ok: false, reason: "the source delegation grant no longer covers this child" }
   }
+  const currentDigest = delegationTermsDigest({
+    parentTaskID: source.parent_task_id,
+    parentSessionID: source.parent_session_id,
+    targetSessionID: source.scope_target_session_id,
+    mode: source.mode as WatchMode,
+    directory: source.scope_directory,
+    peerScope: source.scope_peer_scope,
+    ownerActivation: source.owner_activation,
+    generation: source.generation,
+    version: source.parent_task_version,
+  })
+  if (source.terms_digest !== currentDigest) {
+    return { required: true, ok: false, reason: "the delegation or correction terms changed" }
+  }
   const parent = host.taskRow(link.parent_task_id)
   if (
     parent === null ||
@@ -990,6 +1026,7 @@ function grantFromRow(row: DelegationGrantRow): DelegationGrantRecord {
     parentTaskID: row.parent_task_id,
     parentSessionID: row.parent_session_id,
     parentTaskVersion: row.parent_task_version,
+    ownerActivation: row.owner_activation,
     mode: row.mode,
     state: row.state,
     version: row.version,

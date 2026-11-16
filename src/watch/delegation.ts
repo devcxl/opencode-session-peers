@@ -37,6 +37,8 @@ export interface DelegationGrantRecord {
   readonly parentTaskID: string
   readonly parentSessionID: string
   readonly parentTaskVersion: number
+  /** The activation that confirmed the controlled grant. */
+  readonly ownerActivation: string
   readonly mode: WatchMode
   readonly state: DelegationState
   readonly version: number
@@ -400,6 +402,7 @@ export function delegationEnrollmentGate(
     grant.state === "granted" &&
     grant.parentTaskID === parentTask.taskID &&
     grant.parentSessionID === parentTask.targetSessionID &&
+    grant.ownerActivation === parentTask.ownerActivation &&
     grant.generation === parentTask.generation &&
     grant.parentTaskVersion <= parentTask.version
   gates.push(

@@ -120,7 +120,8 @@ tables or the stored schema version closes the ledger); there is no shim,
 fallback store or second authority database.
 
 - `watch_delegation_grants`: `grant_id` PK, parent task/session, reviewed
-  parent version, mode, state/version/generation, concrete target, directory,
+  parent version, confirming owner activation, mode, state/version/generation,
+  concrete target, directory,
   peer scope, optional deployment statement, canonical summary, digest,
   confirmation id, grant/revoke time. A partial unique index allows one active
   grant per parent/target pair.

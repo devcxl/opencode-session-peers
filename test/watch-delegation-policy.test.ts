@@ -52,6 +52,7 @@ function grant(overrides: Partial<DelegationGrantRecord> = {}): DelegationGrantR
     parentTaskID: "task-parent",
     parentSessionID: PARENT,
     parentTaskVersion: 3,
+    ownerActivation: "act-parent",
     mode: "limited-correction",
     state: "granted",
     version: 1,
@@ -140,6 +141,13 @@ describe("delegation enrollment policy", () => {
     )
     expect(stale.allowed).toBe(false)
     expect(stale.stopReason).toBe("grant-stale")
+
+    const anotherOwner = delegationEnrollmentGate(
+      enrollment({ grant: grant({ ownerActivation: "act-other" }) }),
+      request(),
+    )
+    expect(anotherOwner.allowed).toBe(false)
+    expect(anotherOwner.stopReason).toBe("grant-stale")
   })
 
   test("the grant must name this concrete target and this parent task", () => {
