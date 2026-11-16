@@ -173,10 +173,14 @@ task/supervision state, authorization source/mode/version/scope, actual
 correction capability and alerts only after the fresh check. An unauthorized
 child returns identifiers and a reason with `task: null` and `alerts: null`;
 the reader rejects a payload that pairs `authorized: false` with content. The
-ordinary `show` of a delegated child by its parent is refused with
-`E_WATCH_UNSUPPORTED`, and `show` without a task id returns the session's own
-target task. `src/tui/watch-delegation.ts` renders the same boundary without
-touching the shared panel skeleton.
+delegation reader reuses the existing full task/capability/controls/alerts
+validators from `watch/contract.ts`; it does not shallow-cast or accept unknown
+keys. It also rejects `authorized` disagreeing with `authorization.allowed`,
+and a nested task whose `taskID`/`targetSessionID`/`initiatorSessionID` does not
+match the outer child. The ordinary `show` of a delegated child by its parent
+is refused with `E_WATCH_UNSUPPORTED`, and `show` without a task id returns the
+session's own target task. `src/tui/watch-delegation.ts` renders the same
+boundary without touching the shared panel skeleton.
 
 ## Server wiring
 
@@ -233,9 +237,10 @@ Targeted red/green:
   not a delegation, downgrade retaining spent facts, receipt after revoke and
   scope change with no permit, missing guard fail-closed, self-task receipt
   permit regression).
-- `test/watch-delegation-contract.test.ts`: 9 pass (strict readers, no
-  consent/checked/nonce in normal view, no content on unauthorized view, RPC
-  parse/deployment/revoke shape).
+- `test/watch-delegation-contract.test.ts`: 12 pass (strict readers reuse the
+  full task/capability/controls/alerts validators; malformed nested task/
+  alerts/authorization rejected; no consent/checked/nonce in normal view, no
+  content on unauthorized view, RPC parse/deployment/revoke shape).
 - `test/watch-delegation-entry.test.ts`: 6 pass (plugin setup/FakeHost:
   controlled grant, public delegate, child begin/waiting, parent view, revoke,
   only-child report/receipt, model grant refusal, non-self reserved fields,
