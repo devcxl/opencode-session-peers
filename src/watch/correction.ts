@@ -12,6 +12,7 @@ import {
   WATCH_MIN_SQLITE,
   isCorrectionAttemptOpen,
   watchCorrectionAttemptAnchor,
+  type WatchCorrectionAttemptRecord,
   type WatchCorrectionGateView,
   type WatchCorrectionPolicy,
   type WatchCorrectionSnapshot,
@@ -59,9 +60,12 @@ export interface CorrectionGateInput {
 export interface CorrectionPolicyFacts {
   readonly used: number
   readonly limit: number
+  /** The current round's effective observation, used for display and a new episode. */
   readonly observationMs: number
+  /** The current round's effective window, used for display and a new episode. */
   readonly windowMs: number
   readonly lastAttemptAt: number | null
+  /** The true previous attempt's persisted cooldown boundary, not the own reservation's. */
   readonly observationEndsAt: number | null
   /** First attempt of the active continuous problem, or null before it starts. */
   readonly windowStartedAt: number | null
@@ -96,18 +100,17 @@ function evaluate(input: CorrectionGateInput, verified: readonly string[]): Corr
   const history = snapshot.attempts.filter((attempt) => attempt.reservationID !== input.ignoreAttemptID)
   const open = history.find(isCorrectionAttemptOpen)
   const used = history.length
-  const lastAttemptAt = history.reduce<number | null>(
-    (latest, attempt) => {
-      const anchor = watchCorrectionAttemptAnchor(attempt)
-      return latest === null || anchor > latest ? anchor : latest
-    },
+  const prior = history.reduce<WatchCorrectionAttemptRecord | null>(
+    (latest, attempt) => (latest === null || attempt.ordinal > latest.ordinal ? attempt : latest),
     null,
   )
+  const lastAttemptAt = prior === null ? null : watchCorrectionAttemptAnchor(prior)
   const episode = snapshot.episode
-  const observationMs =
-    episode?.observationMs ?? snapshot.lastAttemptPolicy?.observationMs ?? policy.observationMs
+  const observationMs = episode?.observationMs ?? policy.observationMs
+  const cooldownObservationMs = prior?.episodePolicy?.observationMs ?? policy.observationMs
   const windowMs = episode?.windowMs ?? policy.windowMs
-  const observationEndsAt = lastAttemptAt === null ? null : lastAttemptAt + observationMs
+  const observationEndsAt =
+    lastAttemptAt === null ? null : lastAttemptAt + cooldownObservationMs
   const windowStartedAt = episode?.startedAt ?? null
   const windowEndsAt = episode?.deadlineAt ?? null
   const policyFacts: CorrectionPolicyFacts = {
@@ -234,7 +237,7 @@ function evaluate(input: CorrectionGateInput, verified: readonly string[]): Corr
       gates,
       {
         reason: "post-attempt-observation",
-        missingEvidence: `the last attempt must be observed for ${observationMs} ms before another`,
+        missingEvidence: `the last attempt must be observed for ${cooldownObservationMs} ms before another`,
       },
       policyFacts,
     )

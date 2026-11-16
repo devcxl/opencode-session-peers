@@ -2632,13 +2632,6 @@ class SqliteWatchLedger implements WatchLedger {
                 observationMs: previous.episode_observation_ms,
                 windowMs: previous.episode_window_ms,
               },
-        lastAttemptPolicy:
-          previous === null
-            ? null
-            : {
-                observationMs: previous.episode_observation_ms,
-                windowMs: previous.episode_window_ms,
-              },
         sessionUnresolved: unresolved !== null,
       }
     })
@@ -3122,6 +3115,10 @@ function correctionAttemptFromRow(row: CorrectionAttemptRow | null): WatchCorrec
     ...(row.closed_at === null ? {} : { closedAt: row.closed_at }),
     ...(row.closed_reason === null ? {} : { closedReason: row.closed_reason }),
     ...(row.stop_reason === null ? {} : { stopReason: parseCorrectionStopReason(row.stop_reason) }),
+    episodePolicy: {
+      observationMs: row.episode_observation_ms,
+      windowMs: row.episode_window_ms,
+    },
   }
 }
 

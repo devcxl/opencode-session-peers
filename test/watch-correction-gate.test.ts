@@ -49,7 +49,6 @@ const snapshot: WatchCorrectionSnapshot = {
   },
   attempts: [],
   episode: null,
-  lastAttemptPolicy: null,
   sessionUnresolved: false,
 }
 
@@ -361,7 +360,11 @@ describe("bounded automatic-attempt policy", () => {
   })
 
   test("a window shorter than the observation expires once instead of being silently extended", () => {
-    const first = attempt({ reservationID: "attempt-1", ordinal: 1 })
+    const first = attempt({
+      reservationID: "attempt-1",
+      ordinal: 1,
+      episodePolicy: { observationMs: 600_000, windowMs: 300_000 },
+    })
     const short = {
       ...snapshot,
       attempts: [first],
@@ -408,13 +411,13 @@ describe("bounded automatic-attempt policy", () => {
           : {}),
         closedAt: 1_020,
         closedReason,
+        episodePolicy: { observationMs: 600_000, windowMs: 1_200_000 },
       })
       const closedAt = closed.closedAt ?? 1_020
       const snapshotAfterClose = {
         ...snapshot,
         attempts: [closed],
         episode: null,
-        lastAttemptPolicy: { observationMs: 600_000, windowMs: 1_200_000 },
       }
       const tooSoon = correctionGate(
         eligibleInput({
@@ -426,7 +429,7 @@ describe("bounded automatic-attempt policy", () => {
       expect(tooSoon.eligible).toBe(false)
       expect(tooSoon.stopReason).toBe("post-attempt-observation")
       expect(tooSoon.policy).toMatchObject({
-        observationMs: 600_000,
+        observationMs: 300_000,
         windowMs: 2_400_000,
         observationEndsAt: 601_020,
         windowStartedAt: null,
@@ -443,6 +446,51 @@ describe("bounded automatic-attempt policy", () => {
       expect(atPersistedBoundary.eligible).toBe(true)
       expect(atPersistedBoundary.policy.observationEndsAt).toBe(601_020)
     }
+  })
+
+  test("the own reservation does not reapply the new episode policy to the prior attempt's cooldown", () => {
+    const prior = attempt({
+      reservationID: "attempt-prior",
+      ordinal: 1,
+      phase: "recovered",
+      receiptAt: 1_010,
+      receiptPermitAt: 1_010,
+      recoveredAt: 1_020,
+      recoveryReportID: "prior-report",
+      recoveryReference: "prior-result",
+      closedAt: 1_020,
+      closedReason: "recovered",
+      episodePolicy: { observationMs: 300_000, windowMs: 1_200_000 },
+    })
+    const own = attempt({
+      reservationID: "attempt-own",
+      ordinal: 2,
+      phase: "reserved",
+      reservedAt: 301_020,
+      abortedAt: undefined,
+      episodePolicy: { observationMs: 600_000, windowMs: 1_200_000 },
+    })
+    const snapshotWithOwn = {
+      ...snapshot,
+      attempts: [prior, own],
+      episode: {
+        startedAt: 301_020,
+        deadlineAt: 1_501_020,
+        observationMs: 600_000,
+        windowMs: 1_200_000,
+      },
+    }
+    const atOldBoundary = correctionGate(
+      eligibleInput({
+        snapshot: snapshotWithOwn,
+        now: 301_020,
+        ignoreAttemptID: "attempt-own",
+        policy: { observationMs: 600_000, windowMs: 1_200_000 },
+      }),
+    )
+    expect(atOldBoundary.eligible).toBe(true)
+    expect(atOldBoundary.policy.observationEndsAt).toBe(301_020)
+    expect(atOldBoundary.policy.observationMs).toBe(600_000)
   })
 
   test("a normal-wait closure ends the episode; a cleared wait may start a new one with remaining quota", () => {
