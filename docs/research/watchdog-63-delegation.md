@@ -112,9 +112,9 @@ the receipt is recorded as **seen without a continue permit**, not as a
 successful receipt. A delegated task with no wired authority guard is refused
 the permit (never fail-open); a self-enrolled task keeps the #61 synchronous
 behavior and needs no delegation check. `actions/watch.ts` awaits that receipt
-call. The parent wires the same helper at the executor's precheck and
-post-reserve/pre-claim recheck; the ledger's internal check still guards any
-race between the helper and the claim.
+call. The executor awaits the same helper before its pre-reserve gate and again
+after reserve before claim; the ledger's internal check still guards any race
+between the helper and the claim.
 
 Known race, stated honestly: the final host-fact check and host enqueue are
 not one transaction. The ledger prevents a new reservation/claim/permit based
@@ -163,7 +163,7 @@ ordinary `show` of a delegated child by its parent is refused with
 target task. `src/tui/watch-delegation.ts` renders the same boundary without
 touching the shared panel skeleton.
 
-## Wiring seams for the parent
+## Server wiring
 
 - `createDelegationAuthority({ ledger, sessions, scopeOf, activationID,
   closing, now })` returns `check(taskID)` and `facts(sessionID)`. The watch
@@ -176,13 +176,21 @@ touching the shared panel skeleton.
 - `WatchApplication.delegate`, `prepareDelegationGrant`,
   `confirmDelegationGrant`, `revokeDelegationGrant`, `delegationView` and
   `checkDelegatedAuthority` are the application entries.
-- Action `delegate` and non-self `enroll` cases call `delegate`; the
-  `watchDelegation`/`watchDelegationView` RPC handlers live in
-  `src/actions/watch-delegation-rpc.ts`; `src/rpc.ts` and `src/index.ts` still
-  need the parent's public wiring.
-- Executor seam: call `await watch.checkDelegatedAuthority(taskID)` after every
-  fresh observation/lookups and before claim; a `required && !allowed` result
-  aborts the reservation without sending. The ledger repeats the durable check.
+- `src/index.ts` creates the scope reader and a delegation-authority factory
+  with the application's own ledger, and registers both sibling RPC methods.
+- `src/rpc.ts` exports the delegation readers/types and registers
+  `watchDelegation` and `watchDelegationView`.
+- `src/actions/watch.ts` routes `delegate` and non-self `enroll` through the
+  reserved `taskID`/`targetSessionID`/`requestId`/`goal`/`mode`/
+  `expectedVersion` fields; the model cannot call the grant/confirm RPC.
+- `src/watch/executor.ts` has an optional
+  `checkDelegatedAuthority?: (taskID) => Promise<{required, allowed}>`.
+  `CorrectionExecutorAuthority.isDelegatedTask(taskID)` lets it fail closed if
+  the hook is missing. The hook runs before the pre-reserve gate and again
+  after reserve before claim; all observations used afterward are re-sampled,
+  and closing/task version are re-read after each await. A `required &&
+  !allowed` result aborts without sending; the ledger repeats the durable
+  check.
 
 ## Evidence
 
@@ -195,22 +203,30 @@ Targeted red/green:
 - `test/watch-delegation-policy.test.ts`: 22 pass (direct child, wrong/absent
   parent, grandchild, cross-location/scope, revoked, mode cap, recursion,
   owner/version, completed/late/busy child, closing, digest text/owner/version).
-- `test/watch-delegation-ledger.test.ts`: 9 pass (real SQLite, derived grant,
-  independent children, idempotent request, revoked source, reserve/claim
-  refusal with attempt facts retained, accepted/unknown facts retained, and
-  pause-before-receipt seen/no permit).
+- `test/watch-delegation-ledger.test.ts`: 10 pass (real SQLite, derived grant,
+  independent children, idempotent request and scope-provenance idempotency,
+  revoked source, reserve/claim refusal with attempt facts retained,
+  accepted/unknown facts retained, and pause-before-receipt seen/no permit).
 - `test/watch-delegation-authority.test.ts`: 9 pass (self task, fresh allow,
   revoke/pause/scope/parentID/child deletion, configured-scope source,
   revoke-during-read, closing-during-read).
-- `test/watch-delegation-service.test.ts`: 13 pass (prepare/confirm/delegate/
-  view/revoke, wrong parent/scope, revoke before delegate, own-show preference,
-  parent-as-child refusal, redacted control, completed-child read, completed
-  repeat idempotency, parent correction grant not a delegation, receipt after
-  revoke and scope change with no permit, missing guard fail-closed, self-task
-  receipt permit regression).
+- `test/watch-delegation-service.test.ts`: 16 pass (prepare/confirm/delegate/
+  view/revoke, wrong parent/scope, confirm fresh parentID/scope/deletion
+  refuses without consuming the nonce, revoke before delegate, own-show
+  preference, parent-as-child report/receipt refusal, redacted control,
+  completed-child read, completed repeat idempotency, parent correction grant
+  not a delegation, receipt after revoke and scope change with no permit,
+  missing guard fail-closed, self-task receipt permit regression).
 - `test/watch-delegation-contract.test.ts`: 9 pass (strict readers, no
   consent/checked/nonce in normal view, no content on unauthorized view, RPC
   parse/deployment/revoke shape).
+- `test/watch-delegation-entry.test.ts`: 6 pass (plugin setup/FakeHost:
+  controlled grant, public delegate, child begin/waiting, parent view, revoke,
+  only-child report/receipt, model grant refusal, non-self reserved fields,
+  one real queue and child receipt permit, revoke-before-receipt no permit).
+- `test/watch-delegation-executor.test.ts`: 3 pass (source revoke during
+  pre-reserve authority await, revoke after reserve before claim, unknown
+  delivery retained and not replayed after revoke).
 - `test/tui-watch-delegation.test.ts`: 4 pass (authorized rows, unauthorized
   redaction, revoked grant notes, failure tone).
 - `test/watch-delegation-policy.test.ts` and `test/watch-delegation-ledger.test.ts`

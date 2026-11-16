@@ -46,11 +46,23 @@
  *   task/capability/controls, observation/activity snapshots (nullable), and a
  *   required bounded alerts view with availability, counts and retained history.
  *   `report` stays on the tool path because it must carry the host-supplied calling session. Correction,
- *   delegation, transfer and resume are not part of this method: this build
- *   refuses them on the tool path rather than pretending to accept them. A
- *   separate private `watchGrant` method is the controlled-surface prepare/
- *   confirm/downgrade path; the same-OS-user boundary still applies, and the
- *   deployment declaration is not authentication.
+ *   transfer and resume are not part of this method. A separate private
+ *   `watchGrant` method is the controlled correction prepare/confirm/downgrade
+ *   path. Direct-child delegation has its own sibling methods:
+ *
+ *   method `watchDelegation`, input `{ operation: "prepare" | "confirm" | "revoke",
+ *   sessionID, parentTaskID, expectedVersion, targetSessionID?, mode?,
+ *   deployment?, challenge?, generation?, termsDigest?, scopeDirectory?,
+ *   scopePeerScope? }`, output `WatchDelegationGrantPayload`. The challenge is
+ *   returned only by prepare; confirm consumes it; revoke keeps history.
+ *
+ *   method `watchDelegationView`, input `{ sessionID, parentTaskID }`, output
+ *   `WatchDelegationViewPayload`: grants and direct children. An unauthorized
+ *   child carries no goal, report or alert content.
+ *
+ *   The same-OS-user boundary still applies to all three controlled methods;
+ *   the deployment declaration is not authentication and a challenge is not
+ *   human proof.
  *
  *   event `changed`, data `{ at: number }`: the roster this definition's handler
  *   answers from may have changed, so a reader should take a fresh snapshot.
