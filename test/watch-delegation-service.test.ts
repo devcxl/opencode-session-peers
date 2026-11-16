@@ -304,6 +304,62 @@ describeService("delegation application", () => {
     }
   })
 
+  test("a parent's own correction grant does not authorize delegation", async () => {
+    const h = harness({ withAuthority: true })
+    try {
+      const parent = enrollParent(h.app)
+      const began = h.app.report({
+        callerSessionID: PARENT,
+        taskID: parent.taskID,
+        expectedVersion: parent.version,
+        reportID: "parent-begin",
+        kind: "begin",
+        evidence: {},
+      })
+      if (!began.ok || began.task === null) throw new Error("begin failed")
+      const prepared = h.ledger.prepareCorrectionGrant({
+        taskId: parent.taskID,
+        callerSessionId: PARENT,
+        ownerActivation: OWNER,
+        expectedVersion: began.task.version,
+        reviewSummary: WATCH_CORRECTION_TERMS,
+        deployment: "single-host-same-location",
+        at: 2_000,
+      })
+      if (!prepared.ok) throw new Error(prepared.code)
+      const confirmed = h.ledger.confirmCorrectionGrant({
+        challenge: prepared.value.challenge,
+        taskId: parent.taskID,
+        callerSessionId: PARENT,
+        ownerActivation: OWNER,
+        expectedVersion: prepared.value.expectedVersion,
+        generation: prepared.value.generation,
+        termsDigest: prepared.value.termsDigest,
+        deployment: "single-host-same-location",
+        at: 2_001,
+      })
+      if (!confirmed.ok) throw new Error(confirmed.code)
+      expect(confirmed.value.task.mode).toBe("limited-correction")
+
+      const attempted = await h.app.delegate({
+        callerSessionID: PARENT,
+        parentTaskID: parent.taskID,
+        targetSessionID: CHILD,
+        requestID: "from-correction-only",
+        goal: "Delegate without a delegation grant",
+        mode: "limited-correction",
+        expectedVersion: confirmed.value.task.version,
+      })
+      expect(attempted.ok).toBe(false)
+      expect(attempted.failure?.code).toBe("E_WATCH_UNSUPPORTED")
+      expect(await h.app.delegationView({ sessionID: PARENT, parentTaskID: parent.taskID })).toMatchObject({
+        children: [],
+      })
+    } finally {
+      h.close()
+    }
+  })
+
   test("a repeat delegation request after completion returns the same task without a new wake", async () => {
     const h = harness({ withAuthority: true })
     try {
