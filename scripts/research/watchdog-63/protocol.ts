@@ -80,8 +80,6 @@ export interface SessionCounts {
   readonly assistant: number
   readonly correctionUsers: number
   readonly synthetic: number
-  /** Host subagent completion notices such as `<subagent ...>`; not a plugin wake. */
-  readonly subagentNotifications: number
 }
 
 export interface CountableMessage {
@@ -94,7 +92,6 @@ export function countMessages(messages: readonly CountableMessage[]): SessionCou
   let assistant = 0
   let correctionUsers = 0
   let synthetic = 0
-  let subagentNotifications = 0
   for (const message of messages) {
     if (message.type === "user") {
       user += 1
@@ -103,11 +100,69 @@ export function countMessages(messages: readonly CountableMessage[]): SessionCou
       assistant += 1
     }
     if (message.type === "synthetic") synthetic += 1
-    if (typeof message.text === "string" && message.text.includes("<subagent")) subagentNotifications += 1
   }
-  return { user, assistant, correctionUsers, synthetic, subagentNotifications }
+  return { user, assistant, correctionUsers, synthetic }
 }
 
 export function isCorrectionUser(message: CountableMessage): boolean {
   return message.type === "user" && typeof message.text === "string" && message.text.includes(CORRECTION_PREFIX)
+}
+
+
+export interface MetadataMessage {
+  readonly type?: string
+  readonly text?: string
+  readonly metadata?: Readonly<Record<string, unknown>>
+}
+
+export interface NativeReportCounts {
+  /** Synthetic child-completion reports whose metadata and tag both name this child. */
+  readonly nativeHostReports: number
+  /** Other synthetic messages, including a report for another child. */
+  readonly otherSynthetic: number
+  /** A source/child metadata match whose text tag or child id is inconsistent. */
+  readonly invalidNativeReports: number
+}
+
+export type NativeReportKind = "native" | "other" | "invalid"
+
+/**
+ * Classify a child-completion report by the public metadata and tag. A
+ * `<subagent>` text alone is not enough: the source and childID must match and
+ * the tag must name the same child. Anything inconsistent is invalid, never
+ * silently exempted.
+ */
+export function classifyNativeSubagentReport(
+  message: MetadataMessage,
+  expectedChildID: string,
+): NativeReportKind {
+  if (message.type !== "synthetic") return "other"
+  const metadata = message.metadata
+  if (metadata === undefined || metadata["source"] !== "subagent" || metadata["childID"] !== expectedChildID) {
+    return "other"
+  }
+  const text = typeof message.text === "string" ? message.text : ""
+  const taggedChild = /<subagent\b[^>]*\bsessionID="([^"]+)"/.exec(text)?.[1]
+  return taggedChild === expectedChildID ? "native" : "invalid"
+}
+
+export function countNativeSubagentReports(
+  messages: readonly MetadataMessage[],
+  expectedChildID: string | null,
+): NativeReportCounts {
+  let nativeHostReports = 0
+  let otherSynthetic = 0
+  let invalidNativeReports = 0
+  for (const message of messages) {
+    if (message.type !== "synthetic") continue
+    if (expectedChildID === null) {
+      otherSynthetic += 1
+      continue
+    }
+    const kind = classifyNativeSubagentReport(message, expectedChildID)
+    if (kind === "native") nativeHostReports += 1
+    else if (kind === "invalid") invalidNativeReports += 1
+    else otherSynthetic += 1
+  }
+  return { nativeHostReports, otherSynthetic, invalidNativeReports }
 }

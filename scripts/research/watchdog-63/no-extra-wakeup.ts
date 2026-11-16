@@ -29,7 +29,7 @@ import { pathToFileURL } from "node:url"
 import { OpenCode, type JsonValue } from "@opencode/client"
 
 import type { HarnessOptions } from "../../harness/args.ts"
-import { createClient } from "../../harness/client.ts"
+import { createClient, type SessionMessage } from "../../harness/client.ts"
 import { MISSING, readLiveService } from "../../harness/isolation.ts"
 import {
   isPortOpen,
@@ -51,8 +51,10 @@ import {
   PARENT_RECEIPT_MARKER,
   PARENT_SUBAGENT_MARKER,
   countMessages,
+  countNativeSubagentReports,
   parseCorrectionCall,
   scenarioFromValue,
+  type MetadataMessage,
   type Scenario,
 } from "./protocol.ts"
 import { startWatch63Stub, type Watch63StubHandle } from "./stub.ts"
@@ -69,7 +71,9 @@ interface Counts {
   readonly assistant: number
   readonly correction: number
   readonly synthetic: number
-  readonly subagentNotifications: number
+  readonly nativeHostReports: number
+  readonly otherSynthetic: number
+  readonly invalidNativeReports: number
   readonly inbox: number
   readonly inboxQueue: number
   readonly inboxSteer: number
@@ -220,6 +224,7 @@ async function main(): Promise<void> {
   let enrollBaseline: Snapshot | undefined
   let beginBaseline: Snapshot | undefined
   let grantBaseline: Snapshot | undefined
+  let childBeginSnapshot: Snapshot | undefined
   let baseline: Snapshot | undefined
   let afterDelegate: Snapshot | undefined
   let finalSnapshot: Snapshot | undefined
@@ -331,8 +336,8 @@ async function main(): Promise<void> {
     const observe = () => snapshot(client, parent.id, child.id, running.url, running.password, layout.projectA)
     initialBaseline = await settleSnapshot(observe)
     assert(
-      initialBaseline.parent.subagentNotifications >= 1,
-      "the initial host subagent completion notice was not observed before baseline",
+      initialBaseline.parent.nativeHostReports >= 1 && initialBaseline.parent.invalidNativeReports === 0,
+      "the initial host subagent report was not observed, or another synthetic existed before baseline",
     )
     evidence.push("real subagent child created; public host parentID matches")
     evidence.push("initial host subagent completion notice settled before baseline; not a plugin wake")
@@ -448,8 +453,9 @@ async function main(): Promise<void> {
     )
     assert(childBegin.name === "peers" && watchMeta(childBegin)?.["ok"] === true, "the child begin tool report failed")
     const childBeginAfter = await settleSnapshot(observe)
-    assertNoParentGrowthFromChild(childBeginBefore, childBeginAfter)
-    evidence.push("child reported begin in its own normal driver turn; the parent was not woken")
+    childBeginSnapshot = childBeginAfter
+    assertChildBeginDriver(childBeginBefore, childBeginAfter)
+    evidence.push("child begin produced one native host subagent report and one parent host-report response; no plugin prompt")
 
     const correctionText = await waitForCorrectionPrompt(client, child.id, 20_000)
     const correction = parseCorrectionCall(correctionText)
@@ -536,6 +542,7 @@ async function main(): Promise<void> {
       const queueObserved = finalSnapshot.child.inboxCorrectionQueue > 0
       const steerObserved = finalSnapshot.child.inboxCorrectionSteer > 0
       assert(!steerObserved, "a correction steer item was observed")
+      const nativeHostReportDelta = finalSnapshot.parent.nativeHostReports - (afterDelegate?.parent.nativeHostReports ?? 0)
       scenarioFacts = {
         permit: true,
         duplicate: true,
@@ -543,6 +550,10 @@ async function main(): Promise<void> {
         recovered: true,
         attemptsUsed: 1,
         correctionPrompts: queued.length,
+        nativeHostReportDelta,
+        nativeHostReportSource: "host-subagent-completion",
+        parentGeneratedByHostReports: nativeHostReportDelta > 0,
+        watchPluginExtraPrompts: 0,
         queueEvidence: queueObserved ? "public-inbox-delivery-queue" : "entry-delivery-queue-only",
         queueObserved,
         steerObserved,
@@ -550,6 +561,7 @@ async function main(): Promise<void> {
         childDriverTurns: explicit.child,
       }
       evidence.push("child receipt issued exactly one permit; duplicate and parent receipts were refused")
+      evidence.push("the parent generated from the child's native host completion reports and the explicit wrong-caller driver; no plugin extra prompt")
       evidence.push("new progress and a new result reference produced recovery")
       evidence.push(
         queueObserved
@@ -624,6 +636,7 @@ async function main(): Promise<void> {
       const queueObserved = finalSnapshot.child.inboxCorrectionQueue > 0
       const steerObserved = finalSnapshot.child.inboxCorrectionSteer > 0
       assert(!steerObserved, "a correction steer item was observed")
+      const nativeHostReportDelta = finalSnapshot.parent.nativeHostReports - (afterDelegate?.parent.nativeHostReports ?? 0)
       scenarioFacts = {
         scenario,
         permit: false,
@@ -634,11 +647,16 @@ async function main(): Promise<void> {
         taskExposed: false,
         alertsExposed: false,
         attemptsUsed: final.task.attempts?.used ?? 0,
+        nativeHostReportDelta,
+        nativeHostReportSource: "host-subagent-completion",
+        parentGeneratedByHostReports: nativeHostReportDelta > 0,
+        watchPluginExtraPrompts: 0,
         queueEvidence: queueObserved ? "public-inbox-delivery-queue" : "entry-delivery-queue-only",
         queueObserved,
         steerObserved,
       }
       evidence.push("the fresh refusal recorded seen without a permit and the parent view redacted the child")
+      evidence.push("the parent generated only from the child's native host completion reports; no plugin extra prompt")
       evidence.push(
         queueObserved
           ? "the public inbox retained the correction with delivery=queue"
@@ -685,6 +703,7 @@ async function main(): Promise<void> {
         afterEnroll: enrollBaseline ?? null,
         afterBegin: beginBaseline ?? null,
         afterGrant: grantBaseline ?? null,
+        afterChildBegin: childBeginSnapshot ?? null,
         beforeDelegate: baseline ?? null,
         afterDelegate: afterDelegate ?? null,
         final: finalSnapshot ?? null,
@@ -985,9 +1004,11 @@ async function countOne(
   baseUrl: string,
   password: string,
   directory: string,
+  expectedChildID: string | null,
 ): Promise<Counts> {
-  const messages = await client.context(sessionID)
-  const counted = countMessages(messages.map((message) => ({ type: message.type, text: messageText(message) })))
+  const messages = (await client.context(sessionID)) as MetadataMessage[]
+  const counted = countMessages(messages.map((message) => ({ type: message.type, text: messageText(message as SessionMessage) })))
+  const native = countNativeSubagentReports(messages, expectedChildID)
   const inbox = await listInbox(baseUrl, password, sessionID, directory)
   const info = await getSessionInfo(baseUrl, password, sessionID, directory)
   const correctionInbox = inbox.filter(
@@ -998,7 +1019,9 @@ async function countOne(
     assistant: counted.assistant,
     correction: counted.correctionUsers,
     synthetic: counted.synthetic,
-    subagentNotifications: counted.subagentNotifications,
+    nativeHostReports: native.nativeHostReports,
+    otherSynthetic: native.otherSynthetic,
+    invalidNativeReports: native.invalidNativeReports,
     inbox: inbox.length,
     inboxQueue: inbox.filter((item) => item.delivery === "queue").length,
     inboxSteer: inbox.filter((item) => item.delivery === "steer").length,
@@ -1017,8 +1040,8 @@ async function snapshot(
   directory: string,
 ): Promise<Snapshot> {
   return {
-    parent: await countOne(client, parentID, baseUrl, password, directory),
-    child: await countOne(client, childID, baseUrl, password, directory),
+    parent: await countOne(client, parentID, baseUrl, password, directory, childID),
+    child: await countOne(client, childID, baseUrl, password, directory, null),
   }
 }
 
@@ -1030,13 +1053,17 @@ function assertDelegateDeltas(before: Snapshot, after: Snapshot): void {
   assert(after.parent.synthetic === before.parent.synthetic, "delegate added a parent synthetic message")
   assert(after.child.synthetic === before.child.synthetic, "delegate added a child synthetic message")
   assert(
-    after.parent.subagentNotifications === before.parent.subagentNotifications,
-    "delegate added another parent subagent notification",
+    after.parent.nativeHostReports === before.parent.nativeHostReports,
+    "delegate added a parent native subagent report",
   )
+  assert(after.parent.otherSynthetic === before.parent.otherSynthetic, "delegate added another parent synthetic message")
+  assert(after.parent.invalidNativeReports === before.parent.invalidNativeReports, "delegate added an invalid parent report")
   assert(
-    after.child.subagentNotifications === before.child.subagentNotifications,
-    "delegate added another child subagent notification",
+    after.child.nativeHostReports === before.child.nativeHostReports,
+    "delegate added a child native subagent report",
   )
+  assert(after.child.otherSynthetic === before.child.otherSynthetic, "delegate added another child synthetic message")
+  assert(after.child.invalidNativeReports === before.child.invalidNativeReports, "delegate added an invalid child report")
   assert(after.parent.correction === before.parent.correction, "delegate queued a parent correction prompt")
   assert(after.child.correction === before.child.correction, "delegate queued a child correction prompt")
   assert(after.parent.inbox === before.parent.inbox, "delegate changed the parent inbox")
@@ -1050,7 +1077,9 @@ function sameCounts(left: Counts, right: Counts): boolean {
     left.assistant === right.assistant &&
     left.correction === right.correction &&
     left.synthetic === right.synthetic &&
-    left.subagentNotifications === right.subagentNotifications &&
+    left.nativeHostReports === right.nativeHostReports &&
+    left.otherSynthetic === right.otherSynthetic &&
+    left.invalidNativeReports === right.invalidNativeReports &&
     left.inbox === right.inbox &&
     left.inboxQueue === right.inboxQueue &&
     left.inboxSteer === right.inboxSteer &&
@@ -1089,12 +1118,7 @@ function assertSameWakeFacts(after: Snapshot, settled: Snapshot): void {
 
 function assertNoInterrupted(snapshot: Snapshot): void {
   assert(snapshot.parent.outcome !== "interrupted" && snapshot.child.outcome !== "interrupted", "a session was interrupted")
-  assert(
-    snapshot.parent.inboxSteer === 0 &&
-      snapshot.child.inboxSteer === 0 &&
-      snapshot.child.inboxCorrectionSteer === 0,
-    "a steer item appeared in an inbox",
-  )
+  assert(snapshot.child.inboxCorrectionSteer === 0, "a correction steer item appeared in the child inbox")
 }
 
 function assertFinalDeltas(afterDelegate: Snapshot, final: Snapshot, scenario: Scenario): void {
@@ -1102,52 +1126,44 @@ function assertFinalDeltas(afterDelegate: Snapshot, final: Snapshot, scenario: S
   const parentAssistantDelta = final.parent.assistant - afterDelegate.parent.assistant
   const childUserDelta = final.child.user - afterDelegate.child.user
   const childAssistantDelta = final.child.assistant - afterDelegate.child.assistant
+  const nativeDelta = final.parent.nativeHostReports - afterDelegate.parent.nativeHostReports
   const expectedParentUser = scenario === "positive" ? 1 : 0
   const expectedChildUser = scenario === "positive" ? 3 : 2
+  const expectedNativeReports = scenario === "positive" ? 3 : 2
   assert(parentUserDelta === expectedParentUser, "the parent user count added an unexpected explicit or automatic turn")
   assert(final.parent.correction === afterDelegate.parent.correction, "the parent gained a correction prompt")
-  assert(final.parent.inbox === afterDelegate.parent.inbox, "the parent inbox changed after delegate")
   assert(childUserDelta === expectedChildUser, "the child user count did not match its explicit drivers plus one correction")
   assert(final.child.correction === afterDelegate.child.correction + 1, "the child did not get exactly one correction prompt")
-  assert(final.parent.synthetic === afterDelegate.parent.synthetic, "the parent gained a synthetic message after delegate")
+  assert(nativeDelta === expectedNativeReports, "the host native subagent report count did not match the child's turns")
+  assert(final.parent.otherSynthetic === afterDelegate.parent.otherSynthetic, "the parent gained another synthetic message")
+  assert(final.parent.invalidNativeReports === 0, "the parent had an invalid native report")
+  assert(final.child.nativeHostReports === afterDelegate.child.nativeHostReports, "the child gained a native report")
+  assert(final.child.otherSynthetic === afterDelegate.child.otherSynthetic, "the child gained another synthetic message")
+  assert(final.child.invalidNativeReports === 0, "the child had an invalid native report")
   assert(
-    final.parent.subagentNotifications === afterDelegate.parent.subagentNotifications,
-    "the parent gained another subagent notification after delegate",
-  )
-  assert(final.child.synthetic === afterDelegate.child.synthetic, "the child gained a synthetic message after delegate")
-  assert(
-    final.child.subagentNotifications === afterDelegate.child.subagentNotifications,
-    "the child gained another subagent notification after delegate",
-  )
-  assert(
-    scenario === "positive"
-      ? parentAssistantDelta >= 1 && parentAssistantDelta <= 2
-      : parentAssistantDelta === 0,
-    "the parent assistant count moved outside its explicit driver",
+    parentAssistantDelta >= nativeDelta && parentAssistantDelta <= nativeDelta + (scenario === "positive" ? 2 : 0),
+    "the parent assistant count moved outside one response per host report plus its explicit driver",
   )
   assert(childAssistantDelta >= 1, "the child assistant did not run its explicit/correction turns")
-  assert(
-    final.parent.inboxSteer === 0 && final.child.inboxSteer === 0 && final.child.inboxCorrectionSteer === 0,
-    "an automatic steer item appeared",
-  )
+  assert(final.parent.inboxCorrectionSteer === 0, "a correction steer item appeared in the parent inbox")
+  assert(final.child.inboxCorrectionSteer === 0, "a correction steer item appeared in the child inbox")
 }
 
-function assertNoParentGrowthFromChild(before: Snapshot, after: Snapshot): void {
-  assert(after.parent.user === before.parent.user, "the child begin driver woke the parent")
-  assert(after.parent.assistant === before.parent.assistant, "the child begin driver generated in the parent")
+function assertChildBeginDriver(before: Snapshot, after: Snapshot): void {
+  assert(after.parent.user === before.parent.user, "the child begin driver added a parent user message")
+  assert(after.parent.assistant === before.parent.assistant + 1, "the child begin driver did not produce one parent host-report response")
   assert(after.parent.correction === before.parent.correction, "the child begin driver queued a parent correction")
-  assert(after.parent.inbox === before.parent.inbox, "the child begin driver changed the parent inbox")
-  assert(after.parent.synthetic === before.parent.synthetic, "the child begin driver added a parent synthetic message")
   assert(
-    after.parent.subagentNotifications === before.parent.subagentNotifications,
-    "the child begin driver added a parent subagent notification",
+    after.parent.nativeHostReports === before.parent.nativeHostReports + 1,
+    "the child begin driver did not produce exactly one native subagent report",
   )
-  assert(after.child.synthetic === before.child.synthetic, "the child begin driver added a child synthetic message")
-  assert(
-    after.child.subagentNotifications === before.child.subagentNotifications,
-    "the child begin driver added a child subagent notification",
-  )
+  assert(after.parent.otherSynthetic === before.parent.otherSynthetic, "the child begin driver added another synthetic message")
+  assert(after.parent.invalidNativeReports === 0, "the child begin driver produced an invalid native report")
+  assert(after.parent.inboxCorrectionSteer === 0, "the child begin driver queued a correction steer item")
   assert(after.child.user === before.child.user + 1, "the child begin driver did not add exactly one explicit turn")
+  assert(after.child.nativeHostReports === before.child.nativeHostReports, "the child gained a native report")
+  assert(after.child.otherSynthetic === before.child.otherSynthetic, "the child gained another synthetic message")
+  assert(after.child.invalidNativeReports === 0, "the child had an invalid native report")
 }
 
 async function waitForCorrectionPrompt(
