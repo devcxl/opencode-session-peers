@@ -60,9 +60,10 @@ Optional: `WATCH61_OPENCODE_BIN=/path/to/opencode` and
    filesystem cannot be established, the runtime gate stays closed. Report the
    exact observed facts; do not change `sqliteVersion`, do not use an external
    Bun version, and do not run the positive protocol.
-2. If the embedded runtime is supported, the **tuple whitelist** is still empty
-   until the isolated production protocol is executed and reviewed. The probe
-   alone does not add a tuple or enable automatic sending.
+2. A supported embedded runtime alone does not add its tuple or enable automatic
+   sending. At this pass-1 checkpoint the whitelist was empty; the later exact
+   repaired-host acceptance is recorded in
+   [the protocol evidence](watchdog-61-protocol-plan.md).
 3. Only after explicit parent authorization may a second script exercise the
    real first queue/receipt path. Pass 1 has no production queue to drive.
 
@@ -78,7 +79,8 @@ When authorized later, the isolated run should cover:
 - crash after send and before accounting: `sending` remains unknown, no replay;
 - every expected failure stays alert-only and sends no prompt.
 
-These are not claimed by the probe or by the FakeHost tests.
+These are not claimed by this runtime probe. Later host and FakeHost/ledger
+evidence are distinguished in the protocol record linked above.
 
 ## Runtime-only observations
 

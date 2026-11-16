@@ -13,10 +13,11 @@ An actual `opencode` service process loads the **complete plugin entry**
 tool and RPC. The runner must not instantiate `createCorrectionExecutor` alone
 or seed a grant/attempt and call it production acceptance.
 
-The only source-level difference in the verification worktree is a static
-candidate tuple added to `VERIFIED_APP_TUPLES` in
-`src/watch/correction.ts`. No model input, config value or environment variable
-can enable it. The production tree keeps the empty whitelist.
+Before acceptance, the only production-source difference in the verification
+worktree was a static candidate tuple added to `VERIFIED_APP_TUPLES` in
+`src/watch/correction.ts`; the production list was empty at that point.
+No model input, config value or environment variable can bypass this list.
+The exact repaired tuple was later accepted after the passes recorded below.
 
 Measured candidate facts from the parent probe: `/usr/bin/opencode` 2.3.0,
 linux/x64, embedded SQLite 3.53.4, WAL, `synchronous=2`, `busy_timeout=500`,
@@ -109,7 +110,7 @@ No runner direct tool invocation or forged tool context is used for receipt.
   receipt arriving before the delivery result, unknown delivery non-replay,
   SIGKILL after send/before accounting, stale generation, unsupported runtime
   downgrade, closing during an in-flight queue.
-- The production build with the empty tuple must **not** queue at all. The
+- On any unsupported host, the production build must **not** queue at all. The
   runner should report that as a safe downgrade, not as a positive protocol
   pass.
 
@@ -191,8 +192,9 @@ patched version, embedded SQLite `3.53.4`, WAL, synchronous `2`, busy timeout
 `500`, tmpfs. Child `3988981` stopped with its port closed, and the live registry
 digest stayed `fe79ebf3151c4a3fdb132d6b3193fca2`.
 Evidence: `/tmp/opencode/watchdog-61-smoke-XzDmQD/`.
-This is runtime evidence, **not a positive protocol pass**. The production
-tuple remains empty pending the full candidate protocol.
+This was runtime evidence, **not a positive protocol pass**. At that checkpoint
+the production tuple was still empty; acceptance after the full protocol is
+recorded below.
 
 ### First repaired-host positive result
 
@@ -218,9 +220,10 @@ registry digest stayed `fe79ebf3151c4a3fdb132d6b3193fca2`.
 Evidence: `/tmp/opencode/watchdog-61-positive-95uBPb/`.
 
 This removes the measured host-interface blocker **for this exact candidate**,
-not for stock `2.3.0`. It does not yet accept #61: the final closed-at recovery
-guard, canonical UI terms, final full suite and two-axis review must finish,
-followed by a candidate rerun. The production tuple remains empty meanwhile.
+not for stock `2.3.0`. At this first-pass checkpoint #61 was not accepted:
+the final closed-at recovery guard, canonical UI terms, full suite and two-axis
+review still had to finish, followed by a candidate rerun. The production tuple
+was empty then; its subsequent exact-tuple acceptance is recorded below.
 Real host SIGKILL, receipt-before-accepted race, stale-generation and power-loss
 durability are not claimed by this run.
 

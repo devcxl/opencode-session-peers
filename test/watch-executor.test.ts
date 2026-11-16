@@ -1,7 +1,7 @@
 /**
  * The correction executor state machine against the real ledger.
  *
- * This is a controlled-fact test seam: production uses the empty verified-tuple
+ * This is a controlled-fact test seam: production uses the static verified-tuple
  * whitelist, while this test builds the executor with a test-only gate factory
  * and a fake queue port. It does not prove real host support.
  */
