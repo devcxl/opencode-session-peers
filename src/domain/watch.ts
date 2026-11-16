@@ -72,7 +72,7 @@ export interface WatchTaskRecord {
   readonly taskState: WatchedTaskState
   readonly version: number
   readonly generation: number
-  /** Permanent correction attempts already spent; this build may spend at most the first automatically. */
+  /** Permanent correction attempts already spent; the hard cap is three. */
   readonly attemptsUsed: number
   /** The activation that enrolled the task; a later activation only observes it. */
   readonly ownerActivation: string
@@ -125,12 +125,13 @@ export type WatchCorrectionStopReason =
   | "grant-pending"
   | "grant-expired"
   | "attempt-limit"
+  | "correction-window"
+  | "post-attempt-observation"
   | "session-unresolved"
   | "reservation-pending"
   | "sending-unaccounted"
   | "accepted-without-receipt"
   | "unknown-result"
-  | "first-attempt-policy"
   | "receipted-awaiting-recovery"
   | "attempt-aborted"
   | "closing"
@@ -263,15 +264,25 @@ export function isCorrectionAttemptOpen(attempt: {
   return false
 }
 
+/** The fixed budget of one continuous correction problem, persisted at its first reserve. */
+export interface WatchCorrectionEpisodeSnapshot {
+  readonly startedAt: number
+  readonly deadlineAt: number
+  readonly observationMs: number
+  readonly windowMs: number
+}
+
 export interface WatchCorrectionSnapshot {
   readonly grant: WatchCorrectionGrantRecord | null
   readonly attempts: readonly WatchCorrectionAttemptRecord[]
+  /** The active problem budget, or null before it starts or after it ended. */
+  readonly episode: WatchCorrectionEpisodeSnapshot | null
   /** An older task for the same target still has an unresolved attempt. */
   readonly sessionUnresolved: boolean
 }
 
 export const WATCH_CORRECTION_TERMS =
-  "Correction grant: up to three permanent attempts; this build may use only the first automatic one. Automatic sending requires one OpenCode service, same OS user and location. The single-host declaration is not proof of uniqueness; the controlled channel is not human authentication. Any unknown or unsupported condition means alert-only. A safety pause stops automatic correction, not business work, and never resets spent attempts. Queue admission is not consumption and cannot be retracted."
+  "Correction grant: 3 permanent auto attempts; 5 min observation after each; one problem max 20 min. Reload/reconfirm/regrant/activity never reset attempts or window; normal wait or recovery ends a round; new round needs cleared wait and all gates. One OpenCode service, same OS user/location; single-host declaration is not proof; channel is not human authentication. Unknown = alert-only. Safety pause stops auto correction, not business work. Queue admission is not consumption and is irreversible."
 
 /**
  * A short-lived challenge returned only to the controlled TUI surface by the
@@ -321,14 +332,25 @@ export interface WatchCorrectionControls {
   readonly downgrade: WatchControl
 }
 
+/** The effective bounded-attempt policy, including the fixed budget of the active problem. */
+export interface WatchCorrectionPolicyView {
+  readonly observationMs: number
+  readonly windowMs: number
+  readonly windowStartedAt: number | null
+  readonly windowEndsAt: number | null
+  /** Earliest time the post-attempt observation allows another automatic attempt. */
+  readonly nextAttemptAt: number | null
+}
+
 export interface WatchCorrectionView {
   readonly authorization: WatchCorrectionGrantView
   /** What this build can really do now, distinct from the granted mode. */
   readonly actual: WatchCorrectionActual
   readonly actualReason: string
   readonly attempts: WatchAttempts
-  /** This build may use only the first automatic attempt; the ledger keeps three. */
-  readonly executionPolicy: "first-attempt-only"
+  /** The permanent cap is three automatic attempts for the task, not per episode. */
+  readonly executionPolicy: "bounded-three-attempt"
+  readonly policy: WatchCorrectionPolicyView
   /** The current attempt phase, or `idle` when no attempt is in flight. */
   readonly phase: WatchCorrectionAttemptPhase | "idle"
   readonly pending: WatchCorrectionAttemptView | null
@@ -499,7 +521,7 @@ export interface WatchAlertsView {
 /**
  * What this build can actually do, as distinct from the mode the user chose.
  * Observation and alerts are always available. Automatic correction is
- * `first-attempt` only when the task's own gate is ready on a verified runtime;
+ * `bounded` only when the task's own gate is ready on a verified runtime;
  * it is not inferred from the selected mode. Manual correction, delegation,
  * transfer and resume remain unavailable, and safety pause is a displayed
  * state rather than a resume/takeover capability.
@@ -509,7 +531,7 @@ export interface WatchCapability {
   readonly monitoring: "observer-alerts"
   readonly automaticDetection: "partial"
   readonly automaticDetectionReason: string
-  readonly correction: "unavailable" | "first-attempt"
+  readonly correction: "unavailable" | "bounded"
   readonly correctionReason: string
   readonly delegation: "unavailable"
   readonly delegationReason: string
@@ -568,8 +590,21 @@ export const WATCH_LIMITS = {
 
 /** The hard cap the parent specification fixes for one watched task. */
 export const WATCH_CORRECTION_LIMIT = 3
-/** This build may use only the first automatic attempt. */
-export const WATCH_AUTOMATIC_ATTEMPT_LIMIT = 1
+/** Default observation after one automatic attempt before another may be considered. */
+export const WATCH_CORRECTION_OBSERVATION_MS = 5 * 60_000
+/** Default bound on one continuous problem, measured from its first automatic attempt. */
+export const WATCH_CORRECTION_WINDOW_MS = 20 * 60_000
+
+/** The time policy the executor actually applies; configuration supplies overrides. */
+export interface WatchCorrectionPolicy {
+  readonly observationMs: number
+  readonly windowMs: number
+}
+
+export const WATCH_CORRECTION_DEFAULT_POLICY: WatchCorrectionPolicy = {
+  observationMs: WATCH_CORRECTION_OBSERVATION_MS,
+  windowMs: WATCH_CORRECTION_WINDOW_MS,
+} as const
 export const WATCH_MIN_SQLITE = "3.51.3"
 export const WATCH_ALERT_SUMMARY_LIMIT = 300
 export const WATCH_ALERT_REASON_LIMIT = 500
@@ -577,7 +612,7 @@ export const WATCH_ALERT_REASON_LIMIT = 500
 export const CORRECTION_UNAVAILABLE_REASON =
   "The automatic correction code path exists, but its runtime/protocol tuple is not verified (or the task gate is closed); no queue is sent. Manual correction, resume and transfer remain unavailable."
 export const MANUAL_CORRECTION_UNAVAILABLE_REASON =
-  "Manual correction is not implemented in this build; only the gated first automatic attempt, when the runtime is verified, can queue a correction."
+  "Manual correction is not implemented in this build; only the gated automatic attempts, when the runtime is verified, can queue a correction."
 export const DELEGATION_UNAVAILABLE_REASON =
   "Child-task delegation is not open in this build; enroll the calling session itself."
 export const TRANSFER_UNAVAILABLE_REASON =

@@ -9,16 +9,16 @@ import {
 import { watchCapability, watchControls } from "../src/watch/view.ts"
 
 describe("watch capability text", () => {
-  test("first-attempt is derived from the task gate, never from the selected mode", () => {
+  test("bounded correction is derived from the task gate, never from the selected mode", () => {
     const unavailable = watchCapability("limited-correction", "unavailable")
     const ready = watchCapability("limited-correction", "ready")
     expect(unavailable.correction).toBe("unavailable")
     expect(unavailable.correctionReason).toBe(CORRECTION_UNAVAILABLE_REASON)
     expect(unavailable.correctionReason).toContain("runtime/protocol")
-    expect(ready.correction).toBe("first-attempt")
-    expect(ready.correctionReason).toContain("only the first permanent attempt")
+    expect(ready.correction).toBe("bounded")
+    expect(ready.correctionReason).toContain("up to three permanent automatic attempts")
     expect(ready.correctionReason).toContain("Manual correction")
-    expect(watchCapability("alert", "ready").correction).toBe("first-attempt")
+    expect(watchCapability("alert", "ready").correction).toBe("bounded")
     expect(watchControls(null).correction).toMatchObject({
       enabled: false,
       reason: MANUAL_CORRECTION_UNAVAILABLE_REASON,

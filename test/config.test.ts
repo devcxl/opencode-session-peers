@@ -67,24 +67,77 @@ describe("parseConfig", () => {
 
   test("watch windows are bounded and invalid values fall back with a warning", () => {
     const valid = parseConfig({
-      watch: { idleMs: 120_000, runningSilentMs: 600_000, waitOverdueMs: 1_800_000, tickMs: 15_000 },
+      watch: {
+        idleMs: 120_000,
+        runningSilentMs: 600_000,
+        waitOverdueMs: 1_800_000,
+        tickMs: 15_000,
+        correctionObservationMs: 300_000,
+        correctionWindowMs: 1_200_000,
+      },
     })
     expect(valid.config.watch).toEqual({
       idleMs: 120_000,
       runningSilentMs: 600_000,
       waitOverdueMs: 1_800_000,
       tickMs: 15_000,
+      correctionObservationMs: 300_000,
+      correctionWindowMs: 1_200_000,
     })
     expect(valid.warnings).toEqual([])
 
-    const invalid = parseConfig({ watch: { idleMs: 1, runningSilentMs: -1, waitOverdueMs: 1.5, tickMs: "fast" } })
+    const invalid = parseConfig({
+      watch: {
+        idleMs: 1,
+        runningSilentMs: -1,
+        waitOverdueMs: 1.5,
+        tickMs: "fast",
+        correctionObservationMs: 299_999,
+        correctionWindowMs: Number.POSITIVE_INFINITY,
+      },
+    })
     expect(invalid.config.watch).toEqual(DEFAULT_CONFIG.watch)
-    expect(invalid.warnings).toHaveLength(4)
+    expect(invalid.warnings).toHaveLength(6)
   })
 
   test("a non-boolean switch is reported and keeps its default", () => {
     const { config, warnings } = parseConfig({ enabled: "yes" })
     expect(config.enabled).toBe(DEFAULT_CONFIG.enabled)
     expect(warnings).toHaveLength(1)
+  })
+})
+
+describe("bounded correction policy config", () => {
+  test("defaults are the documented observation and problem windows", () => {
+    const { config, warnings } = parseConfig({})
+    expect(config.watch.correctionObservationMs).toBe(300_000)
+    expect(config.watch.correctionWindowMs).toBe(1_200_000)
+    expect(warnings).toEqual([])
+  })
+
+  test("rejects each invalid value and falls back safely instead of coercing or disabling correction", () => {
+    const commonInvalid = [0, -1, 299_999, 1.5, Number.NaN, Number.POSITIVE_INFINITY, "300000", null]
+    for (const value of commonInvalid) {
+      const observation = parseConfig({ watch: { correctionObservationMs: value } })
+      expect(observation.config.watch.correctionObservationMs).toBe(300_000)
+      expect(observation.warnings.some((warning) => warning.includes("watch.correctionObservationMs"))).toBe(true)
+
+      const window = parseConfig({ watch: { correctionWindowMs: value } })
+      expect(window.config.watch.correctionWindowMs).toBe(1_200_000)
+      expect(window.warnings.some((warning) => warning.includes("watch.correctionWindowMs"))).toBe(true)
+    }
+    const tooLargeObservation = parseConfig({ watch: { correctionObservationMs: 3_600_001 } })
+    expect(tooLargeObservation.config.watch.correctionObservationMs).toBe(300_000)
+    const tooLargeWindow = parseConfig({ watch: { correctionWindowMs: 7_200_001 } })
+    expect(tooLargeWindow.config.watch.correctionWindowMs).toBe(1_200_000)
+  })
+
+  test("allows a window shorter than the observation window without silently extending it", () => {
+    const { config, warnings } = parseConfig({
+      watch: { correctionObservationMs: 3_600_000, correctionWindowMs: 300_000 },
+    })
+    expect(config.watch.correctionObservationMs).toBe(3_600_000)
+    expect(config.watch.correctionWindowMs).toBe(300_000)
+    expect(warnings).toEqual([])
   })
 })

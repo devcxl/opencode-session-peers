@@ -7,11 +7,13 @@
  */
 
 import {
-  WATCH_AUTOMATIC_ATTEMPT_LIMIT,
+  WATCH_CORRECTION_DEFAULT_POLICY,
   WATCH_CORRECTION_LIMIT,
   WATCH_MIN_SQLITE,
   isCorrectionAttemptOpen,
+  type WatchCorrectionAttemptRecord,
   type WatchCorrectionGateView,
+  type WatchCorrectionPolicy,
   type WatchCorrectionSnapshot,
   type WatchCorrectionStopReason,
   type WatchObservationView,
@@ -46,8 +48,24 @@ export interface CorrectionGateInput {
   readonly singleHostDeclared: boolean
   readonly closing: boolean
   readonly executorReady: boolean
+  readonly now: number
+  /** Configured policy; defaults to the documented five- and twenty-minute values. */
+  readonly policy?: WatchCorrectionPolicy
   /** The executor's own committed reservation is not a blocking pending attempt. */
   readonly ignoreAttemptID?: string
+}
+
+/** Derived, durable facts behind the bounded automatic-attempt policy. */
+export interface CorrectionPolicyFacts {
+  readonly used: number
+  readonly limit: number
+  readonly observationMs: number
+  readonly windowMs: number
+  readonly lastAttemptAt: number | null
+  readonly observationEndsAt: number | null
+  /** First attempt of the active continuous problem, or null before it starts. */
+  readonly windowStartedAt: number | null
+  readonly windowEndsAt: number | null
 }
 
 export interface CorrectionGateResult {
@@ -55,6 +73,7 @@ export interface CorrectionGateResult {
   readonly stopReason: WatchCorrectionStopReason | null
   readonly missingEvidence: string | null
   readonly gates: readonly WatchCorrectionGateView[]
+  readonly policy: CorrectionPolicyFacts
 }
 
 export function correctionGate(input: CorrectionGateInput): CorrectionGateResult {
@@ -73,10 +92,33 @@ export function correctionGateWithVerifiedTuples(
 
 function evaluate(input: CorrectionGateInput, verified: readonly string[]): CorrectionGateResult {
   const { task, snapshot, observation, runtime } = input
-  const open = snapshot.attempts.find(
-    (attempt) => attempt.reservationID !== input.ignoreAttemptID && isCorrectionAttemptOpen(attempt),
+  const policy = input.policy ?? WATCH_CORRECTION_DEFAULT_POLICY
+  const history = snapshot.attempts.filter((attempt) => attempt.reservationID !== input.ignoreAttemptID)
+  const open = history.find(isCorrectionAttemptOpen)
+  const used = history.length
+  const lastAttemptAt = history.reduce<number | null>(
+    (latest, attempt) => {
+      const anchor = correctionAttemptAnchor(attempt)
+      return latest === null || anchor > latest ? anchor : latest
+    },
+    null,
   )
-  const used = snapshot.attempts.filter((attempt) => attempt.reservationID !== input.ignoreAttemptID).length
+  const episode = snapshot.episode
+  const observationMs = episode?.observationMs ?? policy.observationMs
+  const windowMs = episode?.windowMs ?? policy.windowMs
+  const observationEndsAt = lastAttemptAt === null ? null : lastAttemptAt + observationMs
+  const windowStartedAt = episode?.startedAt ?? null
+  const windowEndsAt = episode?.deadlineAt ?? null
+  const policyFacts: CorrectionPolicyFacts = {
+    used,
+    limit: WATCH_CORRECTION_LIMIT,
+    observationMs,
+    windowMs,
+    lastAttemptAt,
+    observationEndsAt,
+    windowStartedAt,
+    windowEndsAt,
+  }
   const runtimeTuple = `${runtime.appVersion ?? "?"}/${runtime.platform ?? "?"}/${runtime.arch ?? "?"}`
   const runtimeOk =
     runtime.platform === "linux" &&
@@ -150,19 +192,60 @@ function evaluate(input: CorrectionGateInput, verified: readonly string[]): Corr
       "no active, overdue, unknown or denied wait and a complete snapshot",
     ),
     gate("closing", !input.closing, input.closing ? "closing" : "open", "not closing"),
-    gate("executor", input.executorReady, input.executorReady ? "ready" : "closed", "a controlled first-attempt executor"),
+    gate("executor", input.executorReady, input.executorReady ? "ready" : "closed", "a controlled automatic-attempt executor"),
   ]
   for (const item of gates) {
     if (item.ok || item.gate === "executor") continue
-    return result(gates, stopForGate(item.gate, task, open, used, observation))
+    return result(gates, stopForGate(item.gate, task, open, used, observation), policyFacts)
   }
-  if (used >= WATCH_AUTOMATIC_ATTEMPT_LIMIT) {
-    return result(gates, { reason: "first-attempt-policy", missingEvidence: "this build's automatic executor may use only the first attempt" })
+  if (!Number.isSafeInteger(input.now) || input.now < 0) {
+    return result(
+      gates,
+      {
+        reason: "post-attempt-observation",
+        missingEvidence: "a valid non-decreasing clock is required before another automatic attempt",
+      },
+      policyFacts,
+    )
+  }
+  if (windowStartedAt !== null && input.now < windowStartedAt) {
+    return result(
+      gates,
+      {
+        reason: "correction-window",
+        missingEvidence: "the clock precedes the fixed start of this continuous problem",
+      },
+      policyFacts,
+    )
+  }
+  if (windowEndsAt !== null && input.now >= windowEndsAt) {
+    return result(
+      gates,
+      {
+        reason: "correction-window",
+        missingEvidence: `the continuous problem window of ${windowMs} ms is spent`,
+      },
+      policyFacts,
+    )
+  }
+  if (observationEndsAt !== null && input.now < observationEndsAt) {
+    return result(
+      gates,
+      {
+        reason: "post-attempt-observation",
+        missingEvidence: `the last attempt must be observed for ${observationMs} ms before another`,
+      },
+      policyFacts,
+    )
   }
   if (!input.executorReady) {
-    return result(gates, { reason: "executor-unavailable", missingEvidence: "the controlled executor path is not open in this build" })
+    return result(
+      gates,
+      { reason: "executor-unavailable", missingEvidence: "the controlled executor path is not open in this build" },
+      policyFacts,
+    )
   }
-  return { eligible: true, stopReason: null, missingEvidence: null, gates }
+  return { eligible: true, stopReason: null, missingEvidence: null, gates, policy: policyFacts }
 }
 
 function gate(
@@ -177,8 +260,25 @@ function gate(
 function result(
   gates: readonly WatchCorrectionGateView[],
   stop: { readonly reason: WatchCorrectionStopReason; readonly missingEvidence: string | null },
+  policy: CorrectionPolicyFacts,
 ): CorrectionGateResult {
-  return { eligible: false, stopReason: stop.reason, missingEvidence: stop.missingEvidence, gates }
+  return { eligible: false, stopReason: stop.reason, missingEvidence: stop.missingEvidence, gates, policy }
+}
+
+/** The latest persisted event of one permanent attempt, used as its observation anchor. */
+function correctionAttemptAnchor(attempt: WatchCorrectionAttemptRecord): number {
+  return Math.max(
+    attempt.reservedAt,
+    attempt.claimedAt ?? 0,
+    attempt.acceptedAt ?? 0,
+    attempt.rejectedAt ?? 0,
+    attempt.unknownAt ?? 0,
+    attempt.abortedAt ?? 0,
+    attempt.receiptAt ?? 0,
+    attempt.lastSeenAt ?? 0,
+    attempt.recoveredAt ?? 0,
+    attempt.closedAt ?? 0,
+  )
 }
 
 function stopForGate(

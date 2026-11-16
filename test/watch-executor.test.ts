@@ -710,3 +710,227 @@ describeExecutor("correction executor", () => {
     }
   })
 })
+
+describeExecutor("bounded automatic-attempt policy", () => {
+  test("a first reservation whose fresh recheck reaches the fixed deadline aborts without sending", async () => {
+    const clock = { value: 1_000 }
+    const ledger = open(clock)
+    try {
+      const task = seed(ledger, clock)
+      const sent: CorrectionDeliveryRequest[] = []
+      let lookups = 0
+      const executor = createCorrectionExecutor({
+        authority: authority(ledger),
+        observationFor: () => observation(),
+        sameLocation: async () => {
+          lookups += 1
+          if (lookups === 2) clock.value = 2_000
+          return true
+        },
+        runtime: () => runtime,
+        gate: correctionGateWithVerifiedTuples(["2.3.0/linux/x64"]),
+        delivery: {
+          async send(request) {
+            sent.push(request)
+            return { kind: "accepted", admissionID: "must-not-happen" }
+          },
+        },
+        activationID: "activation-a",
+        now: () => clock.value,
+        policy: { observationMs: 1_000, windowMs: 1_000 },
+        warn: () => {},
+      })
+      executor.kick(task.taskID)
+      await executor.settle()
+      expect(sent).toHaveLength(0)
+      expect(attempts(ledger, task.taskID)).toHaveLength(1)
+      expect(attempts(ledger, task.taskID)[0]).toMatchObject({ phase: "aborted" })
+      const snapshot = ledger.correction(task.taskID)
+      expect(snapshot.ok && snapshot.value.episode).toMatchObject({
+        startedAt: 1_000,
+        deadlineAt: 2_000,
+        observationMs: 1_000,
+        windowMs: 1_000,
+      })
+      await executor.close()
+    } finally {
+      ledger.close()
+    }
+  })
+
+  test("an aborted reservation spends the attempt and the next send waits the full observation", async () => {
+    const clock = { value: 1_000 }
+    const ledger = open(clock)
+    try {
+      const task = seed(ledger, clock)
+      const sent: CorrectionDeliveryRequest[] = []
+      const verified = correctionGateWithVerifiedTuples(["2.3.0/linux/x64"])
+      let calls = 0
+      const executor = createCorrectionExecutor({
+        authority: authority(ledger),
+        observationFor: () => observation(),
+        sameLocation: async () => true,
+        runtime: () => runtime,
+        gate: (input) => {
+          calls += 1
+          return calls === 2 ? correctionGate(input) : verified(input)
+        },
+        delivery: {
+          async send(request) {
+            sent.push(request)
+            return { kind: "accepted", admissionID: `admission-${sent.length}` }
+          },
+        },
+        activationID: "activation-a",
+        now: () => clock.value,
+        warn: () => {},
+      })
+      executor.kick(task.taskID)
+      await executor.settle()
+      expect(sent).toHaveLength(0)
+      expect(attempts(ledger, task.taskID)).toHaveLength(1)
+      expect(attempts(ledger, task.taskID)[0]).toMatchObject({ phase: "aborted" })
+
+      clock.value += 300_000 - 1
+      executor.kick(task.taskID)
+      await executor.settle()
+      expect(sent).toHaveLength(0)
+      expect(attempts(ledger, task.taskID)).toHaveLength(1)
+
+      clock.value += 1
+      executor.kick(task.taskID)
+      await executor.settle()
+      expect(sent).toHaveLength(1)
+      expect(attempts(ledger, task.taskID)).toHaveLength(2)
+      await executor.close()
+    } finally {
+      ledger.close()
+    }
+  })
+
+  test("three automatic sends are the hard maximum and the third recovery is a success", async () => {
+    const clock = { value: 1_000 }
+    const ledger = open(clock)
+    try {
+      const task = seed(ledger, clock)
+      const sent: CorrectionDeliveryRequest[] = []
+      const executor = createCorrectionExecutor({
+        authority: authority(ledger),
+        observationFor: () => observation(),
+        sameLocation: async () => true,
+        runtime: () => runtime,
+        gate: correctionGateWithVerifiedTuples(["2.3.0/linux/x64"]),
+        delivery: {
+          async send(request) {
+            sent.push(request)
+            return { kind: "accepted", admissionID: `admission-${sent.length}` }
+          },
+        },
+        activationID: "activation-a",
+        now: () => clock.value,
+        warn: () => {},
+      })
+      for (let ordinal = 1; ordinal <= 3; ordinal += 1) {
+        executor.kick(task.taskID)
+        await executor.settle()
+        expect(sent).toHaveLength(ordinal)
+        const request = sent[ordinal - 1]
+        if (request === undefined) throw new Error("missing delivery request")
+        const shown = ledger.show({ taskID: task.taskID, sessionID: "ses_a" })
+        if (!shown.ok || shown.value === null) throw new Error("task missing")
+        clock.value += 1
+        const receipt = ledger.recordCorrectionReceipt({
+          taskId: task.taskID,
+          reservationId: request.attemptID,
+          callerSessionId: "ses_a",
+          currentActivationId: "activation-a",
+          correlation: request.correlation,
+          at: clock.value,
+        })
+        expect(receipt).toMatchObject({ ok: true, value: { continuePermit: true } })
+        const current = ledger.show({ taskID: task.taskID, sessionID: "ses_a" })
+        if (!current.ok || current.value === null) throw new Error("task missing")
+        clock.value += 1
+        const progress = ledger.report({
+          taskId: task.taskID,
+          callerSessionId: "ses_a",
+          expectedVersion: current.value.version,
+          reportId: `progress-${ordinal}`,
+          kind: "progress",
+          evidence: { summary: `real result ${ordinal}`, reference: `result-${ordinal}` },
+        })
+        expect(progress.ok).toBe(true)
+        expect(attempts(ledger, task.taskID).at(-1)).toMatchObject({
+          phase: "recovered",
+          closedReason: "recovered",
+        })
+        clock.value += 300_000
+      }
+
+      executor.kick(task.taskID)
+      await executor.settle()
+      expect(sent).toHaveLength(3)
+      expect(attempts(ledger, task.taskID)).toHaveLength(3)
+      const snapshot = ledger.correction(task.taskID)
+      if (!snapshot.ok) throw new Error(snapshot.code)
+      expect(snapshot.value.episode).toBeNull()
+      const gate = correctionGateWithVerifiedTuples(["2.3.0/linux/x64"])({
+        task: task,
+        snapshot: snapshot.value,
+        observation: observation(),
+        runtime,
+        ownerActivation: "activation-a",
+        sameLocation: true,
+        singleHostDeclared: true,
+        closing: false,
+        executorReady: true,
+        now: clock.value,
+      })
+      expect(gate.eligible).toBe(false)
+      expect(gate.stopReason).toBe("attempt-limit")
+      expect(gate.policy.used).toBe(3)
+      await executor.close()
+    } finally {
+      ledger.close()
+    }
+  })
+
+  test("concurrent kicks keep one pending attempt instead of creating parallel sends", async () => {
+    const clock = { value: 1_000 }
+    const ledger = open(clock)
+    try {
+      const task = seed(ledger, clock)
+      const sent: CorrectionDeliveryRequest[] = []
+      let release: (() => void) | undefined
+      const gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const executor = createCorrectionExecutor({
+        authority: authority(ledger),
+        observationFor: () => observation(),
+        sameLocation: async () => true,
+        runtime: () => runtime,
+        gate: correctionGateWithVerifiedTuples(["2.3.0/linux/x64"]),
+        delivery: {
+          async send(request) {
+            sent.push(request)
+            await gate
+            return { kind: "accepted", admissionID: "concurrent-admission" }
+          },
+        },
+        activationID: "activation-a",
+        now: () => clock.value,
+        warn: () => {},
+      })
+      for (let index = 0; index < 4; index += 1) executor.kick(task.taskID)
+      while (sent.length === 0) await new Promise((resolve) => setTimeout(resolve, 0))
+      release?.()
+      await executor.settle()
+      expect(sent).toHaveLength(1)
+      expect(attempts(ledger, task.taskID)).toHaveLength(1)
+      await executor.close()
+    } finally {
+      ledger.close()
+    }
+  })
+})

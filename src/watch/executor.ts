@@ -9,11 +9,13 @@
 
 import { randomUUID } from "node:crypto"
 
-import type {
-  WatchCorrectionAttemptRecord,
-  WatchCorrectionSnapshot,
-  WatchObservationView,
-  WatchTaskRecord,
+import {
+  WATCH_CORRECTION_DEFAULT_POLICY,
+  type WatchCorrectionAttemptRecord,
+  type WatchCorrectionPolicy,
+  type WatchCorrectionSnapshot,
+  type WatchObservationView,
+  type WatchTaskRecord,
 } from "../domain/watch.ts"
 import {
   correctionGate,
@@ -74,6 +76,8 @@ export interface CorrectionExecutorOptions {
   readonly delivery: CorrectionDeliveryPort
   readonly activationID: string
   readonly now: () => number
+  /** Configured bounded-attempt policy; production passes the parsed watch config. */
+  readonly policy?: WatchCorrectionPolicy
   readonly warn: (message: string) => void
 }
 
@@ -146,6 +150,7 @@ export function createCorrectionExecutor(options: CorrectionExecutorOptions): Co
       generation: task.generation,
       reservationId: reservationID,
       at: options.now(),
+      ...(options.policy === undefined ? {} : { policy: options.policy }),
     })
     if (!reserved.ok) return
     options.markOwnReservation?.(taskID, task.version, reserved.value.task.version)
@@ -252,6 +257,8 @@ export function createCorrectionExecutor(options: CorrectionExecutorOptions): Co
     singleHostDeclared: snapshot.grant?.deployment === "single-host-same-location",
     closing,
     executorReady: true,
+    now: options.now(),
+    policy: options.policy ?? WATCH_CORRECTION_DEFAULT_POLICY,
     ...(additional.ignoreAttemptID === undefined ? {} : { ignoreAttemptID: additional.ignoreAttemptID }),
   })
 

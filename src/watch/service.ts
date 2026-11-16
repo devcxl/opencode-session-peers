@@ -10,6 +10,7 @@
 import {
   CORRECTION_UNAVAILABLE_REASON,
   DELEGATION_UNAVAILABLE_REASON,
+  WATCH_CORRECTION_DEFAULT_POLICY,
   WATCH_CORRECTION_TERMS,
   isCorrectionAttemptOpen,
   readGoal,
@@ -21,6 +22,7 @@ import {
   type WatchObservationView,
   type WatchFailure,
   type WatchFailureCode,
+  type WatchCorrectionPolicy,
   type WatchMode,
   type WatchReportKind,
   type WatchTaskRecord,
@@ -182,6 +184,8 @@ export interface WatchApplicationOptions {
     readonly arch: string
   }
   readonly now?: () => number
+  /** The effective bounded-attempt policy; defaults to the documented values. */
+  readonly policy?: WatchCorrectionPolicy
   /** Test seam for the ledger's runtime gate; production leaves it undefined. */
   readonly sqliteVersion?: string
   /** A successful mutation happened; the RPC surface may nudge its readers. */
@@ -251,16 +255,25 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
     const snapshot = ledger.correction(record.taskID)
     if (!snapshot.ok) return { failure: mapLedgerFailure(snapshot.code, snapshot.detail) }
     return {
-      view: watchTaskView(record, options.activationID, snapshot.value, {
-        appVersion: options.runtime?.appVersion ?? null,
-        platform: options.runtime?.platform ?? null,
-        arch: options.runtime?.arch ?? null,
-        sqliteVersion: ledger.sqliteVersion,
-        journalMode: ledger.journalMode,
-        synchronous: ledger.synchronous,
-        busyTimeoutMs: ledger.busyTimeoutMs,
-        filesystem: ledger.filesystem,
-      }, options.observationFor?.(record.taskID) ?? null, closed),
+      view: watchTaskView(
+        record,
+        options.activationID,
+        snapshot.value,
+        {
+          appVersion: options.runtime?.appVersion ?? null,
+          platform: options.runtime?.platform ?? null,
+          arch: options.runtime?.arch ?? null,
+          sqliteVersion: ledger.sqliteVersion,
+          journalMode: ledger.journalMode,
+          synchronous: ledger.synchronous,
+          busyTimeoutMs: ledger.busyTimeoutMs,
+          filesystem: ledger.filesystem,
+        },
+        options.observationFor?.(record.taskID) ?? null,
+        closed,
+        options.now?.() ?? Date.now(),
+        options.policy ?? WATCH_CORRECTION_DEFAULT_POLICY,
+      ),
     }
   }
 

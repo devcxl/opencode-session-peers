@@ -127,7 +127,7 @@ describeWatch("trusted idle and running observation", () => {
         authorization: { mode: "alert", state: "not-granted", deployment: "unknown", version: 1 },
         actual: "unavailable",
         attempts: { used: 0, limit: 3 },
-        executionPolicy: "first-attempt-only",
+        executionPolicy: "bounded-three-attempt",
         phase: "idle",
         pending: null,
         last: null,
@@ -354,7 +354,7 @@ describeWatch("trusted idle and running observation", () => {
       expect(payload.task?.correction).toMatchObject({
         authorization: { mode: "limited-correction", state: "granted", version: 1 },
         actual: "unavailable",
-        executionPolicy: "first-attempt-only",
+        executionPolicy: "bounded-three-attempt",
         attempts: { used: 1, limit: 3 },
         phase: "sending",
         pending: { ordinal: 1, phase: "sending", receipt: null },
@@ -445,7 +445,7 @@ describeWatch("trusted idle and running observation", () => {
         expectedVersion: payload.task?.version,
         generation: payload.task?.generation,
         deployment: "single-host-same-location",
-        reviewSummary: expect.stringContaining("three permanent attempts"),
+        reviewSummary: expect.stringContaining("3 permanent auto attempts"),
       })
       expect(prepared?.challenge?.challenge).toBeString()
       const challenge = prepared?.challenge
@@ -606,7 +606,7 @@ describeWatch("trusted idle and running observation", () => {
     }
   })
 
-  test("the reader accepts a first-attempt capability only as an enum value", async () => {
+  test("the reader accepts a bounded capability only as an enum value", async () => {
     const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } })
     try {
       const at = host.now()
@@ -614,9 +614,9 @@ describeWatch("trusted idle and running observation", () => {
       await enroll(host)
       const payload = await show(host)
       const mutated = structuredClone(payload) as WatchPayload
-      ;(mutated.capability as { correction: string }).correction = "first-attempt"
+      ;(mutated.capability as { correction: string }).correction = "bounded"
       const read = readWatchPayload(mutated)
-      expect(read?.capability.correction).toBe("first-attempt")
+      expect(read?.capability.correction).toBe("bounded")
       const invalid = structuredClone(payload) as { capability: { correction: string } }
       invalid.capability.correction = "force"
       expect(readWatchPayload(invalid)).toBeUndefined()

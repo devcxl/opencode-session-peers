@@ -112,8 +112,8 @@ describe("the correction pane", () => {
     expect(valueOf(blocks, "Actual capability")).toBe(
       "unavailable — the automatic executor is not enabled in this build",
     )
-    expect(valueOf(blocks, "Policy")).toBe("first attempt only · hard limit 3")
-    expect(valueOf(blocks, "Attempts")).toBe("2 of 3 used")
+    expect(valueOf(blocks, "Policy")).toBe("up to 3 automatic attempts · observe 5m · problem 20m")
+    expect(valueOf(blocks, "Attempts")).toBe("2 of 3 used · 1 remaining")
     expect(valueOf(blocks, "Phase")).toBe("recovered")
     expect(valueOf(blocks, "Business completed")).toBe("yes")
     expect(valueOf(blocks, "Stop")).toContain("executor-unavailable")
@@ -268,5 +268,131 @@ describe("correction gates", () => {
     })
     expect(next.rows.filter((row) => row[0]?.text.startsWith("Gate "))).toHaveLength(2)
     expect(next.notes.join("\n")).toContain("showing failed gates 3–4 of 5")
+  })
+})
+
+describe("bounded attempt display", () => {
+  test("shows the third recovered attempt as a success, not as a quota failure", () => {
+    const third = attempt({
+      attemptID: "attempt_0003",
+      ordinal: 3,
+      phase: "recovered",
+      recovery: {
+        progressReportID: "report_third",
+        resultReference: "src/third.test.ts",
+        at: Date.UTC(2026, 10, 16, 5, 0, 0),
+      },
+    })
+    const blocks = content(
+      state({
+        task: task({
+          mode: "limited-correction",
+          correction: correction({
+            executionPolicy: "bounded-three-attempt",
+            attempts: { used: 3, limit: 3 },
+            policy: {
+              observationMs: 300_000,
+              windowMs: 1_200_000,
+              windowStartedAt: Date.UTC(2026, 10, 16, 4, 50, 0),
+              windowEndsAt: Date.UTC(2026, 10, 16, 5, 10, 0),
+              nextAttemptAt: null,
+            },
+            phase: "recovered",
+            last: third,
+            history: [third],
+            stop: {
+              reason: "attempt-limit",
+              missingEvidence: "the three permanent attempts are spent",
+            },
+          }),
+        }),
+      }),
+    )
+    expect(valueOf(blocks, "Policy")).toContain("up to 3 automatic attempts")
+    expect(valueOf(blocks, "Policy")).toContain("window ends")
+    expect(valueOf(blocks, "Attempts")).toBe("3 of 3 used · 0 remaining")
+    expect(valueOf(blocks, "Attempt 3")).toContain("recovered")
+    expect(valueOf(blocks, "Attempt 3")).toContain("report_third → src/third.test.ts")
+    expect(blocks.notes.join("\n")).toContain("The last attempt recovered")
+    expect(blocks.notes.join("\n")).toContain("only prevents a fourth automatic attempt")
+  })
+
+  test("separates normal-wait and completed closures from recovery", () => {
+    const waiting = attempt({
+      attemptID: "attempt_0001",
+      ordinal: 1,
+      phase: "receipted",
+      receipt: {
+        at: Date.UTC(2026, 10, 16, 4, 32, 0),
+        continuePermitIssuedAt: Date.UTC(2026, 10, 16, 4, 33, 0),
+        refusalReason: null,
+      },
+      stopReason: "normal-wait",
+    })
+    const completed = attempt({
+      attemptID: "attempt_0002",
+      ordinal: 2,
+      phase: "receipted",
+      receipt: {
+        at: Date.UTC(2026, 10, 16, 4, 40, 0),
+        continuePermitIssuedAt: Date.UTC(2026, 10, 16, 4, 41, 0),
+        refusalReason: null,
+      },
+      stopReason: "task-completed",
+    })
+    const blocks = content(
+      state({
+        task: task({
+          mode: "limited-correction",
+          correction: correction({
+            attempts: { used: 2, limit: 3 },
+            phase: "receipted",
+            last: completed,
+            history: [waiting, completed],
+          }),
+        }),
+      }),
+    )
+    expect(valueOf(blocks, "Attempt 1")).toContain("closed · normal wait")
+    expect(valueOf(blocks, "Attempt 2")).toContain("closed · task completed")
+    expect(valueOf(blocks, "Attempt 1")).not.toContain("recovered")
+    expect(valueOf(blocks, "Attempt 2")).not.toContain("recovered")
+    expect(blocks.notes.join("\n")).toContain("A normal wait closed that round; it is not recovery")
+    expect(blocks.notes.join("\n")).toContain("Task completion closed that round")
+  })
+
+  test("marks an issued permit as recovery unconfirmed until new progress arrives", () => {
+    const pending = attempt({
+      attemptID: "attempt_0001",
+      ordinal: 1,
+      phase: "receipted",
+      receipt: {
+        at: Date.UTC(2026, 10, 16, 4, 32, 0),
+        continuePermitIssuedAt: Date.UTC(2026, 10, 16, 4, 33, 0),
+        refusalReason: null,
+      },
+      stopReason: "receipted-awaiting-recovery",
+    })
+    const blocks = content(
+      state({
+        task: task({
+          mode: "limited-correction",
+          correction: correction({
+            attempts: { used: 1, limit: 3 },
+            phase: "receipted",
+            pending,
+            last: pending,
+            history: [pending],
+            stop: {
+              reason: "receipted-awaiting-recovery",
+              missingEvidence: "new progress and a new result reference have not arrived",
+            },
+          }),
+        }),
+      }),
+    )
+    expect(valueOf(blocks, "Attempt 1")).toContain("recovery unconfirmed")
+    expect(valueOf(blocks, "Attempt 1")).not.toContain("closed · normal wait")
+    expect(blocks.notes.join("\n")).toContain("recovery is unconfirmed until new progress")
   })
 })
