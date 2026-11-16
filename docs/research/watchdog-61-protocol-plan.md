@@ -100,7 +100,7 @@ No runner direct tool invocation or forged tool context is used for receipt.
 
 ## Evidence split
 
-- **Real host in this run:** full plugin load, target begin report, controlled
+- **Required real-host evidence (not yet all passed):** full plugin load, target begin report, controlled
   grant RPC, trusted idle sample, one automatic queue, target tool receipt,
   duplicate receipt, wrong-caller receipt, progress/new-reference recovery,
   stop/port/registry isolation.
@@ -155,3 +155,40 @@ future isolated run. It records only bounded event types, timestamps, location,
 session identifiers and data-key names, never prompt text, tool inputs/results,
 grant challenges or dispatch correlations. The fixture is not a production
 adapter and does not modify events.
+
+## Isolated host-source candidate
+
+The user chose to repair the host source without weakening observation policy.
+Official `anomalyco/opencode` tag `v2.3.0` (`a6b15d33`) is cloned in the
+verification tree's `.host-source`; local commits `de70f4f` and `2df0262` stamp
+execution and usage events from the Session's own placement. No schema or
+protocol changed. The parent inspected all five changed files.
+
+Targeted host tests: execution/projector **98 pass**, related execution users
+**375 pass / 11 skip**. The parent ran canonical root `bun run check`: passed,
+including all 35 typecheck tasks; existing lint warnings remain.
+
+The parent built with Bun 1.4.4 from `packages/cli`:
+
+```bash
+OPENCODE_VERSION=2.3.0-watchdog-location.1 OPENCODE_CHANNEL=watchdog-location \
+bun run script/build.ts --single --skip-install --skip-web-ui
+```
+
+Artifact: `.host-source/packages/cli/dist/cli-linux-x64/bin/opencode`.
+SHA-256: `93c16b937359c226eb77691c7453c5fdadb2b716e1b6da7434d7cc8fc6c5cb7a`.
+`--version` reports `2.3.0-watchdog-location.1`; it is not the live binary.
+
+The first probe stopped before plugin loading because the harness expected
+`opencode.db`, but this distinct channel uses `opencode-watchdog-location.db`.
+`WATCH61_DATABASE_CHANNEL=watchdog-location` now changes only the research
+script's expected scratch filename, matching the host's `database-path.ts`.
+It sets no host database override and changes no safety gate.
+
+The repeated runtime probe **passed**: real `ctx.app.version` matched the
+patched version, embedded SQLite `3.53.4`, WAL, synchronous `2`, busy timeout
+`500`, tmpfs. Child `3988981` stopped with its port closed, and the live registry
+digest stayed `fe79ebf3151c4a3fdb132d6b3193fca2`.
+Evidence: `/tmp/opencode/watchdog-61-smoke-XzDmQD/`.
+This is runtime evidence, **not a positive protocol pass**. The production
+tuple remains empty pending the full candidate protocol.

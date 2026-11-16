@@ -1,5 +1,5 @@
 /**
- * #61 real-host positive protocol runner — plan asset, not executed here.
+ * #61 real-host positive protocol runner — requires explicit isolated execution.
  *
  * The parent supplies a verification worktree whose only source difference is
  * a static candidate tuple. This runner loads that complete plugin through the
@@ -20,13 +20,14 @@ import { OpenCode, type JsonValue } from "@opencode/client"
 import { createClient, type SessionMessage } from "../../harness/client.ts"
 import { MISSING, readLiveService } from "../../harness/isolation.ts"
 import { isPortOpen, prepareScratch, startInstance, type InstanceHandle } from "../../harness/instance.ts"
-import { STUB_MODEL_ID, STUB_PROVIDER_ID, defaultScratchRoot, scratchLayout, serviceJsonPath } from "../../harness/paths.ts"
+import { STUB_MODEL_ID, STUB_PROVIDER_ID, defaultScratchRoot, serviceJsonPath } from "../../harness/paths.ts"
 import { sleep } from "../../harness/instance.ts"
 import { isTerminal, promptForResult, toolCalls, waitForCall, type ToolCall } from "../../harness/stub/transcript.ts"
 import { messageText } from "../../harness/sessions.ts"
 import type { HarnessOptions } from "../../harness/args.ts"
 import { readWatchGrantPayload, readWatchPayload, type WatchPayload } from "../../../src/rpc.ts"
 import { BEGIN_MARKER, DUPLICATE_MARKER, WRONG_CALLER_MARKER, startPositiveStub } from "./positive-stub.ts"
+import { candidateLayout } from "./candidate-layout.ts"
 
 if (process.env["WATCH61_POSITIVE_CONFIRM"] !== "1") {
   console.error("refusing to start an opencode service without WATCH61_POSITIVE_CONFIRM=1")
@@ -41,7 +42,7 @@ const traceEvents = process.env["WATCH61_TRACE_EVENTS"] === "1"
 
 const opencodeBin = process.env["WATCH61_OPENCODE_BIN"] ?? "/usr/bin/opencode"
 const root = mkdtempSync(join(defaultScratchRoot(), "watchdog-61-positive-"))
-const layout = scratchLayout(root, "positive")
+const layout = candidateLayout(root, "positive", process.env["WATCH61_DATABASE_CHANNEL"])
 const base: NodeJS.ProcessEnv = {
   PATH: process.env["PATH"],
   HOME: join(layout.root, "home"),

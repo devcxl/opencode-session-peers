@@ -17,7 +17,8 @@ import { join } from "node:path"
 import { createClient } from "../../harness/client.ts"
 import { MISSING, readLiveService } from "../../harness/isolation.ts"
 import { prepareScratch, startInstance, type InstanceHandle, type StopOutcome } from "../../harness/instance.ts"
-import { defaultScratchRoot, scratchLayout, serviceJsonPath } from "../../harness/paths.ts"
+import { defaultScratchRoot, serviceJsonPath } from "../../harness/paths.ts"
+import { candidateLayout } from "./candidate-layout.ts"
 
 if (process.env["WATCH61_SMOKE_CONFIRM"] !== "1") {
   console.error("refusing to start an opencode service without WATCH61_SMOKE_CONFIRM=1")
@@ -26,7 +27,7 @@ if (process.env["WATCH61_SMOKE_CONFIRM"] !== "1") {
 
 const opencodeBin = process.env["WATCH61_OPENCODE_BIN"] ?? "/usr/bin/opencode"
 const root = mkdtempSync(join(defaultScratchRoot(), "watchdog-61-smoke-"))
-const layout = scratchLayout(root, "runtime-probe")
+const layout = candidateLayout(root, "runtime-probe", process.env["WATCH61_DATABASE_CHANNEL"])
 const probeLog = join(layout.root, "runtime-probe.jsonl")
 const probeDb = join(layout.root, "probe-ledger.sqlite3")
 mkdirSync(layout.root, { recursive: true, mode: 0o700 })
