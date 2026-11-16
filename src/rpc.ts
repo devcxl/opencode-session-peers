@@ -78,6 +78,10 @@
 import type { Rpc } from "@opencode/plugin"
 
 import { watchChangedEvent, watchGrantRpcMethod, watchRpcMethod } from "./watch/contract.ts"
+import {
+  watchDelegationRpcMethod,
+  watchDelegationViewRpcMethod,
+} from "./watch/delegation-contract.ts"
 
 export {
   readWatchGrantPayload,
@@ -89,6 +93,17 @@ export {
   type WatchLedgerView,
   type WatchPayload,
 } from "./watch/contract.ts"
+
+export {
+  readWatchDelegationGrantPayload,
+  readWatchDelegationViewPayload,
+  watchDelegationRpcMethod,
+  watchDelegationViewRpcMethod,
+  type DelegationChallengeView,
+  type DelegationReviewView,
+  type WatchDelegationGrantPayload,
+  type WatchDelegationViewPayload,
+} from "./watch/delegation-contract.ts"
 
 export const SESSION_PEERS_RPC_ID = "session-peers.v1"
 
@@ -184,6 +199,8 @@ export const SESSION_PEERS_RPC = {
     },
     watch: watchRpcMethod,
     watchGrant: watchGrantRpcMethod,
+    watchDelegation: watchDelegationRpcMethod,
+    watchDelegationView: watchDelegationViewRpcMethod,
   },
   events: {
     changed: {
