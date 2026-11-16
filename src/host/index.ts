@@ -10,9 +10,14 @@
 import type { Plugin } from "@opencode/plugin"
 
 import { commandRegistrar, type CommandRegistrar } from "./commands.ts"
+import { correctionDelivery, type CorrectionDeliveryPort } from "./correction-delivery.ts"
+import { contextInjector, type ContextInjector } from "./context.ts"
 import type { EventSource } from "./events.ts"
 import { sessionGeneration, type Generation } from "./generation.ts"
+import { permissionLookup, type PermissionLookup } from "./permission.ts"
+import { hostRuntime, type HostRuntime } from "./runtime.ts"
 import { rpcRegistrar, type RpcRegistrar } from "./rpc.ts"
+import { systemScheduler, type Scheduler } from "./scheduler.ts"
 import { sessionLookup, type SessionLookup } from "./session.ts"
 import { skillRegistrar, type SkillRegistrar } from "./skills.ts"
 import { pluginStorage, type PluginStorage } from "./storage.ts"
@@ -29,8 +34,16 @@ export interface InstanceLocation {
 export interface Host {
   /** Raw plugin options, as configured. `parseConfig` validates them. */
   readonly options: unknown
+  /** The real service identity published by this host context. */
+  readonly runtime: HostRuntime
   readonly location: InstanceLocation
   readonly sessions: SessionLookup
+  /** Correction-only queue delivery: admission id, definite refusal, or unknown. */
+  readonly correctionDelivery: CorrectionDeliveryPort
+  /** Same-location permission snapshots; a failure is unknown, not empty. */
+  readonly permissions: PermissionLookup
+  /** Clock and interval seam for the observer. */
+  readonly scheduler: Scheduler
   /** The sending session's own model, asked to write a handover. */
   readonly generation: Generation
   /** What the host knows about a directory's version control, and what it does not. */
@@ -38,6 +51,8 @@ export interface Host {
   /** The one namespace every instance on the machine can meet in. */
   readonly storage: PluginStorage
   readonly events: EventSource
+  /** Appends watchdog text to a session's next normal model context; never prompts. */
+  readonly sessionContext: ContextInjector
   readonly tools: ToolRegistrar
   readonly commands: CommandRegistrar
   /** The model-facing text this plugin contributes; a skill the model may load. */
@@ -49,17 +64,25 @@ export interface Host {
 export function createHost(context: Plugin.Context): Host {
   return {
     options: context.options,
+    runtime: hostRuntime(context),
     location: {
       directory: context.location.directory,
       projectID: context.location.project?.id,
     },
     sessions: sessionLookup(context.session),
+    correctionDelivery: correctionDelivery(context.session),
+    permissions: permissionLookup(context.permission),
+    // The fake host installs a deterministic scheduler on its context; a real
+    // host has no such field and gets the process clock.
+    scheduler:
+      (context as unknown as { scheduler?: Scheduler }).scheduler ?? systemScheduler(),
     generation: sessionGeneration(context.session),
     versionControl: versionControl(context.vcs),
     storage: pluginStorage(context.storage),
     events: {
       subscribe: (options) => context.event.subscribe({ signal: options.signal }),
     },
+    sessionContext: contextInjector(context.session),
     tools: toolRegistrar(context.tool),
     commands: commandRegistrar(context.command),
     skills: skillRegistrar(context.skill),

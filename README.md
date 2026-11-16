@@ -21,8 +21,13 @@ both cases.
 
 opencode loads a plugin from a local directory or from a package it installs itself. Only an
 opencode v2 server is needed: the plugin is TypeScript source with no build step and no runtime
-dependencies. It is developed and measured against opencode 2.0.29; `docs/research/README.md`
-records the pinned versions and the host drift behind each measurement.
+dependencies. Messaging is developed and measured against opencode 2.0.29; the watchdog
+runtime was additionally measured on opencode 2.3.0 with embedded SQLite 3.53.4.
+Stock 2.3.0 failed lifecycle provenance verification; only the separately built
+`2.3.0-watchdog-location.1/linux/x64` passed the automatic-correction protocol.
+See [the exact source, artifact and evidence](docs/research/watchdog-61-protocol-plan.md).
+`docs/research/README.md` records the pinned versions and the host drift behind
+each measurement.
 
 The directory form below is what works today, before the first npm release:
 
@@ -84,6 +89,10 @@ server log; `trigger` fails closed to `"never"`.
 | `replyHint` | `true` | Append the `To reply: peers({ action: "reply", ... })` line to a question. Only an `ask` carries it: a `send`, a reply and a handover leave nothing to answer. |
 | `askTimeoutMs` | `600000` | How long an `ask` waits for its answer (10 minutes) before it stops waiting. |
 | `rosterTtlMs` | `90000` | How long a peer record may go without a heartbeat before other instances stop listing it. The heartbeat runs at a third of this. |
+| `watch.idleMs` | `120000` | Continuous trusted idle before an idle alert. Bounded to 1 second–30 minutes. |
+| `watch.runningSilentMs` | `600000` | Running without target activity before an initiator warning. Bounded to 5 seconds–1 hour. |
+| `watch.waitOverdueMs` | `1800000` | Fallback overdue window for a wait with no explicit deadline. Bounded to 1 minute–2 hours. |
+| `watch.tickMs` | `15000` | Observation sample interval. Bounded to 250 ms–60 seconds. |
 
 ## The `peers` tool
 
@@ -98,6 +107,7 @@ server log; `trigger` fails closed to `"never"`.
 | `cancel` | Request a stop to this session's local ask wait (`replyTo` names it; omit it if only one is waiting). It does not withdraw the question or stop the recipient. |
 | `handover` | Summarise this session with this session's own model and send the summary to one peer, which continues the work. |
 | `status` | This session's id, its scope, and whether the host is answering. |
+| `watch` | Explicitly enroll, inspect, report on, pause/end, acknowledge alerts, or submit a correction receipt. Default alert-only; automatic correction is gated. See [Watching a task](#watching-a-task). |
 
 `to` accepts a full session id, the short id `list` shows in parentheses, or a session title. An
 address that matches more than one peer is refused, never guessed. A message carries text and
@@ -137,6 +147,143 @@ Behaviour worth knowing before you rely on it:
   that has been idle since its location's instance started is therefore simply not on the roster yet, even
   though the tool is available inside it; the fix is one turn. This is why an empty `list` usually means
   "nobody has done anything yet", not "nothing is running".
+
+## Watching a task
+
+A session can explicitly enroll one task for observation. A session being idle is not a watched
+task. This slice targets only the calling session (the open session served at this plugin location in `/peers-watch`),
+with a real goal and an idempotency key; another session cannot yet be enrolled:
+
+```ts
+peers({ action: "watch", watch: {
+  operation: "enroll",
+  requestId: "stable-request-id",
+  goal: "Ship the parser fix and its tests",
+} })
+```
+
+The default mode is **alert-only**. Enrollment, reading, pausing and ending never prompt a model,
+generate text or interrupt a session. Limited correction exists behind a separate controlled grant
+and a verified-runtime gate; stock hosts remain alert-only. Only the exact repaired
+host tuple documented below is supported. No config, environment variable or model input
+can bypass the runtime gate. The executing session sees the task
+reference and reporting protocol in its next normal model context; no extra turn is started, and
+the raw goal is not copied into that system notice (read it with `watch show`). Completion is not
+the same as ending supervision: a `completed` report ends the watch because the business task is
+done, while a manual `end` records that supervision stopped without claiming success. Pausing
+stops new proactive monitoring reminders and corrections, not the business session or its normal
+reporting protocol. A paused task still holds the session's one live watch slot, and real state
+changes or completion can still be reported in normal turns.
+
+Report only a real state change or new result, with the version read from `watch show`:
+
+```ts
+peers({ action: "watch", watch: {
+  operation: "report",
+  taskID: "…", expectedVersion: 2, reportId: "new-report-id",
+  kind: "progress",
+  evidence: { summary: "Parser fixtures pass", reference: "test/parser.test.ts:42" },
+} })
+```
+
+`begin` needs no evidence; `progress` and `completed` need `summary` and `reference`; `waiting`
+needs `waitKind`, `waitFor`, `reason` and `reference`; `blocked` needs `reason`. A reported wait may
+carry `waitID` and `waitUntil`; a later report clears only the named wait with `clearsWaitID` plus
+`clearEvidence`. Repeated report ids with the same evidence are idempotent; a stale version or a
+different payload is refused.
+
+The panel separates the business task, supervision, authorization, actual capability,
+observation, activity, waits, permanent attempts, receipt/recovery and persistent alerts. Observation uses execution lifecycle events,
+the target's own text/step/tool/shell activity and same-location permission/ask snapshots; missing
+terminals, a busy time newer than idle, a failed/interrupted last run, event gaps, reloads and
+unavailable form/retry snapshots are shown as `unknown`/degraded rather than inferred as idle. An
+idle candidate needs two separated samples and the configured idle window. A normal wait suppresses
+idle alerts; a wait with no earlier deadline is only notified after `watch.waitOverdueMs` to the
+initiator. Alerts are persisted one per continuing problem, are not prompts, can be acknowledged
+(read-only) and include resolved history; an acknowledgement never resets a task or quota.
+
+The authority for task identity, state and history is a plugin-owned SQLite ledger under
+`$XDG_STATE_HOME/opencode-session-peers/watchdog/` (or `~/.local/state/...`). It is not the
+shared plugin storage. The ledger validates its identity anchor, canonical path and SQLite build,
+uses `0700`/`0600` permissions, and fails closed rather than recreating a missing or mismatched
+database. Observation is intentionally partial: it does not prove goal progress or single-host
+uniqueness, and restoration is never automatic. Event-only wait coverage requires observing
+the session's own same-location `session.created` from creation; an existing session without that
+event remains `unknown`/`partial` even after a fresh terminal, because a form or retry wait may
+predate observation.
+
+**Limited correction is explicit and currently closed by default.** The ledger permits up to
+three permanent automatic attempts per task. Before any
+send it requires a controlled grant, the current activation, a trusted idle candidate, no wait or
+new input, a same-location target, an unfinished task and a verified runtime tuple. The static
+whitelist contains only `2.3.0-watchdog-location.1/linux/x64`, the isolated repaired-host build
+whose full protocol passed; it does not include stock `2.3.0` or imply support for later versions.
+The server never accepts model-reported consent, a config switch or a `forceCapability` value.
+Unsupported runtimes report automatic correction as unavailable. When that task's own gates are ready on a
+verified runtime, the capability payload says `correction: "bounded"`; it never opens manual
+`correct`. The `recovery` capability still means resume/ownership recovery, not the evidence-based
+recovery confirmation of an existing attempt, and a displayed safety pause is not a resume control.
+
+A grant is not a model tool action: `peers({ action: "watch", watch: { operation: "grant" } })` is
+refused. The user reviews the terms in the controlled TUI surface and the private `watchGrant` RPC
+performs `prepare` then one `confirm` with the explicit
+`deployment: "single-host-same-location"` declaration. That declaration is a deployment statement,
+not proof that no other service exists, and the same-OS-user boundary is not authentication. The
+model can request that the user review a grant; it cannot confirm one.
+
+Each correction round persists its start, deadline and effective policy at the first reservation.
+`watch.correctionObservationMs` defaults to 300000 ms (5 minutes between attempts; range
+300000–3600000); `watch.correctionWindowMs` defaults to 1200000 ms (20-minute round; range
+300000–7200000). Invalid values fall back with a load warning. Reload, regrant, reconfirmation and
+configuration changes never extend an active round. A normal wait or verified recovery closes that
+round; a cleared wait needs fresh idle evidence and all gates before another round. The three-attempt
+quota is cumulative across rounds: aborted or unknown attempts never refund. Unresolved attempts on
+a session block automatic correction for a new task there, including after end and re-enrollment.
+
+**Direct-child monitoring requires its own controlled grant.** The user reviews `watchDelegation`
+terms, then prepares and confirms the specific child and mode. Enrollment verifies the real host's
+one-hop `parentID`, the same location and a known matching plugin scope (a plugin fact, not host
+proof). Descendants, cross-scope targets and unknown facts are refused. After the grant, the parent
+can enroll an already-created child's existing work:
+
+```ts
+peers({ action: "watch", watch: {
+  operation: "delegate",
+  taskID: "parent-task-id", expectedVersion: 2,
+  targetSessionID: "existing-direct-child-id",
+  requestId: "stable-child-watch-id", goal: "Ship the child's assigned parser tests",
+  mode: "alert",
+} })
+```
+
+Non-self `enroll` uses the same checks. `limited-correction` may be selected only within the
+controlled delegation grant; enrollment then derives the child's correction grant in the same
+transaction, without bypassing runtime or observation gates. No grant or enrollment creates a
+child, replays work or starts an extra turn. Only the actual child may report or receipt its task.
+The parent may read authorized child state and persistent alerts; these do not prompt the parent.
+The host's own child-completion reports can still wake the parent; watchdog monitoring does not
+suppress or replace that native behavior.
+Revocation or changed parent/scope facts blocks future admission, preserves attempts and cannot
+retract an accepted message. Repeating an identical enrollment request returns its history; a new
+explicit request is a new supervision decision, not a quota or unresolved-attempt bypass.
+
+When a correction prompt actually arrives, it carries the task, attempt and one opaque correlation
+in a concrete `peers` call. Before any business step, the target submits that call with
+`operation: "receipt"`. Only `continuePermit: true` for that attempt permits the smallest next step;
+a duplicate receipt returns no second permit. The correlation is never exposed by `watch show`.
+A permit does not close the attempt by itself. It stays pending until a real current-target report:
+`progress` with a new result reference becomes recovered; `completed` with a new result reference
+records business completion but leaves the attempt `receipted`, not recovered; a new active
+`waiting` report closes the correction round as a normal wait, not as recovery or completion.
+Pause/end alone, target activity only, an old/reused reference, a non-target reporter, or an
+overdue/cleared wait does not close it. A correct receipt without a permit records the known
+instruction as seen/refused and starts no business. Queue admission is not a read receipt, the last
+check and the host enqueue are not atomic, and an already admitted message cannot be retracted.
+
+Reload does not inherit correction authority: a new activation observes and shows a safety pause,
+an old receipt is recorded as seen but issues no permit, and no quiescence proof or ownership
+takeover is invented. Manual pause/end and safety pause never interrupt the business session.
+A general `/peers-watch` command and the panel share the same application path.
 
 The plugin registers two skills, both loaded on demand. `session-peers` covers how to use the tool
 for coordination: which action fits which situation, the rules above in more detail, the failure

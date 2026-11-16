@@ -11,16 +11,28 @@
  * it returns; this file is wiring, not behaviour.
  */
 
+import { randomUUID } from "node:crypto"
+
 import type { Plugin } from "@opencode/plugin"
 
+import { watchCommand } from "./actions/watch-command.ts"
+import { watchDelegationRpc, watchDelegationViewRpc } from "./actions/watch-delegation-rpc.ts"
+import { watchGrantRpc } from "./actions/watch-grant-rpc.ts"
+import { watchRpc } from "./actions/watch-rpc.ts"
 import { parseConfig } from "./config.ts"
 import { describeError } from "./domain/errors.ts"
 import { createHost } from "./host/index.ts"
+import { watchLedgerPath } from "./host/watch.ts"
 import { startRoster } from "./peers/roster.ts"
 import { SESSION_PEERS_RPC } from "./rpc.ts"
 import { PEERS_SKILL, SUPERVISOR_SKILL } from "./skill.ts"
 import { rosterPayload } from "./surface.ts"
 import { peersTool } from "./tool.ts"
+import { sessionAtLocation } from "./watch/access.ts"
+import { createDelegationAuthority, createScopeFactReader } from "./watch/delegation-authority.ts"
+import { createCorrectionExecutor } from "./watch/executor.ts"
+import { createWatchObserver } from "./watch/observe.ts"
+import { createWatchApplication } from "./watch/service.ts"
 
 export const PLUGIN_ID = "session-peers"
 
@@ -34,6 +46,79 @@ export default {
     const warn = (message: string) => console.warn(`[${PLUGIN_ID}] ${message}`)
     const { config, warnings } = parseConfig(host.options)
     for (const warning of warnings) warn(warning)
+
+    // The watchdog is opened lazily on the first watch operation or context
+    // hook. Enrolling records this activation as the owner; a reload gets a new
+    // activation and therefore observes the old task without adopting it.
+    let announceWatch: (() => void) | undefined
+    let observer: ReturnType<typeof createWatchObserver> | undefined
+    const activationID = randomUUID()
+    let watchRef: { isClosing(): boolean } | undefined
+    const scopeOf = createScopeFactReader({
+      configScope: config.scope,
+      directory: host.location.directory,
+      sessions: host.sessions,
+      peers: host.storage.peers,
+    })
+    const correctionPolicy = {
+      observationMs: config.watch.correctionObservationMs,
+      windowMs: config.watch.correctionWindowMs,
+    }
+    const watch = config.enabled
+      ? createWatchApplication({
+          ledgerPath: watchLedgerPath(),
+          activationID,
+          runtime: host.runtime,
+          now: () => host.scheduler.now(),
+          onChanged: () => announceWatch?.(),
+          sessionAtLocation: (sessionID) =>
+            sessionAtLocation(host.sessions, sessionID, host.location.directory),
+          observationFor: (taskID) => observer?.observationFor(taskID) ?? null,
+          policy: correctionPolicy,
+          delegation: (ledger) =>
+            createDelegationAuthority({
+              ledger,
+              sessions: host.sessions,
+              scopeOf,
+              activationID,
+              closing: () => watchRef?.isClosing() ?? true,
+              now: () => host.scheduler.now(),
+            }),
+        })
+      : undefined
+    watchRef = watch
+
+    const correctionAuthority = watch?.correctionAuthority()
+    const executor =
+      watch === undefined || correctionAuthority === undefined
+        ? undefined
+        : createCorrectionExecutor({
+            authority: correctionAuthority,
+            observationFor: (taskID) => observer?.observationFor(taskID) ?? null,
+            refreshObservation: async (taskID) => (await observer?.refresh(taskID)) ?? null,
+            markOwnReservation: (taskID, fromVersion, toVersion) =>
+              observer?.markOwnReservation(taskID, fromVersion, toVersion),
+            sameLocation: (sessionID) => sessionAtLocation(host.sessions, sessionID, host.location.directory),
+            checkDelegatedAuthority: (taskID) => watch.checkDelegatedAuthority(taskID),
+            runtime: () => {
+              const status = watch.status()
+              return {
+                appVersion: status.appVersion,
+                platform: status.platform,
+                arch: status.arch,
+                sqliteVersion: status.sqliteVersion,
+                journalMode: status.journalMode,
+                synchronous: status.synchronous,
+                busyTimeoutMs: status.busyTimeoutMs,
+                filesystem: status.filesystem,
+              }
+            },
+            delivery: host.correctionDelivery,
+            activationID,
+            now: () => host.scheduler.now(),
+            policy: correctionPolicy,
+            warn,
+          })
 
     // A disabled plugin publishes nothing: peers must not see a session that is
     // not listening, and its own session is told why nothing happens.
@@ -50,6 +135,16 @@ export default {
       const scope = input.trim()
       if (scope === "") throw new Error("usage: /peers-scope <scope>")
       await setScope(sessionID, scope)
+    })
+
+    // The server-side entry is a control path, not a visible panel: no branch
+    // prompts a model or generates text. The TUI registers the visible command.
+    await host.commands.registerWatch(async (sessionID, input) => {
+      await watchCommand(
+        { watch, sessions: host.sessions, directory: host.location.directory },
+        sessionID,
+        input,
+      )
     })
 
     // The RPC surface is registered either way, because a disabled location
@@ -74,7 +169,91 @@ export default {
         }
         return setScope(sessionID, scope)
       },
+      watch: (input) =>
+        watchRpc(
+          {
+            enabled: config.enabled,
+            watch,
+            observe: observer,
+            sessions: host.sessions,
+            directory: host.location.directory,
+            watchConfig: config.watch,
+          },
+          input,
+        ),
+      watchGrant: (input) =>
+        watchGrantRpc(
+          {
+            enabled: config.enabled,
+            watch,
+            sessions: host.sessions,
+            directory: host.location.directory,
+          },
+          input,
+        ),
+      watchDelegation: (input) =>
+        watchDelegationRpc(
+          {
+            enabled: config.enabled,
+            watch,
+            sessions: host.sessions,
+            directory: host.location.directory,
+          },
+          input,
+        ),
+      watchDelegationView: (input) =>
+        watchDelegationViewRpc(
+          {
+            enabled: config.enabled,
+            watch,
+            sessions: host.sessions,
+            directory: host.location.directory,
+          },
+          input,
+        ),
     })
+
+    // Mutations nudge the panel after the ledger commit; the event carries no
+    // task value, so a reader that starts late still takes a snapshot.
+    announceWatch = () => {
+      void surface
+        .emit("watchChanged", { at: Date.now() })
+        .catch((error) => warn(`could not announce a watch change: ${describeError(error)}`))
+    }
+
+    // Observation is started only after the RPC surface exists, so an alert
+    // commit can nudge the panel. It uses the host's scheduler and event stream;
+    // it never prompts or generates text.
+    observer =
+      watch === undefined
+        ? undefined
+        : createWatchObserver({
+            config: config.watch,
+            directory: host.location.directory,
+            sessions: host.sessions,
+            permissions: host.permissions,
+            events: host.events,
+            scheduler: host.scheduler,
+            store: watch,
+            asks: host.storage.asks,
+            replies: host.storage.replies,
+            onChanged: () => announceWatch?.(),
+            onSample: (taskID) => executor?.kick(taskID),
+            warn,
+          })
+    observer?.start()
+
+    // The executing session meets its task in the next normal model request.
+    // This hook only appends system text; it never starts a turn. A host without
+    // the hook still keeps the peers surface and the ledger usable.
+    let contextInjection: { dispose(): Promise<void> } | undefined
+    if (watch !== undefined) {
+      try {
+        contextInjection = await host.sessionContext.register((sessionID) => watch.notificationFor(sessionID))
+      } catch (error) {
+        warn(`the watch context hook is unavailable: ${describeError(error)}`)
+      }
+    }
 
     await host.tools.register(
       peersTool({
@@ -88,6 +267,9 @@ export default {
           versionControl: host.versionControl,
           senderDirectory: host.location.directory,
         },
+        watch,
+        observe: observer,
+        directory: host.location.directory,
       }),
     )
 
@@ -114,8 +296,18 @@ export default {
     await host.skills.register(SUPERVISOR_SKILL)
 
     // The host calls this when the location shuts down or the plugin reloads.
+    // Closing the ledger is a clean close, not a handover of watch ownership.
     return async () => {
+      // Close the mutation entries synchronously before awaiting any in-flight
+      // work. Receipts/grants/reports must not acquire new permits after this.
+      watch?.beginClosing()
+      // Stop the observer's scheduling synchronously before waiting for the
+      // executor, so proactive alerts cannot keep writing while it drains.
+      observer?.dispose()
+      await executor?.close()
       await surface.dispose()
+      await contextInjection?.dispose()
+      watch?.dispose()
       await roster.dispose()
     }
   },

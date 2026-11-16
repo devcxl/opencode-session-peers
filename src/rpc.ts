@@ -37,13 +37,51 @@
  *   republishes its roster row. It fails when the location does not serve it.
  *   This is what `/peers-scope` calls; `scope` is the group the session joins.
  *
+ *   method `watch`, input `{ operation: "show" | "enroll" | "pause" | "end" | "ack",
+ *   sessionID: string, taskID?, alertID?, expectedVersion?, requestId?, goal?,
+ *   targetSessionID?, mode? }`, output `WatchPayload`. It is the panel's one
+ *   read/control call. `show` is read-only; `enroll` is explicit and alert-only;
+ *   `pause` and `end` need the version last read. `ack` needs an alert id, not
+ *   a task version, and changes only its read flag. `WatchPayload` includes
+ *   task/capability/controls, observation/activity snapshots (nullable), and a
+ *   required bounded alerts view with availability, counts and retained history.
+ *   `report` stays on the tool path because it must carry the host-supplied calling session. Correction,
+ *   transfer and resume are not part of this method. A separate private
+ *   `watchGrant` method is the controlled correction prepare/confirm/downgrade
+ *   path. Direct-child delegation has its own sibling methods:
+ *
+ *   method `watchDelegation`, input `{ operation: "prepare" | "confirm" | "revoke",
+ *   sessionID, parentTaskID, expectedVersion, targetSessionID?, mode?,
+ *   deployment?, challenge?, generation?, termsDigest?, scopeDirectory?,
+ *   scopePeerScope? }`, output `WatchDelegationGrantPayload`. The challenge is
+ *   returned only by prepare; confirm consumes it; revoke keeps history.
+ *
+ *   method `watchDelegationView`, input `{ sessionID, parentTaskID }`, output
+ *   `WatchDelegationViewPayload`: grants and direct children. An unauthorized
+ *   child carries no goal, report or alert content.
+ *
+ *   The same-OS-user boundary still applies to all three controlled methods;
+ *   the deployment declaration is not authentication and a challenge is not
+ *   human proof.
+ *
  *   event `changed`, data `{ at: number }`: the roster this definition's handler
  *   answers from may have changed, so a reader should take a fresh snapshot.
  *   It is a nudge, not a value: the snapshot is always the truth, and events are
  *   live-only, so a reader that starts late must snapshot rather than wait.
  *
+ *   event `watchChanged`, data `{ at: number }`: a watched task's state, report
+ *   supervision or persistent alerts may have changed; take a fresh `watch` snapshot. Like
+ *   `changed`, it is only a nudge and carries no task value.
+ *
  * The method is registered even when the plugin is disabled, so a reader can
  * tell "off here" from "not loaded here" (`rpc.unavailable`).
+ *
+ * Compatibility: `watch` is an unreleased additive method in this development
+ * series; the #59 and #60 checkpoints are not separately released wire versions.
+ * Its server and TUI ship together and must use the same package version.
+ * Existing roster/setScope contracts remain unchanged. Once this watch shape
+ * is released, incompatible required-field changes require a new RPC id rather
+ * than a reader that silently invents missing observations or authority.
  *
  * A `RosterPeer` is a wire shape, not `domain/types.ts`'s `Peer`: it carries
  * what a reader renders and nothing else — no instance id, no timestamps.
@@ -51,6 +89,38 @@
 
 import type { Rpc } from "@opencode/plugin"
 
+import { watchChangedEvent, watchGrantRpcMethod, watchRpcMethod } from "./watch/contract.ts"
+import { watchDelegationRpcMethod, watchDelegationViewRpcMethod } from "./watch/delegation-contract.ts"
+
+export {
+  readWatchGrantPayload,
+  readWatchPayload,
+  watchTaskSchema,
+  type WatchFailureView,
+  type WatchGrantChallengeView,
+  type WatchGrantPayload,
+  type WatchLedgerView,
+  type WatchPayload,
+} from "./watch/contract.ts"
+
+export {
+  readWatchDelegationGrantPayload,
+  readWatchDelegationViewPayload,
+  watchDelegationRpcMethod,
+  watchDelegationViewRpcMethod,
+  type DelegationChallengeView,
+  type DelegationReviewView,
+  type WatchDelegationGrantPayload,
+  type WatchDelegationViewPayload,
+} from "./watch/delegation-contract.ts"
+
+export type {
+  DelegatedChildAuthorization,
+  DelegatedChildView,
+  DelegationGrantView,
+  WatchDelegationFailure,
+  WatchDelegationView,
+} from "./watch/delegation-view.ts"
 export const SESSION_PEERS_RPC_ID = "session-peers.v1"
 
 /** One peer, as the view reads it. */
@@ -143,6 +213,10 @@ export const SESSION_PEERS_RPC = {
         additionalProperties: false,
       },
     },
+    watch: watchRpcMethod,
+    watchGrant: watchGrantRpcMethod,
+    watchDelegation: watchDelegationRpcMethod,
+    watchDelegationView: watchDelegationViewRpcMethod,
   },
   events: {
     changed: {
@@ -153,6 +227,7 @@ export const SESSION_PEERS_RPC = {
         additionalProperties: false,
       },
     },
+    watchChanged: watchChangedEvent,
   },
 } as const satisfies Rpc.PortableDefinition
 

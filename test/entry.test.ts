@@ -43,6 +43,7 @@ describe("the plugin definition", () => {
       "cancel",
       "handover",
       "status",
+      "watch",
     ]
     expect(tool?.input).toMatchObject({
       type: "object",

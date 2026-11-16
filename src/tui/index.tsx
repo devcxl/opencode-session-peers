@@ -17,6 +17,7 @@ import type { Plugin } from "@opencode/plugin/tui"
 import { createTuiPort } from "../host/tui.ts"
 import { RosterDialog } from "./dialog.tsx"
 import { createRosterFeed, failureText } from "./feed.ts"
+import { installWatch } from "./watch-command.tsx"
 
 export default {
   id: "session-peers.tui",
@@ -26,6 +27,7 @@ export default {
     // One feed for the whole TUI, not one per dialog: the roster answers for
     // this location, and a dialog that opens later reads what is already known.
     const feed = createRosterFeed(port.roster)
+    const stopWatch = installWatch(port)
 
     port.command({
       id: "session-peers.roster",
@@ -86,6 +88,9 @@ export default {
     })
 
     // The host calls this when the plugin unloads or the TUI exits.
-    return () => feed.dispose()
+    return () => {
+      stopWatch()
+      feed.dispose()
+    }
   },
 } satisfies Plugin.Definition

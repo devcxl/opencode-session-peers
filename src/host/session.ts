@@ -22,6 +22,12 @@ export interface SessionRecord {
   readonly parentID?: SessionID
   /** The model id the session runs, if one is selected. */
   readonly modelID?: string
+  /** The host's last execution-start time, when it reports one. */
+  readonly busyAt?: number
+  /** The host's last terminal time, when it reports one. Not a current-idle proof by itself. */
+  readonly idleAt?: number
+  /** The outcome of the last completed execution, as the host reports it. */
+  readonly outcome?: string
 }
 
 /** One message handed to a session, and when its reader should get it. */
@@ -55,6 +61,11 @@ export function sessionLookup(
     async get(sessionID) {
       const record = await session.get({ sessionID })
       const title = record.title?.trim()
+      // `time.busy` is present in the measured runtime but absent from the
+      // installed 2.0.16 Session.Info type. Read it through a guarded local
+      // shape; it is evidence, not a licence to assume a current state.
+      const time = record.time as unknown as { readonly busy?: unknown }
+      const busyAt = typeof time.busy === "number" && Number.isFinite(time.busy) ? time.busy : undefined
       return {
         id: record.id,
         title: title !== undefined && title.length > 0 ? title : undefined,
@@ -62,6 +73,9 @@ export function sessionLookup(
         projectID: record.projectID,
         parentID: record.parentID,
         modelID: record.model?.id,
+        ...(busyAt === undefined ? {} : { busyAt }),
+        ...(record.time?.idle === undefined ? {} : { idleAt: record.time.idle }),
+        ...(record.outcome === undefined ? {} : { outcome: record.outcome }),
       }
     },
 

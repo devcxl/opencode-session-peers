@@ -50,8 +50,16 @@ These are decisions, not omissions. See `docs/adr/0004-same-os-user-trust-bounda
   not an authorisation, and any session in the same scope may message any other.
 - **No cross-user isolation.** Two operating-system users are two separate opencode states; nothing
   is attempted across that line.
-- **No human-facing confirmation.** There is no UI, no approval prompt and no queue for a human to
-  review. A refusal is reported to the calling model, which is the only actor this plugin talks to.
+- **No model-facing confirmation.** A correction grant cannot be confirmed by the calling model.
+  The controlled TUI surface uses a private `watchGrant` prepare/confirm RPC with an explicit
+  deployment declaration; the model can only request that the user review it. A refusal is reported
+  to the calling model.
+- **Correction authority is a private ledger, not authentication.** Any process running as the same
+  OS user can read or modify the ledger. File permissions, the identity anchor and a deployment
+  declaration are not proof of a unique host or of a human actor.
+- **Queue admission is not consumption.** The target's receipt is required before continuation; a
+  missing or unknown result is never replayed. The final check and host enqueue are not atomic and an
+  admitted message cannot be retracted. No exactly-once execution or handover proof is claimed.
 
 ## Reporting
 

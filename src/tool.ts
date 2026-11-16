@@ -17,6 +17,7 @@ import { pendingAction } from "./actions/pending.ts"
 import { replyAction } from "./actions/reply.ts"
 import { sendAction } from "./actions/send.ts"
 import { statusAction } from "./actions/status.ts"
+import { watchAction } from "./actions/watch.ts"
 import type { Config } from "./config.ts"
 import type { HandoverSupport } from "./host/handover.ts"
 import type { SessionLookup } from "./host/session.ts"
@@ -24,6 +25,7 @@ import type { PluginStorage } from "./host/storage.ts"
 import type { ToolSpec } from "./host/tools.ts"
 import type { Roster } from "./peers/roster.ts"
 import type { LocalAskWaits } from "./ask/handshake.ts"
+import type { WatchApplication, WatchObservationSource } from "./watch/service.ts"
 
 export const PEERS_TOOL_NAME = "peers"
 
@@ -39,7 +41,9 @@ const PEERS_TOOL_DESCRIPTION =
   `"cancel" — request a stop to this session's local ask wait; it cannot withdraw the message; ` +
   `"handover" — summarize this session with this session's own model and send the summary ` +
   `to one peer, which continues the work; ` +
-  `"status" — this session's id, its scope, and whether the host is answering.`
+  `"status" — this session's id, its scope, and whether the host is answering; ` +
+  `"watch" — enroll or inspect an explicitly watched task, report its state, pause/end supervision, ` +
+  `or acknowledge one persistent alert. Watch defaults to alert-only; automatic correction stays closed on an unverified runtime, and a correction prompt is answered only through the bounded receipt action.`
 
 const PEERS_TOOL_INPUT = {
   type: "object",
@@ -47,7 +51,7 @@ const PEERS_TOOL_INPUT = {
   properties: {
     action: {
       type: "string",
-      enum: ["list", "list-cwd", "send", "ask", "reply", "pending", "cancel", "handover", "status"],
+      enum: ["list", "list-cwd", "send", "ask", "reply", "pending", "cancel", "handover", "status", "watch"],
       description:
         `Action to run: "list" every live peer in scope, "list-cwd" the peers in this ` +
         `session's directory, "send" a message to one peer, "ask" a question that waits for ` +
@@ -99,6 +103,95 @@ const PEERS_TOOL_INPUT = {
         `omit it when only one local wait exists. Not for "send", "ask" or ` +
         `"handover": a handover that carries a reply reference is refused.`,
     },
+    watch: {
+      type: "object",
+      additionalProperties: false,
+      description:
+        `For "watch": one bounded watchdog request. Self-enrollment defaults to alert-only; a direct child ` +
+        `needs a controlled delegation grant before delegate or non-self enroll. Enrollment never wakes or replays work. ` +
+        `Reporting and receipt are for the executing session. Model grant, manual correct, ownership transfer and resume are refused.`,
+      properties: {
+        operation: {
+          type: "string",
+          enum: [
+            "show",
+            "enroll",
+            "report",
+            "pause",
+            "end",
+            "ack",
+            "grant",
+            "correct",
+            "receipt",
+            "delegate",
+            "transfer",
+            "resume",
+          ],
+          description:
+            `"show" a task, "enroll" the calling session, "delegate" enroll an already-created direct child under a controlled delegation grant, ` +
+            `"report" begin/progress/waiting/blocked/completed, "pause" or "end" supervision, "ack" read one alert, ` +
+            `"receipt" confirm one correction prompt with its task/attempt/correlation. Model grant, manual correct, transfer and resume remain refused.`,
+        },
+        taskID: { type: "string", description: `The watched task id; for delegate, the calling parent's task id.` },
+        alertID: { type: "string", description: `The persistent alert id for ack; it only marks the alert read.` },
+        expectedVersion: {
+          type: "integer",
+          description: `The state version read from show; for delegate or non-self enroll, the parent task version.`,
+        },
+        requestId: {
+          type: "string",
+          description: `A stable idempotency key for enroll or delegate; repeating it with the same parameters is the same task.`,
+        },
+        goal: { type: "string", description: `The real task goal, required for enroll or delegate; never a request to replay work.` },
+        targetSessionID: {
+          type: "string",
+          description:
+            `The calling session, or an existing direct child with a controlled delegation grant, verified host parentID, same location and known matching plugin scope. Never creates or wakes a child.`,
+        },
+        mode: {
+          type: "string",
+          enum: ["alert", "correct", "limited-correction"],
+          description: `Self-enrollment accepts alert only. Delegate accepts alert or limited-correction within its existing controlled delegation grant; choosing a mode never grants authority. correct is refused.`,
+        },
+        reportId: {
+          type: "string",
+          description: `A stable idempotency key for one report; a repeat with the same evidence is not a second report.`,
+        },
+        attemptID: {
+          type: "string",
+          description: `The permanent correction attempt id carried by a correction prompt; required for receipt.`,
+        },
+        correlation: {
+          type: "string",
+          description: `The opaque correlation carried only by a correction prompt; required for receipt and never exposed by show.`,
+        },
+        kind: {
+          type: "string",
+          enum: ["begin", "progress", "waiting", "blocked", "completed"],
+          description: `The state change being reported.`,
+        },
+        evidence: {
+          type: "object",
+          additionalProperties: false,
+          description:
+            `Evidence for the report. progress and completed need summary + reference; waiting needs ` +
+            `waitKind + waitFor + reason + reference and may add waitID/waitUntil; a matching clear needs ` +
+            `clearsWaitID + clearEvidence.`,
+          properties: {
+            summary: { type: "string" },
+            reference: { type: "string" },
+            waitKind: { type: "string", enum: ["human", "peer", "permission", "form", "child", "other"] },
+            waitFor: { type: "string" },
+            reason: { type: "string" },
+            waitID: { type: "string" },
+            waitUntil: { type: "integer" },
+            clearsWaitID: { type: "string" },
+            clearEvidence: { type: "string" },
+          },
+        },
+      },
+      required: ["operation"],
+    },
   },
   required: ["action"],
 } as const
@@ -114,6 +207,12 @@ export interface PeersToolDeps {
   readonly warn: (message: string) => void
   /** What a handover needs from the host: the session's own model, version control, the sender's directory. */
   readonly handover: HandoverSupport
+  /** The watchdog application; absent exactly when the plugin is disabled. */
+  readonly watch?: WatchApplication
+  /** The observer's current reading, for tool results that include it. */
+  readonly observe?: WatchObservationSource
+  /** The directory this instance serves; watch enrollment is limited to it. */
+  readonly directory: string
 }
 
 export function peersTool(deps: PeersToolDeps): ToolSpec {
@@ -144,6 +243,8 @@ export function peersTool(deps: PeersToolDeps): ToolSpec {
           return handoverAction(deps, call, input)
         case "status":
           return statusAction(deps, call)
+        case "watch":
+          return watchAction(deps, call, input)
         default:
           throw new Error(`Unknown peers action: ${action}`)
       }

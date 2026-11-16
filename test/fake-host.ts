@@ -38,6 +38,18 @@ type ToolResult = Awaited<ReturnType<ToolInfo["execute"]>>
 type SkillTransform = Plugin.Context["skill"]["transform"]
 type SkillEditor = Parameters<Parameters<SkillTransform>[0]>[0]
 
+type CommandTransform = Plugin.Context["command"]["transform"]
+type CommandEditor = Parameters<Parameters<CommandTransform>[0]>[0]
+type FakeCommand = Parameters<CommandEditor["add"]>[0]
+
+/** The slice of a model request the plugin's context hook may read or mutate. */
+interface FakeModelContext {
+  readonly sessionID: string
+  readonly system: { type: "text"; text: string; metadata?: Record<string, unknown> }[]
+}
+
+type ContextHook = (input: FakeModelContext) => Promise<void> | void
+
 /** A session as the fake host knows it. Everything else has a default. */
 export interface FakeSession {
   readonly id: string
@@ -46,6 +58,12 @@ export interface FakeSession {
   readonly directory?: string
   readonly parentID?: string
   readonly model?: string
+  /** Last execution-start time the host reports. */
+  readonly busyAt?: number
+  /** Last terminal time the host reports; absent until a terminal execution. */
+  readonly idleAt?: number
+  /** Outcome of the last completed execution. */
+  readonly outcome?: "succeeded" | "failed" | "interrupted"
   /** The tool calls this session's transcript shows, oldest first. */
   readonly toolCalls?: readonly FakeToolCall[]
 }
@@ -110,6 +128,20 @@ export interface FakeHostOptions {
   readonly generate?: string | Error
   /** The branch this host knows for a directory; a lookup for anything else is a directory with no repository. */
   readonly vcsBranch?: Readonly<Record<string, string>>
+  /** Pending permission requests per session; a session with no entry has an empty snapshot. */
+  readonly permissions?: Readonly<Record<string, readonly { readonly id: string; readonly action: string; readonly resources: readonly string[]; readonly message?: string }[]>>
+  /** Make the permission snapshot fail, as a cross-location/unknown source would. */
+  readonly permissionsError?: boolean
+  /** Delay the permission snapshot so a test can pause/end while a tick is in flight. */
+  readonly permissionDelayMs?: number
+  /** Make selected storage keys fail on read, for an observer wait-source failure. */
+  readonly storageReadFailure?: (key: string) => boolean
+  /** Initial session-lookup gate; can be changed with setSessionGetGate. */
+  readonly sessionGetGate?: Promise<void>
+  /** App version the fake context reports. */
+  readonly appVersion?: string
+  /** Initial controlled clock. */
+  readonly now?: number
 }
 
 export interface FakeHost {
@@ -127,16 +159,47 @@ export interface FakeHost {
   readonly vcsLookups: readonly FakeVcsLookup[]
   /** Tools the plugin registered, in order. */
   readonly tools: readonly ToolInfo[]
+  /** Commands the plugin registered, in order. */
+  readonly commands: readonly FakeCommand[]
   /** Skills the plugin registered, in order. */
   readonly skills: readonly FakeSkill[]
   /** RPC surfaces the plugin registered, in order. */
   readonly rpcs: readonly FakeRpc[]
+  /** Sessions the plugin asked the host to interrupt, in order. */
+  readonly interrupts: readonly string[]
   /** The storage the plugin wrote to; the same object the host was given. */
   readonly storage: FakeStorage
   /** Delivers an event to the plugin's subscription, as the host would. */
-  emit(type: string, data: Readonly<Record<string, unknown>>): void
+  /** `sourceLocation: null` omits the location stamp entirely, as an unknown source would. */
+  emit(type: string, data: Readonly<Record<string, unknown>>, at?: number, sourceLocation?: string | null): void
+  /** The controlled clock. */
+  now(): number
+  /** Jump the controlled clock without running interval callbacks (sleep/suspend). */
+  jumpClock(ms: number): void
+  /** Advance the controlled scheduler, awaiting callbacks at each due tick. */
+  advance(ms: number): Promise<void>
+  /** End all live event subscriptions, as a host shutdown would. */
+  endEvents(): void
+  /** Set the host's last execution-start time for a session. */
+  setBusy(sessionID: string, busyAt: number): void
+  /** Set the host's last terminal time for a session. */
+  setIdle(sessionID: string, idleAt: number): void
+  /** Replace the pending permission snapshot for one session. */
+  setPermissions(sessionID: string, requests: readonly { readonly id: string; readonly action: string; readonly resources: readonly string[]; readonly message?: string }[]): void
+  /** Change the storage-read failure predicate during a test. */
+  setStorageReadFailure(failure?: (key: string) => boolean): void
+  /** Hold session lookups until released, for post-await closing fences. */
+  setSessionGetGate(gate?: Promise<void>): void
   /** Live event subscriptions; zero once the plugin has unsubscribed. */
   subscribers(): number
+  /**
+   * Runs the context hooks the plugin registered for one model request and
+   * returns the system text they added. This is the host's normal request path,
+   * not a prompt: no turn starts.
+   */
+  modelContext(sessionID?: string): Promise<readonly string[]>
+  /** Invoke a registered server command, as the host would. */
+  runCommand(name: string, sessionID: string, text: string): Promise<void>
   /**
    * Invoke a registered tool, and report what the model would receive. The
    * signal is the tool call's own: aborting it stands in for the turn being
@@ -165,11 +228,20 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
   const generations: FakeGeneration[] = []
   const vcsLookups: FakeVcsLookup[] = []
   const tools: ToolInfo[] = []
+  const commands: FakeCommand[] = []
   const skills: FakeSkill[] = []
+  const interrupts: string[] = []
+  const contextHooks: ContextHook[] = []
   const rpc = fakeRpcSurface()
   const refused = new Set(options.promptRefuses ?? [])
   const unreadable = new Set(options.contextRefuses ?? [])
   const subscriptions = new Set<FakeSubscription>()
+  const idleOverrides = new Map<string, number>()
+  const busyOverrides = new Map<string, number>()
+  const permissionOverrides = new Map<string, readonly { readonly id: string; readonly action: string; readonly resources: readonly string[]; readonly message?: string }[]>()
+  let storageReadFailure = options.storageReadFailure
+  let sessionGetGate = options.sessionGetGate
+  const scheduler = new FakeScheduler(options.now ?? 1_000_000)
   let eventCounter = 0
 
   const editor: ToolEditor = {
@@ -195,12 +267,14 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
 
   const context = {
     options: options.options ?? {},
+    app: { name: "opencode", version: options.appVersion ?? "2.3.0", channel: "stable" },
     location: { directory: location, project: { id: "proj_fake" } },
     session: {
       get: async (input: { readonly sessionID: string }) => {
         lookups.push(input.sessionID)
         const session = known.get(input.sessionID)
         if (session === undefined) throw new Error("Session.NotFoundError")
+        if (sessionGetGate !== undefined) await sessionGetGate
         return {
           id: input.sessionID,
           title: session.title ?? "fake session",
@@ -208,6 +282,17 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
           location: { directory: session.directory ?? location },
           ...(session.parentID === undefined ? {} : { parentID: session.parentID }),
           ...(session.model === undefined ? {} : { model: { id: session.model, providerID: "fake" } }),
+          time: {
+            created: 0,
+            updated: 0,
+            ...(busyOverrides.get(input.sessionID) === undefined && session.busyAt === undefined
+              ? {}
+              : { busy: busyOverrides.get(input.sessionID) ?? session.busyAt }),
+            ...(idleOverrides.get(input.sessionID) === undefined && session.idleAt === undefined
+              ? {}
+              : { idle: idleOverrides.get(input.sessionID) ?? session.idleAt }),
+          },
+          ...(session.outcome === undefined ? {} : { outcome: session.outcome }),
         }
       },
       prompt: async (input: {
@@ -252,6 +337,18 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
           text: options.generate ?? "",
         }
       },
+      hook: async (_name: string, callback: ContextHook) => {
+        contextHooks.push(callback)
+        return {
+          dispose: async () => {
+            const index = contextHooks.indexOf(callback)
+            if (index >= 0) contextHooks.splice(index, 1)
+          },
+        }
+      },
+      interrupt: async (input: { readonly sessionID: string }) => {
+        interrupts.push(input.sessionID)
+      },
     },
     vcs: {
       get: async (input?: { readonly location?: { readonly directory?: string } }) => {
@@ -266,7 +363,30 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
         }
       },
     },
-    storage,
+    storage: {
+      get: async (key: string) => {
+        if (storageReadFailure?.(key) === true) throw new Error("Storage.ReadFailed")
+        return storage.get(key)
+      },
+      set: storage.set,
+      remove: storage.remove,
+      scan: storage.scan,
+    },
+    permission: {
+      list: async (input: { readonly sessionID: string }) => {
+        if (options.permissionDelayMs !== undefined) {
+          await new Promise((resolve) => setTimeout(resolve, options.permissionDelayMs))
+        }
+        if (options.permissionsError === true) throw new Error("Permission.Unavailable")
+        return [...(permissionOverrides.get(input.sessionID) ?? options.permissions?.[input.sessionID] ?? [])].map((request) => ({
+          id: request.id,
+          action: request.action,
+          resources: [...request.resources],
+          ...(request.message === undefined ? {} : { message: request.message }),
+        }))
+      },
+    },
+    scheduler,
     event: {
       subscribe: (subscribeOptions: { readonly signal?: AbortSignal }) => {
         const subscription = new FakeSubscription()
@@ -287,8 +407,8 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
       },
     },
     command: {
-      transform: async (edit: (editor: { add: () => void }) => void) => {
-        edit({ add: () => {} })
+      transform: async (edit: (editor: CommandEditor) => void) => {
+        edit({ add: (command) => commands.push(command) })
         return { dispose: async () => {} }
       },
     },
@@ -311,17 +431,61 @@ export function fakeHost(options: FakeHostOptions = {}): FakeHost {
     generations,
     vcsLookups,
     tools,
+    commands,
     skills,
     get rpcs(): readonly FakeRpc[] {
       return rpc.rpcs()
     },
+    interrupts,
     storage,
-    emit(type, data) {
+    now: () => scheduler.now(),
+    emit(type, data, at = scheduler.now(), sourceLocation = location) {
       eventCounter += 1
-      const event = { id: `evt_fake_${eventCounter}`, created: Date.now(), type, data }
+      const event = {
+        id: `evt_fake_${eventCounter}`,
+        created: at,
+        type,
+        data,
+        ...(sourceLocation === null ? {} : { location: { directory: sourceLocation } }),
+      }
       for (const subscription of [...subscriptions]) subscription.push(event as unknown as HostEvent)
     },
+    jumpClock: (ms) => scheduler.jump(ms),
+    advance: (ms) => scheduler.advance(ms),
+    endEvents() {
+      for (const subscription of [...subscriptions]) subscription.close()
+      subscriptions.clear()
+    },
+    setBusy(sessionID, busyAt) {
+      busyOverrides.set(sessionID, busyAt)
+    },
+    setIdle(sessionID, idleAt) {
+      idleOverrides.set(sessionID, idleAt)
+    },
+    setPermissions(sessionID, requests) {
+      permissionOverrides.set(sessionID, requests)
+    },
+    setStorageReadFailure(failure) {
+      storageReadFailure = failure
+    },
+    setSessionGetGate(gate) {
+      sessionGetGate = gate
+    },
     subscribers: () => subscriptions.size,
+    async modelContext(sessionID = caller) {
+      const input: FakeModelContext = { sessionID, system: [] }
+      for (const hook of [...contextHooks]) await hook(input)
+      return input.system.map((part) => part.text)
+    },
+    async runCommand(name, sessionID, text) {
+      const command = commands.find((candidate) => candidate.name === name)
+      if (command === undefined) throw new Error(`No command named "${name}" is registered`)
+      await command.execute({
+        sessionID: sessionID as never,
+        prompt: { text },
+        delivery: "steer",
+      })
+    },
     async call(name, input, sessionID = caller, signal) {
       const tool = tools.find((candidate) => candidate.name === name)
       if (tool === undefined) throw new Error(`No tool named "${name}" is registered`)
@@ -345,6 +509,57 @@ function rejectUndefined(value: unknown, path: string): void {
   }
   if (typeof value === "object" && value !== null) {
     for (const [key, entry] of Object.entries(value)) rejectUndefined(entry, `${path}.${key}`)
+  }
+}
+
+/** A deterministic interval scheduler for observation tests. */
+class FakeScheduler {
+  private current: number
+  private nextID = 1
+  private readonly intervals = new Map<number, { due: number; readonly step: number; readonly callback: () => void | Promise<void> }>()
+
+  constructor(start: number) {
+    this.current = start
+  }
+
+  now(): number {
+    return this.current
+  }
+
+  every(intervalMs: number, callback: () => void | Promise<void>): { dispose(): void } {
+    const id = this.nextID++
+    this.intervals.set(id, {
+      due: this.current + intervalMs,
+      step: intervalMs,
+      callback,
+    })
+    return { dispose: () => this.intervals.delete(id) }
+  }
+
+  jump(ms: number): void {
+    this.current += ms
+    for (const interval of this.intervals.values()) interval.due += ms
+  }
+
+  async advance(ms: number): Promise<void> {
+    const target = this.current + ms
+    for (;;) {
+      let nextID: number | undefined
+      let nextDue = Number.POSITIVE_INFINITY
+      for (const [id, interval] of this.intervals) {
+        if (interval.due < nextDue) {
+          nextDue = interval.due
+          nextID = id
+        }
+      }
+      if (nextID === undefined || nextDue > target) break
+      this.current = nextDue
+      const interval = this.intervals.get(nextID)
+      if (interval === undefined) continue
+      interval.due += interval.step
+      await interval.callback()
+    }
+    this.current = target
   }
 }
 
