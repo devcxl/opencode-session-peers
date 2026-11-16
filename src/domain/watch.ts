@@ -240,7 +240,10 @@ export interface WatchCorrectionAttemptRecord {
   readonly stopReason?: WatchCorrectionStopReason
 }
 
-/** One unresolved attempt: any in-flight phase, or a receipted attempt whose permit is not recovered. */
+/**
+ * One unresolved attempt: any in-flight phase, or a receipted attempt whose
+ * permit has not been closed by a verified current-target report.
+ */
 export function isCorrectionAttemptOpen(attempt: {
   readonly phase: WatchCorrectionAttemptPhase
   readonly receiptPermitAt?: number
