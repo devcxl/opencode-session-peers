@@ -178,6 +178,7 @@ describeService("delegation application", () => {
         delegationTerms: expect.stringContaining("direct child"),
         correctionTerms: WATCH_CORRECTION_TERMS,
         deploymentRequired: true,
+        derivesCorrectionGrant: true,
       })
       expect(prepared.challenge).not.toBeNull()
 

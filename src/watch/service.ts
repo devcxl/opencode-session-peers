@@ -106,6 +106,8 @@ export interface WatchDelegationGrantOutcome {
     readonly delegationTerms: string
     readonly correctionTerms: string
     readonly deploymentRequired: boolean
+    /** True only for a limited grant, which derives the child correction grant. */
+    readonly derivesCorrectionGrant: boolean
   }
   readonly failure: WatchFailure | null
 }
@@ -793,6 +795,7 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
           delegationTerms: WATCH_DELEGATION_TERMS,
           correctionTerms: WATCH_CORRECTION_TERMS,
           deploymentRequired: validation.value.mode === "limited-correction",
+          derivesCorrectionGrant: validation.value.mode === "limited-correction",
         },
       }
     },
@@ -850,6 +853,7 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
           delegationTerms: WATCH_DELEGATION_TERMS,
           correctionTerms: WATCH_CORRECTION_TERMS,
           deploymentRequired: mode.value === "limited-correction",
+          derivesCorrectionGrant: mode.value === "limited-correction",
         },
       }
     },
@@ -889,6 +893,7 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
           delegationTerms: WATCH_DELEGATION_TERMS,
           correctionTerms: WATCH_CORRECTION_TERMS,
           deploymentRequired: revoked.value.grant.mode === "limited-correction",
+          derivesCorrectionGrant: revoked.value.grant.mode === "limited-correction",
         },
       }
     },
@@ -1525,6 +1530,7 @@ function delegationGrantFailure(failure: WatchFailure): WatchDelegationGrantOutc
       delegationTerms: WATCH_DELEGATION_TERMS,
       correctionTerms: WATCH_CORRECTION_TERMS,
       deploymentRequired: false,
+      derivesCorrectionGrant: false,
     },
     failure,
   }
@@ -1542,6 +1548,7 @@ function delegationGrantSuccess(task: WatchTaskView | null): WatchDelegationGran
       delegationTerms: WATCH_DELEGATION_TERMS,
       correctionTerms: WATCH_CORRECTION_TERMS,
       deploymentRequired: false,
+      derivesCorrectionGrant: false,
     },
     failure: null,
   }
