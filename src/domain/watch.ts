@@ -557,9 +557,10 @@ export interface WatchAlertsView {
  * What this build can actually do, as distinct from the mode the user chose.
  * Observation and alerts are always available. Automatic correction is
  * `bounded` only when the task's own gate is ready on a verified runtime;
- * it is not inferred from the selected mode. Manual correction, delegation,
- * transfer and resume remain unavailable, and safety pause is a displayed
- * state rather than a resume/takeover capability.
+ * it is not inferred from the selected mode. Direct-child enrollment requires
+ * its own controlled grant. Manual correction, transfer and resume remain
+ * unavailable, and safety pause is a displayed state rather than a
+ * resume/takeover capability.
  */
 export interface WatchCapability {
   readonly mode: WatchMode
@@ -568,7 +569,7 @@ export interface WatchCapability {
   readonly automaticDetectionReason: string
   readonly correction: "unavailable" | "bounded"
   readonly correctionReason: string
-  readonly delegation: "unavailable"
+  readonly delegation: "unavailable" | "direct-child"
   readonly delegationReason: string
   readonly transfer: "unavailable"
   readonly transferReason: string
@@ -649,7 +650,9 @@ export const CORRECTION_UNAVAILABLE_REASON =
 export const MANUAL_CORRECTION_UNAVAILABLE_REASON =
   "Manual correction is not implemented in this build; only the gated automatic attempts, when the runtime is verified, can queue a correction."
 export const DELEGATION_UNAVAILABLE_REASON =
-  "Child-task delegation is not open in this build; enroll the calling session itself."
+  "This surface does not enroll another session; use the peers watch delegate operation after a controlled direct-child delegation grant."
+export const DIRECT_CHILD_DELEGATION_REASON =
+  "Direct-child enrollment requires a controlled delegation grant, verified one-hop host parentID, same location and known matching plugin scope. This capability does not grant authority or bypass correction gates."
 export const TRANSFER_UNAVAILABLE_REASON =
   "Watch ownership transfer is not implemented in this build."
 export const RECOVERY_UNAVAILABLE_REASON =

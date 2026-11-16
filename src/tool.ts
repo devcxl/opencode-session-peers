@@ -107,9 +107,9 @@ const PEERS_TOOL_INPUT = {
       type: "object",
       additionalProperties: false,
       description:
-        `For "watch": one bounded watchdog request. Enroll is explicit and alert-only; show, pause and end ` +
-        `are read/control operations. Reporting and receipt are for the executing session. Grant, delegation, ` +
-        `ownership transfer and resume are refused explicitly because this build does not implement them.`,
+        `For "watch": one bounded watchdog request. Self-enrollment defaults to alert-only; a direct child ` +
+        `needs a controlled delegation grant before delegate or non-self enroll. Enrollment never wakes or replays work. ` +
+        `Reporting and receipt are for the executing session. Model grant, manual correct, ownership transfer and resume are refused.`,
       properties: {
         operation: {
           type: "string",
@@ -128,29 +128,30 @@ const PEERS_TOOL_INPUT = {
             "resume",
           ],
           description:
-            `"show" a task, "enroll" the calling session, "report" begin/progress/waiting/blocked/completed, ` +
-            `"pause" or "end" supervision, "ack" read one alert, "receipt" confirm one correction prompt with its task/attempt/correlation. Grant, delegation, transfer and resume remain explicit unavailable refusals.`,
+            `"show" a task, "enroll" the calling session, "delegate" enroll an already-created direct child under a controlled delegation grant, ` +
+            `"report" begin/progress/waiting/blocked/completed, "pause" or "end" supervision, "ack" read one alert, ` +
+            `"receipt" confirm one correction prompt with its task/attempt/correlation. Model grant, manual correct, transfer and resume remain refused.`,
         },
-        taskID: { type: "string", description: `The watched task id for show, report, pause or end.` },
+        taskID: { type: "string", description: `The watched task id; for delegate, the calling parent's task id.` },
         alertID: { type: "string", description: `The persistent alert id for ack; it only marks the alert read.` },
         expectedVersion: {
           type: "integer",
-          description: `The state version read from show; report, pause and end reject a stale value.`,
+          description: `The state version read from show; for delegate or non-self enroll, the parent task version.`,
         },
         requestId: {
           type: "string",
-          description: `A stable idempotency key for enroll; repeating it with the same parameters is the same task.`,
+          description: `A stable idempotency key for enroll or delegate; repeating it with the same parameters is the same task.`,
         },
-        goal: { type: "string", description: `The user's real task goal, required for enroll.` },
+        goal: { type: "string", description: `The real task goal, required for enroll or delegate; never a request to replay work.` },
         targetSessionID: {
           type: "string",
           description:
-            `The session being watched. This build only accepts the calling session; another session is refused, not silently accepted.`,
+            `The calling session, or an existing direct child with a controlled delegation grant, verified host parentID, same location and known matching plugin scope. Never creates or wakes a child.`,
         },
         mode: {
           type: "string",
-          enum: ["alert", "correct"],
-          description: `Enrollment mode; alert is the only enrollment mode. Limited correction is granted through the controlled surface, and a model-supplied correct mode is refused.`,
+          enum: ["alert", "correct", "limited-correction"],
+          description: `Self-enrollment accepts alert only. Delegate accepts alert or limited-correction within its existing controlled delegation grant; choosing a mode never grants authority. correct is refused.`,
         },
         reportId: {
           type: "string",

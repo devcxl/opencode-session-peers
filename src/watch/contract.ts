@@ -418,7 +418,7 @@ const capabilitySchema = {
     automaticDetectionReason: { type: "string" },
     correction: { type: "string", enum: ["unavailable", "bounded"] },
     correctionReason: { type: "string" },
-    delegation: { type: "string", enum: ["unavailable"] },
+    delegation: { type: "string", enum: ["unavailable", "direct-child"] },
     delegationReason: { type: "string" },
     transfer: { type: "string", enum: ["unavailable"] },
     transferReason: { type: "string" },
@@ -1529,7 +1529,7 @@ function readCapability(value: unknown): WatchCapability | undefined {
     typeof automaticDetectionReason !== "string" ||
     (correction !== "unavailable" && correction !== "bounded") ||
     typeof correctionReason !== "string" ||
-    delegation !== "unavailable" ||
+    (delegation !== "unavailable" && delegation !== "direct-child") ||
     typeof delegationReason !== "string" ||
     transfer !== "unavailable" ||
     typeof transferReason !== "string" ||
@@ -1630,4 +1630,16 @@ function isNonNegativeInteger(value: unknown): value is number {
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined
   return value as Record<string, unknown>
+}
+
+/**
+ * The delegation sibling's readers reuse these exact validators instead of a
+ * shallow cast. They are not a second wire contract: their types and rules stay
+ * the ones the existing `watch` payload already uses.
+ */
+export {
+  readAlerts as readWatchAlertsView,
+  readCapability as readWatchCapabilityView,
+  readControls as readWatchControlsView,
+  readTask as readWatchTaskView,
 }

@@ -7,8 +7,22 @@ import {
   SAFETY_PAUSE_UNAVAILABLE_REASON,
 } from "../src/domain/watch.ts"
 import { watchCapability, watchControls } from "../src/watch/view.ts"
+import { readWatchCapabilityView } from "../src/watch/contract.ts"
 
 describe("watch capability text", () => {
+  test("direct-child support is not a grant or a verified correction runtime", () => {
+    const capability = watchCapability()
+    expect(capability.delegation).toBe("direct-child")
+    expect(capability.delegationReason).toContain("controlled")
+    expect(capability.delegationReason).toContain("parentID")
+    expect(capability.delegationReason).toContain("scope")
+    expect(capability.delegationReason).toContain("does not grant")
+    expect(capability.correction).toBe("unavailable")
+    expect(readWatchCapabilityView(capability)).toEqual(capability)
+    expect(readWatchCapabilityView({ ...capability, delegation: "all-descendants" })).toBeUndefined()
+    expect(readWatchCapabilityView({ ...capability, delegation: "unavailable" })?.delegation).toBe("unavailable")
+  })
+
   test("bounded correction is derived from the task gate, never from the selected mode", () => {
     const unavailable = watchCapability("limited-correction", "unavailable")
     const ready = watchCapability("limited-correction", "ready")

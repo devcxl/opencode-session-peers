@@ -199,13 +199,17 @@ function executor(
   sent: CorrectionDeliveryRequest[],
   check: (taskID: string) => Promise<{ required: boolean; allowed: boolean }>,
   delivery: "accepted" | "unknown" = "accepted",
+  overrides: {
+    readonly observationFor?: (taskID: string) => WatchObservationView | null
+    readonly refreshObservation?: (taskID: string) => Promise<WatchObservationView | null>
+  } = {},
 ) {
   const authority = h.app.correctionAuthority()
   if (authority === undefined) throw new Error("no correction authority")
   return createCorrectionExecutor({
     authority,
-    observationFor: () => observation(h.clock.value),
-    refreshObservation: async () => observation(h.clock.value),
+    observationFor: overrides.observationFor ?? (() => observation(h.clock.value)),
+    refreshObservation: overrides.refreshObservation ?? (async () => observation(h.clock.value)),
     sameLocation: async () => true,
     runtime: () => runtime,
     gate: correctionGateWithVerifiedTuples(["2.3.0/linux/x64"]),
@@ -277,6 +281,119 @@ describeExecutor("delegated executor guard", () => {
       await run.close()
     } finally {
       h.close()
+    }
+  })
+
+  test("a scope or parentID change during the final post-reserve refresh aborts without refund", async () => {
+    for (const kind of ["scope", "parentID"] as const) {
+      const h = harness()
+      try {
+        const { childTaskID } = await seed(h)
+        const sent: CorrectionDeliveryRequest[] = []
+        const original = h.sessions.get(CHILD)
+        let refreshes = 0
+        const run = executor(
+          h,
+          sent,
+          async (taskID) => h.app.checkDelegatedAuthority(taskID),
+          "accepted",
+          {
+            refreshObservation: async () => {
+              refreshes += 1
+              if (refreshes === 2) {
+                if (kind === "scope") h.scopes.set(CHILD, { scope: "project-b", source: "recorded" })
+                else if (original !== undefined) h.sessions.set(CHILD, { ...original, parentID: "ses_other" })
+              }
+              return observation(h.clock.value)
+            },
+          },
+        )
+        run.kick(childTaskID)
+        await run.settle()
+        expect(sent).toHaveLength(0)
+        const correction = h.ledger.correction(childTaskID)
+        expect(correction.ok).toBe(true)
+        if (!correction.ok) return
+        expect(correction.value.attempts).toHaveLength(1)
+        expect(correction.value.attempts[0]).toMatchObject({ phase: "aborted" })
+        await run.close()
+      } finally {
+        h.close()
+      }
+    }
+  })
+
+  test("activity, wait or task-version change during the final authority await closes the gate", async () => {
+    for (const mutation of ["active", "waiting", "version"] as const) {
+      const h = harness()
+      try {
+        const { childTaskID } = await seed(h)
+        const sent: CorrectionDeliveryRequest[] = []
+        let view = observation(h.clock.value)
+        let calls = 0
+        const run = executor(
+          h,
+          sent,
+          async (taskID) => {
+            calls += 1
+            const checked = await h.app.checkDelegatedAuthority(taskID)
+            if (calls === 2) {
+              if (mutation === "active") {
+                view = { ...view, state: "active", observedAt: view.observedAt }
+              } else if (mutation === "waiting") {
+                view = {
+                  ...view,
+                  state: "normal-waiting",
+                  observedAt: view.observedAt,
+                  waits: [
+                    {
+                      waitID: "late-wait",
+                      source: "permission",
+                      object: "approval",
+                      reason: "awaiting approval",
+                      reference: null,
+                      startedAt: h.clock.value,
+                      deadline: null,
+                      status: "active",
+                      clearEvidence: null,
+                      denyEvidence: null,
+                    },
+                  ],
+                }
+              } else {
+                const current = h.ledger.show({ sessionID: CHILD, taskID })
+                if (current.ok && current.value !== null) {
+                  h.app.report({
+                    callerSessionID: CHILD,
+                    taskID,
+                    expectedVersion: current.value.version,
+                    reportID: "late-progress",
+                    kind: "progress",
+                    evidence: { summary: "late", reference: "late-ref" },
+                  })
+                }
+              }
+            }
+            return checked
+          },
+          "accepted",
+          {
+            observationFor: () => view,
+            refreshObservation: async () => view,
+          },
+        )
+        run.kick(childTaskID)
+        await run.settle()
+        expect(sent).toHaveLength(0)
+        const correction = h.ledger.correction(childTaskID)
+        expect(correction.ok).toBe(true)
+        if (!correction.ok) return
+        expect(correction.value.attempts).toHaveLength(1)
+        expect(correction.value.attempts[0]).toMatchObject({ phase: "aborted" })
+        await run.close()
+      } finally {
+        h.close()
+      }
     }
   })
 
