@@ -264,6 +264,26 @@ export function delegatedAuthorityGate(
       gates: [gate("grant", false, grant.state, "an active source delegation grant")],
     }
   }
+  const expectedDigest = delegationTermsDigest({
+    parentTaskID: grant.parentTaskID,
+    parentSessionID: grant.parentSessionID,
+    targetSessionID: grant.scopeTargetSessionID,
+    mode: grant.mode,
+    directory: grant.scopeDirectory,
+    peerScope: grant.scopePeerScope,
+    ownerActivation: grant.ownerActivation,
+    generation: grant.generation,
+    version: grant.parentTaskVersion,
+  })
+  if (grant.termsDigest !== expectedDigest) {
+    return {
+      required: true,
+      allowed: false,
+      stopReason: "grant-stale",
+      missingEvidence: "the delegation or correction terms changed; the old grant cannot continue",
+      gates: [gate("grant", false, "digest-changed", "the current canonical delegation and correction terms")],
+    }
+  }
   const linkFresh =
     link.grantID === grant.grantID &&
     link.grantVersion === grant.version &&
