@@ -322,7 +322,7 @@ describe("peers-watch children command", () => {
     expect(text).toContain("Session watch — delegation review")
     expect(text).toContain("Target child session: ses_child_prefill")
     expect(text).toContain("Delegation mode: limited-correction")
-    expect(text).toContain("y: declare + prepare challenge · n: cancel")
+    expect(text).toContain("y: declare + prepare challenge · e: change target/mode · n: cancel")
     // Absolutely no prepare/confirm/grant write RPC was issued
     expect(fake.delegationCalls).toHaveLength(0)
     dispose()
@@ -360,5 +360,74 @@ describe("peers-watch children command", () => {
     dispose()
     setup.renderer.destroy()
     delegationSetup.renderer.destroy()
+  })
+
+  test("deferred children read for session A does not overwrite session B after switch", async () => {
+    const { deferred } = await import("./tui-watch-fake.ts")
+    const slowA = deferred<unknown>()
+    const fake = fakePort({
+      sessionID: "ses_A",
+      read: async (req) => {
+        if (req.sessionID === "ses_A") return slowA.promise
+        return payload({
+          task: task({
+            taskID: "task_B",
+            initiatorSessionID: "ses_B",
+            targetSessionID: "ses_B",
+          }),
+        })
+      },
+    })
+    const dispose = installWatch(fake.port)
+
+    // 1. Open children for session A (read starts and hangs)
+    commandOf(fake).run("children")
+    await tick(0)
+    expect(fake.reads).toHaveLength(1)
+    expect(fake.reads[0]?.sessionID).toBe("ses_A")
+
+    // 2. Switch current session to B and open children for B
+    fake.setSession("ses_B")
+    commandOf(fake).run("children")
+    await tick(0)
+
+    expect(fake.dialogShows()).toBe(1)
+    expect(fake.delegationReads).toHaveLength(1)
+    expect(fake.delegationReads[0]?.parentTaskID).toBe("task_B")
+
+    // 3. Late response for A resolves
+    slowA.resolve(
+      payload({
+        task: task({
+          taskID: "task_A",
+          initiatorSessionID: "ses_A",
+          targetSessionID: "ses_A",
+        }),
+      }),
+    )
+    await tick(0)
+
+    // B remains on screen and A did not trigger delegation reads or replace B
+    expect(fake.delegationReads).toHaveLength(1)
+    expect(fake.delegationReads[0]?.parentTaskID).toBe("task_B")
+    dispose()
+  })
+
+  test("closing delegation dialog stops feeds and floor timer produces zero reads", async () => {
+    const fake = fakePort()
+    const dispose = installWatch(fake.port)
+    commandOf(fake).run("children")
+    await tick(0)
+
+    expect(fake.delegationReads).toHaveLength(1)
+    // Close dialog
+    fake.close()
+    await tick(0)
+
+    const readsBefore = fake.delegationReads.length
+    await tick(50)
+    // No further reads happen while closed
+    expect(fake.delegationReads.length).toBe(readsBefore)
+    dispose()
   })
 })

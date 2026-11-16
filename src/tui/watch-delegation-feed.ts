@@ -11,7 +11,6 @@ import { createSignal } from "solid-js"
 
 import type { WatchDelegationSource, WatchDelegationViewRequest } from "../host/tui.ts"
 import { readWatchDelegationViewPayload, type WatchDelegationViewPayload } from "../rpc.ts"
-import { failureText } from "./feed.ts"
 import type { DelegationPaneState } from "./watch-delegation.ts"
 
 const REFRESH_MS = 60_000
@@ -68,11 +67,18 @@ export function createWatchDelegationFeed(
           })
           return
         }
+        if (payload.parentTaskID !== parentTaskID || payload.parentSessionID !== sessionID) {
+          setState({
+            kind: "failed",
+            reason: "The delegation view response belonged to another task or session.",
+          })
+          return
+        }
         setState({ kind: "payload", payload })
       })
-      .catch((cause: unknown) => {
+      .catch(() => {
         if (disposed || !opened || requestEpoch !== epoch) return
-        setState({ kind: "failed", reason: failureText(cause) })
+        setState({ kind: "failed", reason: "Could not read the delegation view." })
       })
       .finally(() => {
         if (inFlightEpoch === requestEpoch) inFlightEpoch = undefined

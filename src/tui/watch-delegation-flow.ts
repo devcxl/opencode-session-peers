@@ -19,6 +19,22 @@ import {
 import { WATCH_DELEGATION_TERMS } from "../watch/delegation.ts"
 import type { WatchDelegationFeed } from "./watch-delegation-feed.ts"
 
+const KNOWN_FAILURE_CODES = new Set([
+  "E_WATCH_STALE",
+  "E_WATCH_DENIED",
+  "E_WATCH_UNAVAILABLE",
+  "E_WATCH_INVALID",
+  "E_WATCH_LIMIT",
+  "E_WATCH_CONFLICT",
+])
+
+export function safeFailureCode(code: unknown): string | undefined {
+  if (typeof code === "string" && KNOWN_FAILURE_CODES.has(code)) {
+    return code
+  }
+  return undefined
+}
+
 export interface DelegationFlowDeps {
   readonly port: TuiPort
   readonly feed: WatchDelegationFeed
@@ -122,8 +138,9 @@ export function createDelegationFlow(deps: DelegationFlowDeps): DelegationFlow {
       return undefined
     }
     if (!payload.ok || payload.failure !== null || payload.challenge === null) {
+      const code = safeFailureCode(payload.failure?.code)
       port.toast(
-        `Could not prepare delegation grant: ${payload.failure?.code ?? "no challenge was issued"}.`,
+        code ? `Could not prepare delegation grant: ${code}.` : "Could not prepare delegation grant: the grant was refused.",
         "error",
       )
       pending = undefined
@@ -146,10 +163,13 @@ export function createDelegationFlow(deps: DelegationFlowDeps): DelegationFlow {
       feed.refresh()
       return undefined
     }
+    const isLimited = mode === "limited-correction"
     if (
       challenge.reviewSummary !== WATCH_DELEGATION_TERMS ||
       payload.review.delegationTerms !== WATCH_DELEGATION_TERMS ||
-      (mode === "limited-correction" && payload.review.correctionTerms !== WATCH_CORRECTION_TERMS)
+      payload.review.derivesCorrectionGrant !== isLimited ||
+      payload.review.deploymentRequired !== isLimited ||
+      (isLimited && payload.review.correctionTerms !== WATCH_CORRECTION_TERMS)
     ) {
       port.toast(
         "Could not prepare delegation grant: the challenge terms summary did not match canonical terms.",
@@ -208,12 +228,15 @@ export function createDelegationFlow(deps: DelegationFlowDeps): DelegationFlow {
         parentTaskID: challenge.parentTaskID,
         expectedVersion: challenge.expectedVersion,
         targetSessionID: challenge.targetSessionID,
+        mode: challenge.mode,
         challenge: challenge.challenge,
         generation: challenge.generation,
         termsDigest: challenge.termsDigest,
         scopeDirectory: challenge.scopeDirectory,
         scopePeerScope: challenge.scopePeerScope,
-        ...(challenge.deployment === undefined ? {} : { deployment: challenge.deployment }),
+        ...(challenge.mode === "limited-correction" && challenge.deployment !== undefined
+          ? { deployment: challenge.deployment }
+          : {}),
       })
     } catch {
       if (!stillCurrent(sessionID, parentTaskID, startedEpoch)) return
@@ -237,8 +260,9 @@ export function createDelegationFlow(deps: DelegationFlowDeps): DelegationFlow {
       return
     }
     if (!payload.ok || payload.failure !== null) {
+      const code = safeFailureCode(payload.failure?.code)
       port.toast(
-        `Could not confirm delegation grant: ${payload.failure?.code ?? "the grant was not recorded"}.`,
+        code ? `Could not confirm delegation grant: ${code}.` : "Could not confirm delegation grant: the grant was not recorded.",
         "error",
       )
       feed.refresh()
@@ -295,8 +319,9 @@ export function createDelegationFlow(deps: DelegationFlowDeps): DelegationFlow {
       return
     }
     if (!payload.ok || payload.failure !== null) {
+      const code = safeFailureCode(payload.failure?.code)
       port.toast(
-        `Could not revoke delegation grant: ${payload.failure?.code ?? "the grant was not revoked"}.`,
+        code ? `Could not revoke delegation grant: ${code}.` : "Could not revoke delegation grant: the revocation was refused.",
         "error",
       )
       feed.refresh()

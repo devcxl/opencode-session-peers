@@ -8,6 +8,7 @@
  */
 
 import { describe, expect, test } from "bun:test"
+import { Database } from "bun:sqlite"
 
 import { WATCH_CORRECTION_TERMS } from "../src/domain/watch.ts"
 import { WATCH_DELEGATION_TERMS } from "../src/watch/delegation.ts"
@@ -19,6 +20,23 @@ import {
   delegationGrantPayload,
   fakePort,
 } from "./tui-watch-fake.ts"
+
+const runtimeVersion = (() => {
+  const db = new Database(":memory:")
+  const row = db.query("SELECT sqlite_version() AS version").get() as { version: string }
+  db.close()
+  return row.version
+})()
+const safeRuntime = (() => {
+  const left = runtimeVersion.split(".").map((part) => Number.parseInt(part, 10))
+  const right = [3, 51, 3]
+  for (let index = 0; index < 3; index += 1) {
+    const a = left[index] ?? 0
+    const b = right[index] ?? 0
+    if (a !== b) return a > b
+  }
+  return true
+})()
 
 function setupFlow(options: Parameters<typeof fakePort>[0] = {}) {
   const fake = fakePort(options)
@@ -106,6 +124,19 @@ describe("delegation flow exact RPC payloads", () => {
     // Ensure deployment is NOT present for alert mode
     expect(fake.delegationCalls[0]?.deployment).toBeUndefined()
 
+    // Confirm for alert mode carries mode: alert and NO deployment declaration
+    await flow.confirm()
+    expect(fake.delegationCalls).toHaveLength(2)
+    expect(fake.delegationCalls[1]).toMatchObject({
+      operation: "confirm",
+      sessionID: SELF,
+      parentTaskID: "task_parent_001",
+      expectedVersion: 3,
+      targetSessionID: "ses_child_001",
+      mode: "alert",
+    })
+    expect(fake.delegationCalls[1]?.deployment).toBeUndefined()
+
     dispose()
   })
 
@@ -132,6 +163,7 @@ describe("delegation flow exact RPC payloads", () => {
               delegationTerms: WATCH_DELEGATION_TERMS,
               correctionTerms: WATCH_CORRECTION_TERMS,
               deploymentRequired: true,
+              derivesCorrectionGrant: true,
             },
           })
         }
@@ -181,6 +213,7 @@ describe("delegation flow exact RPC payloads", () => {
       parentTaskID: "task_parent_001",
       expectedVersion: 3,
       targetSessionID: "ses_child_002",
+      mode: "limited-correction",
       challenge: secretNonce,
       generation: 1,
       termsDigest: "terms-digest-abc",
@@ -303,6 +336,190 @@ describe("delegation terms and challenge fail-closed validation", () => {
     expect(fake.delegationCalls.map((c) => c.operation)).toEqual(["prepare"])
 
     dispose()
+  })
+
+  test("derivesCorrectionGrant bit mismatch fails closed and does not arm confirm", async () => {
+    const { fake, flow, dispose } = setupFlow({
+      delegation: async () =>
+        delegationGrantPayload({
+          challenge: delegationChallenge({
+            targetSessionID: "ses_child_001",
+            mode: "limited-correction",
+            deployment: "single-host-same-location",
+          }),
+          review: {
+            delegationTerms: WATCH_DELEGATION_TERMS,
+            correctionTerms: WATCH_CORRECTION_TERMS,
+            deploymentRequired: true,
+            derivesCorrectionGrant: false, // Mismatched bit!
+          },
+        }),
+    })
+
+    const prepared = await flow.prepare("ses_child_001", "limited-correction")
+    expect(prepared).toBeUndefined()
+    expect(fake.toasts).toHaveLength(1)
+    expect(fake.toasts[0]?.variant).toBe("error")
+    expect(fake.toasts[0]?.message).toBe(
+      "Could not prepare delegation grant: the challenge terms summary did not match canonical terms.",
+    )
+
+    // Confirm is not armed
+    await flow.confirm()
+    expect(fake.delegationCalls.map((c) => c.operation)).toEqual(["prepare"])
+    dispose()
+  })
+
+  test("failure payload carrying nonce in code, reason or detail is sanitized and does not leak", async () => {
+    const leakNonce = "leaked-secret-nonce-99999"
+    const { fake, flow, dispose } = setupFlow({
+      delegation: async (request) => {
+        if (request.operation === "prepare") {
+          return delegationGrantPayload({
+            challenge: delegationChallenge({
+              targetSessionID: "ses_child_001",
+              challenge: leakNonce,
+            }),
+          })
+        }
+        return delegationGrantPayload({
+          ok: false,
+          failure: {
+            code: `E_WATCH_STALE-${leakNonce}` as never,
+            reason: `expired challenge with nonce ${leakNonce}`,
+            detail: leakNonce,
+          },
+        })
+      },
+    })
+
+    const prepared = await flow.prepare("ses_child_001", "alert")
+    expect(prepared).toBeDefined()
+
+    await flow.confirm()
+    expect(fake.toasts).toHaveLength(1)
+    expect(fake.toasts[0]?.variant).toBe("error")
+    // Nonce must NOT be present in toast message
+    expect(fake.toasts[0]?.message).not.toContain(leakNonce)
+    expect(fake.toasts[0]?.message).toBe("Could not confirm delegation grant: the grant was not recorded.")
+    dispose()
+  })
+})
+
+describe("real host delegation RPC bridge test", () => {
+  const testBridge = safeRuntime ? test : test.skip
+
+  testBridge("UI delegation flow bridges to real registered RPC and real SQLite ledger", async () => {
+    const { fakeHost } = await import("./fake-host.ts")
+    const pluginModule = await import("../src/index.ts")
+    const { WATCH_STATE_DIR_ENV } = await import("../src/host/watch.ts")
+    const { mkdtempSync, rmSync } = await import("node:fs")
+    const { tmpdir } = await import("node:os")
+    const { join } = await import("node:path")
+
+    const stateDir = mkdtempSync(join(tmpdir(), "tui-watchdog-63-bridge-"))
+    const PARENT_SESSION = "ses_bridge_parent"
+    const CHILD_SESSION = "ses_bridge_child"
+    const DIRECTORY = "/tmp/project-bridge"
+
+    const host = fakeHost({
+      caller: PARENT_SESSION,
+      location: DIRECTORY,
+      appVersion: "2.3.0-watchdog-location.1",
+      sessions: [
+        { id: PARENT_SESSION, directory: DIRECTORY },
+        { id: CHILD_SESSION, parentID: PARENT_SESSION, directory: DIRECTORY },
+      ],
+    })
+
+    const prevEnv = process.env[WATCH_STATE_DIR_ENV]
+    process.env[WATCH_STATE_DIR_ENV] = stateDir
+    let disposePlugin: (() => Promise<void> | void) | undefined
+
+    try {
+      disposePlugin = await pluginModule.default.setup(host.context)
+      const rpc = host.rpcs[0]
+      if (rpc === undefined) throw new Error("no RPC registered")
+
+      // Enroll parent task via tool path
+      const enrollResult = await host.call(
+        "peers",
+        {
+          action: "watch",
+          watch: {
+            operation: "enroll",
+            requestId: "bridge-req-1",
+            goal: "Bridge test goal",
+          },
+        },
+        PARENT_SESSION,
+      )
+      const parentTask = (
+        (enrollResult.details as Record<string, unknown>).watch as Record<string, unknown>
+      ).task as Record<string, unknown>
+      const parentTaskID = parentTask["taskID"] as string
+      const parentVersion = parentTask["version"] as number
+
+      // Bridge TuiPort to real registered RPC surface
+      const toasts: { message: string; variant?: string }[] = []
+      const bridgedPort = {
+        toast: (message: string, variant?: string) => toasts.push({ message, variant }),
+        watchDelegation: {
+          call: (req: unknown) => rpc.call("watchDelegation", req as Record<string, unknown>),
+          read: (req: unknown) => rpc.call("watchDelegationView", req as Record<string, unknown>),
+        },
+      }
+
+      const feed = createWatchDelegationFeed(bridgedPort.watchDelegation as never)
+      const flow = createDelegationFlow({
+        port: bridgedPort as never,
+        feed,
+        isDisposed: () => false,
+        panel: () => ({
+          open: true,
+          sessionID: PARENT_SESSION,
+          parentTaskID,
+          expectedVersion: parentVersion,
+        }),
+        epoch: () => 1,
+      })
+
+      // 1. Prepare via real RPC
+      const prepared = await flow.prepare(CHILD_SESSION, "limited-correction")
+      expect(prepared).toBeDefined()
+      expect(prepared?.targetSessionID).toBe(CHILD_SESSION)
+      expect(prepared?.mode).toBe("limited-correction")
+
+      // 2. Confirm via real RPC
+      await flow.confirm()
+      expect(toasts).toContainEqual({
+        message: "Delegation grant recorded; authorization is not delivery. Check child status.",
+        variant: "success",
+      })
+
+      // 3. Verify real SQLite ledger via real watchDelegationView RPC
+      const viewResult = (await rpc.call("watchDelegationView", {
+        sessionID: PARENT_SESSION,
+        parentTaskID,
+      })) as Record<string, unknown>
+      expect(viewResult["ok"]).toBe(true)
+      const grants = viewResult["grants"] as Record<string, unknown>[]
+      expect(grants).toHaveLength(1)
+      expect(grants[0]).toMatchObject({
+        parentTaskID,
+        targetSessionID: CHILD_SESSION,
+        mode: "limited-correction",
+        state: "granted",
+        deployment: "single-host-same-location",
+      })
+
+      feed.dispose()
+    } finally {
+      if (prevEnv === undefined) delete process.env[WATCH_STATE_DIR_ENV]
+      else process.env[WATCH_STATE_DIR_ENV] = prevEnv
+      await disposePlugin?.()
+      rmSync(stateDir, { recursive: true, force: true })
+    }
   })
 })
 

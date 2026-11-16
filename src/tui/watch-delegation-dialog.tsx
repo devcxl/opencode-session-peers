@@ -6,13 +6,14 @@
  * view state or rendered to the screen.
  */
 
-import { createMemo, createSignal, type JSX } from "solid-js"
+import { createEffect, createMemo, createSignal, type JSX } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
 
 import type { TuiPalette } from "../host/tui.ts"
 import { WATCH_CORRECTION_TERMS } from "../domain/watch.ts"
 import { WATCH_DELEGATION_TERMS } from "../watch/delegation.ts"
 import { colourFor, tableStyle } from "./table.ts"
+import { policyDurationText } from "./watch-correction.ts"
 import {
   watchDelegationContent,
   type DelegationPaneState,
@@ -24,7 +25,8 @@ export interface WatchDelegationDialogProps {
   readonly state: () => DelegationPaneState
   readonly sessionID: string
   readonly parentTaskID: string
-  readonly parentVersion: number
+  readonly parentVersion: number | (() => number)
+  readonly parentPolicy?: () => { readonly observationMs: number; readonly windowMs: number } | undefined
   readonly palette: () => TuiPalette
   readonly initialTargetSessionID?: string
   readonly initialMode?: "alert" | "limited-correction"
@@ -48,11 +50,15 @@ export function WatchDelegationDialog(props: WatchDelegationDialogProps): JSX.El
   const [mode, setMode] = createSignal<"alert" | "limited-correction">(
     props.initialMode ?? "alert",
   )
-  const [revokeTarget, setRevokeTarget] = createSignal<string | undefined>()
+  const [revokeIndex, setRevokeIndex] = createSignal(0)
   const [preparedView, setPreparedView] = createSignal<
     PreparedDelegationChallengeSafeView | undefined
   >()
+  const [reviewedParentVersion, setReviewedParentVersion] = createSignal<number | undefined>()
   const [busy, setBusy] = createSignal(false)
+
+  const currentParentVersion = (): number =>
+    typeof props.parentVersion === "function" ? props.parentVersion() : props.parentVersion
 
   const colour = (tone: "base" | "muted" | "error") => colourFor(tone, props.palette())
 
@@ -62,17 +68,32 @@ export function WatchDelegationDialog(props: WatchDelegationDialogProps): JSX.El
     return s.payload.grants.filter((g) => g.state === "granted")
   })
 
+  // Watch for parent task version changes: if parent advances, cancel confirm
+  createEffect(() => {
+    const v = currentParentVersion()
+    const reviewedV = reviewedParentVersion()
+    if (reviewedV !== undefined && v !== reviewedV) {
+      setStage(undefined)
+      setPreparedView(undefined)
+      setReviewedParentVersion(undefined)
+      props.onCancel?.()
+    }
+  })
+
   const actPrepare = async (): Promise<void> => {
     const target = targetInput().trim()
     if (target.length === 0 || props.onPrepare === undefined) return
     setBusy(true)
+    const versionAtPrepare = currentParentVersion()
     try {
       const prepared = await props.onPrepare(target, mode())
       if (prepared !== undefined) {
         setPreparedView(prepared)
+        setReviewedParentVersion(versionAtPrepare)
         setStage("confirm")
       } else {
         setStage(undefined)
+        setReviewedParentVersion(undefined)
         props.onCancel?.()
       }
     } finally {
@@ -89,6 +110,7 @@ export function WatchDelegationDialog(props: WatchDelegationDialogProps): JSX.El
       setBusy(false)
       setStage(undefined)
       setPreparedView(undefined)
+      setReviewedParentVersion(undefined)
     }
   }
 
@@ -100,7 +122,6 @@ export function WatchDelegationDialog(props: WatchDelegationDialogProps): JSX.El
     } finally {
       setBusy(false)
       setStage(undefined)
-      setRevokeTarget(undefined)
     }
   }
 
@@ -114,7 +135,7 @@ export function WatchDelegationDialog(props: WatchDelegationDialogProps): JSX.El
         props.onCancel?.()
         return
       }
-      if (key.name === "m" || key.name === "tab") {
+      if (key.name === "tab" || (key.ctrl && key.name === "m")) {
         setMode((current) => (current === "alert" ? "limited-correction" : "alert"))
         return
       }
@@ -140,6 +161,10 @@ export function WatchDelegationDialog(props: WatchDelegationDialogProps): JSX.El
         void actPrepare()
         return
       }
+      if (key.name === "e") {
+        setStage("input")
+        return
+      }
       if (key.name === "n" || key.name === "escape") {
         setStage(undefined)
         props.onCancel?.()
@@ -156,6 +181,7 @@ export function WatchDelegationDialog(props: WatchDelegationDialogProps): JSX.El
       if (key.name === "n" || key.name === "escape") {
         setStage(undefined)
         setPreparedView(undefined)
+        setReviewedParentVersion(undefined)
         props.onCancel?.()
         return
       }
@@ -163,14 +189,22 @@ export function WatchDelegationDialog(props: WatchDelegationDialogProps): JSX.El
     }
 
     if (currentStage === "revoke") {
-      const target = revokeTarget()
+      const grants = activeGrants()
+      if (key.name === "up" || key.name === "k") {
+        setRevokeIndex((i) => Math.max(0, i - 1))
+        return
+      }
+      if (key.name === "down" || key.name === "j") {
+        setRevokeIndex((i) => Math.min(grants.length - 1, i + 1))
+        return
+      }
+      const target = grants[revokeIndex()]?.targetSessionID
       if (key.name === "y" && target !== undefined) {
         void actRevoke(target)
         return
       }
       if (key.name === "n" || key.name === "escape") {
         setStage(undefined)
-        setRevokeTarget(undefined)
         return
       }
       return
@@ -182,17 +216,13 @@ export function WatchDelegationDialog(props: WatchDelegationDialogProps): JSX.El
       return
     }
     if (key.name === "g") {
-      if (targetInput().trim().length > 0) {
-        setStage("review")
-      } else {
-        setStage("input")
-      }
+      setStage("input")
       return
     }
     if (key.name === "r") {
       const grants = activeGrants()
       if (grants.length > 0) {
-        setRevokeTarget(grants[0]!.targetSessionID)
+        setRevokeIndex(0)
         setStage("revoke")
       }
       return
@@ -212,8 +242,17 @@ export function WatchDelegationDialog(props: WatchDelegationDialogProps): JSX.El
     if (mode() === "limited-correction") {
       lines.push("")
       lines.push(WATCH_CORRECTION_TERMS)
+      lines.push("")
       lines.push("Single-host declaration is not proof of uniqueness; controlled channel is not human authentication.")
-      lines.push("Effective round parameters: defaults 5m post-attempt cooldown, 20m problem round limit.")
+      const policy =
+        typeof props.parentPolicy === "function" ? props.parentPolicy() : props.parentPolicy
+      if (policy !== undefined) {
+        lines.push(
+          `Effective round policy: observe ${policyDurationText(policy.observationMs)} · problem ${policyDurationText(policy.windowMs)} (defaults: 5m observe, 20m problem).`,
+        )
+      } else {
+        lines.push("Round policy: defaults 5m post-attempt cooldown, 20m problem round limit.")
+      }
     }
     return lines
   })
@@ -264,7 +303,7 @@ export function WatchDelegationDialog(props: WatchDelegationDialogProps): JSX.El
             Target child session ID: {targetInput() || "_(type session ID)_"}
           </text>
           <text fg={colour("muted")}>
-            Mode: {mode()} (press m or tab to toggle mode)
+            Mode: {mode()} (press tab to toggle mode)
           </text>
           <text fg={colour("base")}>
             {busy() ? "Working…" : "enter: review terms · escape: cancel"}
@@ -276,7 +315,7 @@ export function WatchDelegationDialog(props: WatchDelegationDialogProps): JSX.El
         <>
           <text fg={colour("base")}>{reviewLines().join("\n")}</text>
           <text fg={colour("base")}>
-            {busy() ? "Working…" : "y: declare + prepare challenge · n: cancel"}
+            {busy() ? "Working…" : "y: declare + prepare challenge · e: change target/mode · n: cancel"}
           </text>
         </>
       )}
@@ -293,7 +332,16 @@ export function WatchDelegationDialog(props: WatchDelegationDialogProps): JSX.El
       {stage() === "revoke" && (
         <>
           <text fg={colour("base")}>
-            Revoke delegation grant for {revokeTarget()}?
+            Select delegation grant to revoke (↑/↓ or j/k to select):
+          </text>
+          {activeGrants().map((grant, idx) => (
+            <text fg={idx === revokeIndex() ? colour("base") : colour("muted")}>
+              {idx === revokeIndex() ? " > " : "   "}
+              {grant.targetSessionID} ({grant.mode} grant v{grant.version})
+            </text>
+          ))}
+          <text fg={colour("base")}>
+            Revoke delegation grant for {activeGrants()[revokeIndex()]?.targetSessionID}?
           </text>
           <text fg={colour("muted")}>
             Existing child attempts and accepted reports are not reset.

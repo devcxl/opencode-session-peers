@@ -312,11 +312,11 @@ export function delegationChallenge(
 ): DelegationChallengeView {
   return {
     challenge: "challenge-delegation-nonce",
-    parentTaskID: "task_0001",
+    parentTaskID: "task_parent_001",
     expectedVersion: 3,
     generation: 1,
     mode: "alert",
-    targetSessionID: "ses_child_0001",
+    targetSessionID: "ses_child_001",
     scopeDirectory: "/tmp/opencode/project",
     scopePeerScope: "project-a",
     termsDigest: "delegation-terms-digest",
@@ -329,6 +329,7 @@ export function delegationChallenge(
 export function delegationGrantPayload(
   overrides: Partial<WatchDelegationGrantPayload> = {},
 ): WatchDelegationGrantPayload {
+  const isLimited = overrides.challenge?.mode === "limited-correction" || overrides.grant?.mode === "limited-correction"
   return {
     ok: true,
     challenge: null,
@@ -339,7 +340,8 @@ export function delegationGrantPayload(
     review: {
       delegationTerms: WATCH_DELEGATION_TERMS,
       correctionTerms: WATCH_CORRECTION_TERMS,
-      deploymentRequired: false,
+      deploymentRequired: isLimited,
+      derivesCorrectionGrant: isLimited,
     },
     failure: null,
     ...overrides,

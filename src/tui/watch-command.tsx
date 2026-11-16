@@ -128,6 +128,18 @@ export function installWatch(port: TuiPort, options: WatchCommandOptions = {}): 
   let delegationPanelOpen = false
   let delegationParentTaskID: string | undefined
   let delegationParentVersion: number | undefined
+  let delegationParentPolicy: WatchPayload["task"] extends null ? never : NonNullable<WatchPayload["task"]>["correction"]["policy"] | undefined
+
+  feed.onSnapshot((payload) => {
+    if (disposed) return
+    if (delegationParentTaskID !== undefined && payload.task?.taskID === delegationParentTaskID) {
+      delegationParentPolicy = payload.task.correction.policy
+      if (delegationParentVersion !== undefined && payload.task.version !== delegationParentVersion) {
+        delegationParentVersion = payload.task.version
+        delegation.cancel()
+      }
+    }
+  })
 
   const delegation = createDelegationFlow({
     port,
@@ -147,15 +159,27 @@ export function installWatch(port: TuiPort, options: WatchCommandOptions = {}): 
     initialMode?: "alert" | "limited-correction",
   ): Promise<void> => {
     if (disposed) return
+    const startedEpoch = lifecycleEpoch
     const { sessionID } = port.currentSession()
     if (sessionID === undefined) {
       port.toast(NO_SESSION, "warning")
       return
     }
     let state = feed.state()
-    if (state.kind !== "payload") {
+    const matchesSession =
+      state.kind === "payload" &&
+      state.payload.task !== null &&
+      state.payload.task.initiatorSessionID === sessionID
+    if (!matchesSession) {
       try {
         const answer = await port.watch.read({ sessionID })
+        if (
+          disposed ||
+          lifecycleEpoch !== startedEpoch ||
+          port.currentSession().sessionID !== sessionID
+        ) {
+          return
+        }
         const payload = readWatchPayload(answer)
         if (payload !== undefined && payload.task !== null) {
           feed.apply(payload)
@@ -164,6 +188,13 @@ export function installWatch(port: TuiPort, options: WatchCommandOptions = {}): 
       } catch {
         // handled below
       }
+    }
+    if (
+      disposed ||
+      lifecycleEpoch !== startedEpoch ||
+      port.currentSession().sessionID !== sessionID
+    ) {
+      return
     }
     const task = state.kind === "payload" ? state.payload.task : null
     if (task === null) {
@@ -174,8 +205,12 @@ export function installWatch(port: TuiPort, options: WatchCommandOptions = {}): 
     panelSessionID = sessionID
     delegationParentTaskID = task.taskID
     delegationParentVersion = task.version
+    delegationParentPolicy = task.correction.policy
     delegationPanelOpen = true
     delegation.clear()
+
+    // Explicit transition: close parent feed polling while child delegation dialog is displayed
+    feed.close()
     delegationFeed.open(sessionID, task.taskID)
 
     port.dialog.show(
@@ -184,7 +219,8 @@ export function installWatch(port: TuiPort, options: WatchCommandOptions = {}): 
           state={delegationFeed.state}
           sessionID={sessionID}
           parentTaskID={task.taskID}
-          parentVersion={task.version}
+          parentVersion={() => delegationParentVersion ?? task.version}
+          parentPolicy={() => delegationParentPolicy}
           palette={port.palette}
           initialTargetSessionID={initialTargetSessionID}
           initialMode={initialMode}
@@ -214,9 +250,11 @@ export function installWatch(port: TuiPort, options: WatchCommandOptions = {}): 
         delegationPanelOpen = false
         delegationParentTaskID = undefined
         delegationParentVersion = undefined
+        delegationParentPolicy = undefined
         delegation.clear()
         lifecycleEpoch += 1
         delegationFeed.close()
+        feed.close()
       },
     )
     port.dialog.set({ size: "xlarge", centered: true })
