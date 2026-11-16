@@ -626,7 +626,14 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
       if (!grantResult.ok) return failureOutcome(mapLedgerFailure(grantResult.code, grantResult.detail))
       const children = current.ledger.listDelegatedChildren(parentTask.taskID)
       if (!children.ok) return failureOutcome(mapLedgerFailure(children.code, children.detail))
-      const existingLink = children.value.find((entry) => entry.task.targetSessionID === target.value)
+      // A completed/ended child is history: an explicit new delegation may
+      // create a new task, and a repeated request is resolved by the ledger's
+      // idempotency below. Only a live task can occupy the child's one slot.
+      const existingLink = children.value.find(
+        (entry) =>
+          entry.task.targetSessionID === target.value &&
+          (entry.task.watchState === "active" || entry.task.watchState === "paused"),
+      )
       const existingChild =
         existingLink === undefined
           ? null

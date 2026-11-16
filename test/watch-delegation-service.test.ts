@@ -304,6 +304,46 @@ describeService("delegation application", () => {
     }
   })
 
+  test("a repeat delegation request after completion returns the same task without a new wake", async () => {
+    const h = harness({ withAuthority: true })
+    try {
+      const parent = enrollParent(h.app)
+      await prepareAndConfirm(h.app, parent.taskID, parent.version)
+      const child = await enrollChild(h.app, parent.taskID, parent.version)
+      let version = child.version
+      for (const [kind, reportId, evidence] of [
+        ["begin", "repeat-begin", {}],
+        ["progress", "repeat-progress", { summary: "done", reference: "result-1" }],
+        ["completed", "repeat-completed", { summary: "finished", reference: "result-2" }],
+      ] as const) {
+        const report = h.app.report({
+          callerSessionID: CHILD,
+          taskID: child.taskID,
+          expectedVersion: version,
+          reportID: reportId,
+          kind,
+          evidence,
+        })
+        if (!report.ok || report.task === null) throw new Error("report failed")
+        version = report.task.version
+      }
+      const repeat = await h.app.delegate({
+        callerSessionID: PARENT,
+        parentTaskID: parent.taskID,
+        targetSessionID: CHILD,
+        requestID: "child-1",
+        goal: "Deliver the child work",
+        mode: "limited-correction",
+        expectedVersion: parent.version,
+      })
+      expect(repeat.ok).toBe(true)
+      expect(repeat.created).toBe(false)
+      expect(repeat.task).toMatchObject({ taskID: child.taskID, taskState: "completed", watchState: "ended" })
+    } finally {
+      h.close()
+    }
+  })
+
   test("the parent cannot report or receipt as the child", async () => {
     const h = harness({ withAuthority: true })
     try {
