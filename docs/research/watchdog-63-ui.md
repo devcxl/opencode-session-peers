@@ -27,24 +27,30 @@ ledger tables, server execution or backend database migrations.
    - For unauthorized children, goal, reports and alerts are strictly omitted.
    - Summarizes existing delegation grants with versions and states.
 2. **Target & mode selection (`g`):**
-   - Prompts the user to enter the child session ID (if not prefilled).
-   - Pressing `m` or `tab` toggles between `alert` and `limited-correction`.
+   - Prompts the user to enter or edit the child session ID.
+   - Letters such as `m` are typed cleanly without being swallowed (e.g. `ses_mango_42`).
+   - Pressing `tab` (or `ctrl+m`) toggles between `alert` and `limited-correction`.
    - Pressing `enter` advances to the explicit review stage.
-3. **Canonical terms review (`y: declare + prepare · n: cancel`):**
+3. **Canonical terms review (`y: declare + prepare · e: change target/mode · n: cancel`):**
    - Displays the full canonical `WATCH_DELEGATION_TERMS`.
    - For `limited-correction`, also displays `WATCH_CORRECTION_TERMS`, the explicit
      declaration disclaimer (`Single-host declaration is not proof of uniqueness`),
      the channel disclaimer (`Controlled channel is not human authentication`), and
-     the effective round parameters (aligning with #62).
+     the effective round parameters distinguishing defaults (5m observe, 20m problem)
+     from actual effective policy values (e.g. 10m observe, 40m problem).
+   - Pressing `e` allows switching back to the input stage to edit the target or mode.
    - User press `y` to issue `prepare` RPC. Pressing `n` or `escape` cancels without writes.
 4. **Independent confirmation (`y: grant · n: cancel`):**
    - The returned challenge is stored strictly in the controller closure.
+   - Confirm RPC strictly passes `mode: challenge.mode`; alert mode has no `deployment`,
+     while limited mode carries `deployment: "single-host-same-location"`.
    - View displays only safe facts: target session, mode, scope directory, scope peer
      scope and expiration timestamp.
    - The challenge nonce never reaches the screen, Solid props or signals.
    - User press `y` to issue `confirm` RPC with the stored challenge and digest.
 5. **Revocation (`r`):**
-   - Pressing `r` prompts to revoke an existing delegation grant.
+   - Pressing `r` prompts to select an active delegation grant using up/down arrow keys
+     or j/k, allowing revocation of any child grant (not just the first one).
    - Carries only `{ operation: "revoke", sessionID, parentTaskID, expectedVersion, targetSessionID }`
      without a `mode` parameter.
    - Existing attempts and accepted reports in child sessions remain untouched and unreset.
@@ -55,10 +61,19 @@ ledger tables, server execution or backend database migrations.
   `createDelegationFlow` closure (`pending`), never in Solid signals, props, view
   state, logs, toasts, tools or events.
 - **Fail-closed verification:** `prepare` verifies that `reviewSummary === WATCH_DELEGATION_TERMS`,
+  `review.derivesCorrectionGrant === (mode === "limited-correction")`, `review.deploymentRequired`,
   parent task ID, expected version, and mode match the user's review. Any discrepancy
   discards the challenge and emits a generic nonce-safe toast.
-- **Lifecycle cancellation:** closing the dialog, cancelling (`n` or `escape`), switching
-  session, or task version advancement clears pending challenges immediately.
+- **Sanitized failure codes:** failure responses sanitize `failure.code` through a strict
+  whitelist (`E_WATCH_*`) and generic messages; unvalidated strings, reflection bodies,
+  or `Error.message` containing nonces are never printed or toasted.
+- **Lifecycle and dual-feed management:**
+  - `openDelegation` fences async reads with `startedEpoch` and `sessionID`; deferred reads
+    across session switches do not overwrite the newly opened session.
+  - Parent feed background polling is paused while the delegation dialog is on screen,
+    and both feeds are closed when the dialog is dismissed or disposed.
+  - Reactive parent version tracking immediately clears pending challenges if the parent
+    task version changes.
 - **Graceful degradation:** if `port.watchDelegation` is omitted or unavailable, the
   view renders an explicit unavailable state and does not fail open.
 
@@ -67,19 +82,22 @@ ledger tables, server execution or backend database migrations.
 Targeted tests cover:
 - `test/tui-watch-delegation.test.ts`: pure view rendering, unauthorized child redaction.
 - `test/tui-watch-delegation-dialog.test.tsx`: dialog navigation, full canonical terms
-  display for both alert and limited-correction modes, interactive typing and mode toggle,
-  revocation prompt, short terminal (40h) visibility, and nonce redaction.
-- `test/tui-watch-delegation-flow.test.ts`: exact RPC payloads for prepare/confirm/revoke,
-  fail-closed rejection of altered terms without leaking nonces, and lifecycle isolation
-  against late responses.
-- `test/tui-watch-command.test.ts`: `/peers-watch children` read-only opening, argument
-  prefilling without write, and `k` key navigation from the watch dialog.
+  display for both alert and limited-correction modes, interactive typing with `m` (e.g. `ses_mango_42`),
+  mode toggle via `tab`, multi-grant revocation selection with arrow keys, custom 10m/40m policy
+  display vs defaults, short terminal (40h) visibility, and nonce redaction.
+- `test/tui-watch-delegation-flow.test.ts`: exact RPC payloads for prepare/confirm (including `mode`)
+  and revoke, fail-closed rejection of altered terms and `derivesCorrectionGrant` mismatch,
+  sanitization of failure codes/reasons carrying nonces, lifecycle isolation against late responses,
+  and real host RPC bridge test via `fakeHost` and SQLite ledger.
+- `test/tui-watch-command.test.ts`: `/peers-watch children` read-only opening (1 read, 0 writes),
+  argument prefilling without write, `k` key navigation from the watch dialog, deferred read session
+  switch isolation, and zero reads after dialog close.
 
 ### Test results
 ```bash
 bun test test/tui*
 ```
-Result: **199 pass, 0 fail (872 expect calls across 18 files)**
+Result: **204 pass, 1 skip (bridge test guarded for Bun 1.4.4 / SQLite 3.51.3), 0 fail (901 expect calls across 18 files)**
 
 ### Typecheck
 ```bash
