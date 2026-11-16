@@ -212,15 +212,15 @@ the session's own same-location `session.created` from creation; an existing ses
 event remains `unknown`/`partial` even after a fresh terminal, because a form or retry wait may
 predate observation.
 
-**Limited correction is explicit and currently closed by default.** The ledger has a permanent cap
-of three attempts, but this build's automatic executor may use only the first attempt. Before any
+**Limited correction is explicit and currently closed by default.** The ledger permits up to
+three permanent automatic attempts per task. Before any
 send it requires a controlled grant, the current activation, a trusted idle candidate, no wait or
 new input, a same-location target, an unfinished task and a verified runtime tuple. The static
 whitelist contains only `2.3.0-watchdog-location.1/linux/x64`, the isolated repaired-host build
 whose full protocol passed; it does not include stock `2.3.0` or imply support for later versions.
 The server never accepts model-reported consent, a config switch or a `forceCapability` value.
 Unsupported runtimes report automatic correction as unavailable. When that task's own gates are ready on a
-verified runtime, the capability payload says `correction: "first-attempt"`; it never opens manual
+verified runtime, the capability payload says `correction: "bounded"`; it never opens manual
 `correct`. The `recovery` capability still means resume/ownership recovery, not the evidence-based
 recovery confirmation of an existing attempt, and a displayed safety pause is not a resume control.
 
@@ -230,6 +230,40 @@ performs `prepare` then one `confirm` with the explicit
 `deployment: "single-host-same-location"` declaration. That declaration is a deployment statement,
 not proof that no other service exists, and the same-OS-user boundary is not authentication. The
 model can request that the user review a grant; it cannot confirm one.
+
+Each correction round persists its start, deadline and effective policy at the first reservation.
+`watch.correctionObservationMs` defaults to 300000 ms (5 minutes between attempts; range
+300000–3600000); `watch.correctionWindowMs` defaults to 1200000 ms (20-minute round; range
+300000–7200000). Invalid values fall back with a load warning. Reload, regrant, reconfirmation and
+configuration changes never extend an active round. A normal wait or verified recovery closes that
+round; a cleared wait needs fresh idle evidence and all gates before another round. The three-attempt
+quota is cumulative across rounds: aborted or unknown attempts never refund. Unresolved attempts on
+a session block automatic correction for a new task there, including after end and re-enrollment.
+
+**Direct-child monitoring requires its own controlled grant.** The user reviews `watchDelegation`
+terms, then prepares and confirms the specific child and mode. Enrollment verifies the real host's
+one-hop `parentID`, the same location and a known matching plugin scope (a plugin fact, not host
+proof). Descendants, cross-scope targets and unknown facts are refused. After the grant, the parent
+can enroll an already-created child's existing work:
+
+```ts
+peers({ action: "watch", watch: {
+  operation: "delegate",
+  taskID: "parent-task-id", expectedVersion: 2,
+  targetSessionID: "existing-direct-child-id",
+  requestId: "stable-child-watch-id", goal: "Ship the child's assigned parser tests",
+  mode: "alert",
+} })
+```
+
+Non-self `enroll` uses the same checks. `limited-correction` may be selected only within the
+controlled delegation grant; enrollment then derives the child's correction grant in the same
+transaction, without bypassing runtime or observation gates. No grant or enrollment creates a
+child, replays work or starts an extra turn. Only the actual child may report or receipt its task.
+The parent may read authorized child state and persistent alerts; these do not prompt the parent.
+Revocation or changed parent/scope facts blocks future admission, preserves attempts and cannot
+retract an accepted message. Repeating an identical enrollment request returns its history; a new
+explicit request is a new supervision decision, not a quota or unresolved-attempt bypass.
 
 When a correction prompt actually arrives, it carries the task, attempt and one opaque correlation
 in a concrete `peers` call. Before any business step, the target submits that call with
