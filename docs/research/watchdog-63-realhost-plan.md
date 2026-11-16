@@ -145,28 +145,45 @@ the runner does not send one.
 ### Count baseline
 
 The child creation and its initial subagent turn are allowed to settle before
-the first baseline. The host's initial `<subagent ...>` completion notice is
-counted as a normal host notification before the baseline, not a plugin wake.
+the first baseline. A synthetic child-completion message is counted as a native
+host report only when **all** of these hold: `type=synthetic`,
+`metadata.source="subagent"`, `metadata.childID=<current child>`, and the text
+tag's `sessionID` is the same child. A bare `<subagent>` tag, another child's
+report, missing metadata, or a tag/child mismatch is not exempt; a metadata
+match with an inconsistent tag is counted as invalid and fails closed. The
+initial native report is before the baseline, not a plugin wake. The previous
+positive run failed `the child begin driver generated in the parent` because
+this native host behavior was mis-attributed; the assertion now separates it.
+
 Then:
 
 - RPC enroll is compared before/after: parent/child user, assistant, correction,
-  synthetic, subagent-notification and inbox counts must not change.
+  native-host-report, other-synthetic and inbox counts must not change.
 - The explicit parent begin tool turn is a fresh baseline (one parent driver
   user; child unchanged).
 - `watchDelegation` prepare, confirm and the read-only parent view are compared
   before/after: all bounded counts and the assistant count must be unchanged.
 - The explicit public `delegate` driver may add one parent user message and its
-  own driver generation; child user/assistant/synthetic, correction and
-  parent/child inbox counts must not change. A bounded settle must show no
+  own driver generation; child user/assistant/native/other-synthetic, correction
+  and parent/child inbox counts must not change. A bounded settle must show no
   further user, assistant, correction, synthetic or inbox growth.
-- The explicit child begin driver adds one child user turn and no parent change.
+- The explicit child begin driver adds one child user turn, exactly one native
+  host subagent report for that child, and exactly one parent stub response to
+  that host report. Parent user and correction do not grow; no other synthetic
+  report appears. This is **not** called "no parent wake": the parent generated
+  because of the host's native report, and the runner did not block or bypass it.
 - Final versus after-delegate: positive adds exactly one explicit parent
-  wrong-caller driver user and zero negative add; parent correction/inbox and
-  synthetic counts do not grow; parent assistant grows only within that driver
-  (zero negative). The child adds its explicit begin (and duplicate in positive)
-  plus exactly one automatic correction user prompt; one spent attempt; no
-  steer and no interrupted outcome. All counts are settled twice; assistant is
-  compared too.
+  wrong-caller driver user and zero negative add; parent correction does not
+  grow. Positive has three child turns (begin, automatic correction, duplicate)
+  and therefore three native host reports; negative has two. Parent assistant
+  grows by at least one per native report and at most that plus the explicit
+  wrong-caller driver (zero negative). The child adds its explicit begin (and
+  duplicate in positive) plus exactly one automatic correction user prompt; one
+  spent attempt; no correction steer and no interrupted outcome. All counts are
+  settled twice; assistant is compared too. The report labels
+  `nativeHostReports`, `nativeHostReportSource=host-subagent-completion`,
+  `parentGeneratedByHostReports`, and `watchPluginExtraPrompts=0`; it does not
+  call host-report generation a plugin extra prompt.
 
 ### Scenarios
 
@@ -193,11 +210,13 @@ asserted not to contain the parent goal before its fields are read. The final
 child `watch` raw answer is checked for correlation in both variants.
 
 Queue proof is honest: the runner records one correction user prompt and no
-observed steer. If the public inbox retains consumed delivery metadata, it
-records that the correction item was `queue`; if the host retains none, the
-report says `entry-delivery-queue-only` rather than claiming a runtime queue
-observation. The entry `correctionDelivery` source and its tests remain the
-queue evidence.
+observed correction steer. Native subagent reports may legitimately appear in
+the parent inbox with delivery=steer; that is host report delivery, not a
+watch/correction steer, and the runner reports it separately. If the public
+inbox retains consumed delivery metadata, it records that the correction item
+was `queue`; if the host retains none, the report says
+`entry-delivery-queue-only` rather than claiming a runtime queue observation.
+The entry `correctionDelivery` source and its tests remain the queue evidence.
 
 The runner does not wait five minutes or try to spend all three attempts; the
 #62 controlled-clock public entry already proves the three-attempt limit. It
@@ -246,7 +265,9 @@ so a later integrated plugin is not rejected by an older strict reader.
 - Real host is not evidence for exactly-once, retraction, power-loss
   durability, multi-host uniqueness or a stop-proof.
 - `test/watch-delegation-research.test.ts` only exercises the pure scripted
-  model/directive plan and the latch predicate; it starts no host or model.
-  Targeted result in this lane: 9 pass, 0 fail, 44 expectations; overall
+  model/directive plan, exact subagent args, native-report metadata/tag
+  classification and the latch predicate; it starts no host or model.
+  Targeted result in this lane: 10 pass, 0 fail, 49 expectations; overall
   `tsc --noEmit` and `git diff --check` are clean. The runner itself was not
-  executed.
+  executed here; the parent's first positive run and the native-report
+  attribution are recorded above.

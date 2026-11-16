@@ -16,7 +16,9 @@ import {
   PARENT_RECEIPT_MARKER,
   PARENT_SUBAGENT_MARKER,
   PROGRESS_MARKER,
+  classifyNativeSubagentReport,
   countMessages,
+  countNativeSubagentReports,
   directiveFields,
   parseCorrectionCall,
   scenarioFromValue,
@@ -68,14 +70,49 @@ describe("watchdog-63 scripted protocol", () => {
         { type: "user", text: CORRECTION_PREFIX },
         { type: "tool", text: "result" },
       ]),
-    ).toEqual({ user: 2, assistant: 1, correctionUsers: 1, synthetic: 0, subagentNotifications: 0 })
-    expect(countMessages([{ type: "synthetic", text: '<subagent state="completed">result</subagent>' }])).toEqual({
-      user: 0,
-      assistant: 0,
-      correctionUsers: 0,
-      synthetic: 1,
-      subagentNotifications: 1,
-    })
+    ).toEqual({ user: 2, assistant: 1, correctionUsers: 1, synthetic: 0 })
+  })
+
+  test("native subagent reports need matching metadata, source and tag; a fake tag is not exempt", () => {
+    const native = {
+      type: "synthetic",
+      text: '<subagent sessionID="ses_child" state="completed">result</subagent>',
+      metadata: { source: "subagent", childID: "ses_child", agent: "general", state: "completed" },
+    }
+    expect(classifyNativeSubagentReport(native, "ses_child")).toBe("native")
+    expect(classifyNativeSubagentReport(native, "ses_other")).toBe("other")
+    expect(
+      classifyNativeSubagentReport(
+        { type: "synthetic", text: '<subagent sessionID="ses_child">result</subagent>' },
+        "ses_child",
+      ),
+    ).toBe("other")
+    expect(
+      classifyNativeSubagentReport(
+        { type: "synthetic", text: '<subagent sessionID="ses_other">result</subagent>', metadata: native.metadata },
+        "ses_child",
+      ),
+    ).toBe("invalid")
+    expect(
+      classifyNativeSubagentReport(
+        { type: "synthetic", text: "result without a tag", metadata: native.metadata },
+        "ses_child",
+      ),
+    ).toBe("invalid")
+    expect(
+      countNativeSubagentReports(
+        [
+          native,
+          { type: "synthetic", text: '<subagent sessionID="ses_child">x</subagent>' },
+          {
+            type: "synthetic",
+            text: '<subagent sessionID="ses_other">x</subagent>',
+            metadata: { source: "subagent", childID: "ses_other" },
+          },
+        ],
+        "ses_child",
+      ),
+    ).toEqual({ nativeHostReports: 1, otherSynthetic: 2, invalidNativeReports: 0 })
   })
 
   test("the parent subagent turn creates the child without a task begin", () => {
