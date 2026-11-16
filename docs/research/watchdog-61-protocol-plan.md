@@ -241,3 +241,20 @@ the static list. Stock `2.3.0` and all other versions stay unsupported; this is
 not a config/env/model override, nor a claim that an upstream release contains
 the fix. #61 still requires the final full suite and two-axis review before
 acceptance. The evidence limitations above remain unchanged.
+
+### Production-source confirmation and final local checks
+
+The parent then ran the same isolated protocol loading the unmodified
+integration worktree at `08fe7e6`, rather than a candidate-source whitelist
+patch. **Passed** with the same one-queue/one-attempt/one-permit/recovered,
+duplicate and wrong-caller checks. Child `4002788` and stub stopped, both ports
+closed; the live registry digest again remained unchanged.
+Evidence: `/tmp/opencode/watchdog-61-positive-YjB7Qs/`.
+
+After all writing lanes stopped, the parent ran the plugin's full Bun 1.4.4
+suite: **618 pass / 0 fail**, 53 files, 2757 expectations; overall typecheck and
+diff check passed. Subsequent model-skill wording and two fixture comments were
+aligned to the accepted exact tuple; the focused skills/gate tests passed
+**13 / 0**, 76 expectations, with typecheck and diff check again clean.
+Existing headless OpenTUI listener warnings remain; this is not live TUI evidence.
+Final Standards/Spec confirmation is tracked separately from these test results.
