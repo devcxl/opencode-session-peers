@@ -259,5 +259,16 @@ describe("delegation RPC parsing", () => {
       targetSessionID: "ses_child",
     })
     expect(result).toMatchObject({ ok: false, failure: { code: "E_WATCH_DISABLED" } })
+
+    await expect(
+      watchDelegationRpc(deps, {
+        operation: "revoke",
+        sessionID: "ses_parent",
+        parentTaskID: "task-parent",
+        expectedVersion: 1,
+        targetSessionID: "ses_child",
+        mode: "alert",
+      }),
+    ).resolves.toMatchObject({ ok: false, failure: { code: "E_WATCH_INVALID" } })
   })
 })

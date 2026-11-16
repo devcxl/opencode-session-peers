@@ -144,7 +144,7 @@ function readRequest(input: unknown): Parsed<Request> {
     "parentTaskID",
     "expectedVersion",
     "targetSessionID",
-    "mode",
+    ...(operation !== "revoke" ? ["mode"] : []),
     ...(operation === "prepare" || operation === "confirm" ? ["deployment"] : []),
     ...(operation === "confirm"
       ? ["challenge", "generation", "termsDigest", "scopeDirectory", "scopePeerScope"]
