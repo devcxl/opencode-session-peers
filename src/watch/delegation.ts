@@ -294,7 +294,10 @@ export function delegatedAuthorityGate(
       parentScope: facts.parentScope,
       childScope: facts.childScope,
       grant,
-      existingChild: { task: snapshot.task, delegatedByThisGrant: true },
+      // Reading a completed child is allowed; the correction gate separately
+      // refuses a completed business task. This gate only says whether the
+      // delegation authorization still covers the child.
+      existingChild: null,
       ownerActivation: facts.ownerActivation,
       closing: facts.closing,
     },

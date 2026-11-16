@@ -1054,6 +1054,9 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
       })
       if (!controlled.ok) return failureOutcome(mapLedgerFailure(controlled.code, controlled.detail))
       if (controlled.value.changed) notify()
+      if (isDelegatedChild(current.ledger, controlled.value.task, caller.value)) {
+        return redactedDelegatedOutcome(controlled.value.changed)
+      }
       const built = taskView(controlled.value.task, current.ledger)
       if ("failure" in built) return failureOutcome(built.failure)
       const task = built.view
@@ -1090,6 +1093,9 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
       const shown = current.ledger.show({ taskID: acked.value.alert.taskID, sessionID: caller.value })
       if (!shown.ok) return failureOutcome(mapLedgerFailure(shown.code, shown.detail))
       if (shown.value === null) return failureOutcome(invalid("the alert has no visible task"))
+      if (isDelegatedChild(current.ledger, shown.value, caller.value)) {
+        return redactedDelegatedOutcome(acked.value.changed)
+      }
       const built = taskView(shown.value, current.ledger)
       if ("failure" in built) return failureOutcome(built.failure)
       const task = built.view
@@ -1347,6 +1353,25 @@ function grantFailure(failure: WatchFailure): WatchGrantOutcome {
     capability: watchCapability(),
     controls: watchControls(null),
     failure,
+  }
+}
+
+/**
+ * A successful control/ack for a delegated child must not return the child's
+ * goal or report rows to the parent before the delegation view re-authorizes
+ * them. The mutation facts are kept; the content is not.
+ */
+function redactedDelegatedOutcome(changed: boolean): WatchOutcome {
+  return {
+    ok: true,
+    task: null,
+    capability: watchCapability(),
+    controls: watchControls(null),
+    alerts: emptyWatchAlerts(true, null),
+    failure: null,
+    created: false,
+    duplicate: false,
+    changed,
   }
 }
 

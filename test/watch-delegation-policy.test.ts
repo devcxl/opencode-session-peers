@@ -442,6 +442,7 @@ describe("delegation terms and bounded input", () => {
     expect(terms).toContain("revocation")
     expect(terms).toContain("accepted messages")
     expect(terms).toContain("spent attempts")
+    expect(WATCH_DELEGATION_TERMS.length).toBeLessThanOrEqual(500)
   })
 
   test("the digest binds the parent task, child, mode, location and scope", () => {

@@ -304,6 +304,54 @@ describeService("delegation application", () => {
     }
   })
 
+  test("the parent cannot report or receipt as the child", async () => {
+    const h = harness({ withAuthority: true })
+    try {
+      const parent = enrollParent(h.app)
+      await prepareAndConfirm(h.app, parent.taskID, parent.version)
+      const child = await enrollChild(h.app, parent.taskID, parent.version)
+      const report = h.app.report({
+        callerSessionID: PARENT,
+        taskID: child.taskID,
+        expectedVersion: child.version,
+        reportID: "parent-as-child",
+        kind: "begin",
+        evidence: {},
+      })
+      expect(report.ok).toBe(false)
+      expect(report.failure?.code).toBe("E_WATCH_CALLER_MISMATCH")
+    } finally {
+      h.close()
+    }
+  })
+
+  test("control on a delegated child does not return its content", async () => {
+    const h = harness({ withAuthority: true })
+    try {
+      const parent = enrollParent(h.app)
+      await prepareAndConfirm(h.app, parent.taskID, parent.version)
+      const child = await enrollChild(h.app, parent.taskID, parent.version)
+      await h.app.revokeDelegationGrant({
+        callerSessionID: PARENT,
+        parentTaskID: parent.taskID,
+        targetSessionID: CHILD,
+        expectedVersion: parent.version,
+      })
+      const controlled = h.app.control({
+        callerSessionID: PARENT,
+        taskID: child.taskID,
+        expectedVersion: child.version,
+        operation: "pause",
+      })
+      expect(controlled.ok).toBe(true)
+      expect(controlled.task).toBeNull()
+      expect(JSON.stringify(controlled)).not.toContain("Deliver the child work")
+      expect(JSON.stringify(controlled)).not.toContain("Ship the parent task")
+    } finally {
+      h.close()
+    }
+  })
+
   test("a receipt after revoke is recorded as seen with no permit", async () => {
     const h = harness({ withAuthority: true })
     try {
@@ -357,6 +405,95 @@ describeService("delegation application", () => {
       expect(receipt.ok).toBe(true)
       expect(receipt).toMatchObject({ continuePermit: false, seen: true })
       expect(receipt.refusalReason).toStartWith("delegation-")
+    } finally {
+      h.close()
+    }
+  })
+
+  test("a completed child remains readable as completed while the grant is active", async () => {
+    const h = harness({ withAuthority: true })
+    try {
+      const parent = enrollParent(h.app)
+      await prepareAndConfirm(h.app, parent.taskID, parent.version)
+      const child = await enrollChild(h.app, parent.taskID, parent.version)
+      let version = child.version
+      for (const [kind, reportId, evidence] of [
+        ["begin", "completed-begin", {}],
+        ["progress", "completed-progress", { summary: "done the step", reference: "result-1" }],
+        ["completed", "completed-final", { summary: "finished", reference: "result-2" }],
+      ] as const) {
+        const report = h.app.report({
+          callerSessionID: CHILD,
+          taskID: child.taskID,
+          expectedVersion: version,
+          reportID: reportId,
+          kind,
+          evidence,
+        })
+        expect(report.ok).toBe(true)
+        if (!report.ok || report.task === null) throw new Error("report failed")
+        version = report.task.version
+      }
+      const view = await h.app.delegationView({ sessionID: PARENT, parentTaskID: parent.taskID })
+      expect(view.children[0]).toMatchObject({
+        authorized: true,
+        task: { taskState: "completed", watchState: "ended" },
+      })
+    } finally {
+      h.close()
+    }
+  })
+
+  test("a scope change with no panel read hides the child and refuses a receipt", async () => {
+    const h = harness({ withAuthority: true })
+    try {
+      const parent = enrollParent(h.app)
+      await prepareAndConfirm(h.app, parent.taskID, parent.version)
+      const child = await enrollChild(h.app, parent.taskID, parent.version)
+      const began = h.ledger.report({
+        taskId: child.taskID,
+        callerSessionId: CHILD,
+        expectedVersion: child.version,
+        reportId: "scope-begin",
+        kind: "begin",
+        evidence: {},
+      })
+      if (!began.ok) throw new Error(began.code)
+      const reserved = h.ledger.reserveCorrection({
+        taskId: child.taskID,
+        callerSessionId: PARENT,
+        ownerActivation: OWNER,
+        expectedVersion: began.value.task.version,
+        generation: child.generation,
+        reservationId: "scope-reservation",
+        at: 2_000,
+      })
+      if (!reserved.ok) throw new Error(reserved.code)
+      const claimed = h.ledger.claimCorrection({
+        taskId: child.taskID,
+        reservationId: "scope-reservation",
+        ownerActivation: OWNER,
+        expectedVersion: reserved.value.task.version,
+        generation: child.generation,
+        at: 2_001,
+      })
+      if (!claimed.ok) throw new Error(claimed.code)
+
+      h.scopes.set(CHILD, { scope: "project-b", source: "recorded" })
+      h.clock.value = 2_100
+      const view = await h.app.delegationView({ sessionID: PARENT, parentTaskID: parent.taskID })
+      expect(view.children[0]).toMatchObject({ authorized: false, task: null, alerts: null })
+      expect(JSON.stringify(view.children[0])).not.toContain("Deliver the child work")
+
+      const receipt = await h.app.receipt({
+        callerSessionID: CHILD,
+        taskID: child.taskID,
+        attemptID: "scope-reservation",
+        correlation: claimed.value.correlation,
+      })
+      expect(receipt.ok).toBe(true)
+      expect(receipt.continuePermit).toBe(false)
+      expect(receipt.refusalReason).toContain("delegation-")
     } finally {
       h.close()
     }
