@@ -23,7 +23,13 @@ import type { ActionResult } from "../domain/types.ts"
 import type { SessionLookup } from "../host/session.ts"
 import type { ToolCall } from "../host/tools.ts"
 import { sessionAtLocation } from "../watch/access.ts"
-import { emptyWatchAlerts, type WatchApplication, type WatchObservationSource, type WatchOutcome } from "../watch/service.ts"
+import {
+  emptyWatchAlerts,
+  type WatchApplication,
+  type WatchObservationSource,
+  type WatchOutcome,
+  type WatchReceiptOutcome,
+} from "../watch/service.ts"
 import { watchCapability, watchControls } from "../watch/view.ts"
 
 export interface WatchActionDeps {
@@ -125,7 +131,7 @@ export async function watchAction(deps: WatchActionDeps, call: ToolCall, input: 
         return outcomeResult(failure("E_WATCH_INVALID", "receipt needs taskID, attemptID and correlation"))
       }
       return receiptResult(
-        deps.watch.receipt({
+        await deps.watch.receipt({
           callerSessionID: call.sessionID,
           taskID: request.taskID,
           attemptID: request.attemptID,
@@ -357,7 +363,7 @@ function outcomeResult(outcome: WatchOutcome): ActionResult {
   }
 }
 
-function receiptResult(outcome: ReturnType<WatchApplication["receipt"]>): ActionResult {
+function receiptResult(outcome: WatchReceiptOutcome): ActionResult {
   const text = !outcome.ok
     ? `${outcome.failure?.reason ?? "The correction receipt was refused."}\n\nCode: ${outcome.failure?.code ?? "E_WATCH_UNAVAILABLE"}. No continuation was authorized.`
     : outcome.continuePermit
