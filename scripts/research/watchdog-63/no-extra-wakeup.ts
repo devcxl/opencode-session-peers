@@ -961,6 +961,7 @@ function assertSameWakeFacts(after: Snapshot, settled: Snapshot): void {
 
 function assertNoInterrupted(snapshot: Snapshot): void {
   assert(snapshot.parent.outcome !== "interrupted" && snapshot.child.outcome !== "interrupted", "a session was interrupted")
+  assert(snapshot.parent.inboxSteer === 0 && snapshot.child.inboxSteer === 0, "a steer item appeared in an inbox")
 }
 
 async function waitForCorrectionPrompt(
