@@ -2283,6 +2283,12 @@ class SqliteWatchLedger implements WatchLedger {
       if (row.state === "recovered") {
         return { attempt: correctionAttemptFromRow(row), recovered: true }
       }
+      if (row.closed_at !== null) {
+        throw new LedgerFailure(
+          "recovery_evidence_missing",
+          "the correction round was already closed by a verified current-target report",
+        )
+      }
       if (row.state !== "receipted" || row.receipt_at === null) {
         throw new LedgerFailure("recovery_evidence_missing", "a valid receipt is required before recovery")
       }
@@ -2322,10 +2328,17 @@ class SqliteWatchLedger implements WatchLedger {
           `UPDATE watch_correction_attempts SET
             state = 'recovered', recovery_report_id = ?, recovery_reference = ?, recovered_at = ?,
             closed_at = ?, closed_reason = 'recovered'
-           WHERE reservation_id = ?`,
+           WHERE reservation_id = ? AND closed_at IS NULL`,
         )
         .run(reportID, reference.value, input.at, input.at, reservationID)
-      return { attempt: correctionAttemptFromRow(this.correctionAttemptRow(reservationID)), recovered: true }
+      const updated = this.correctionAttemptRow(reservationID)
+      if (updated?.state === "recovered") {
+        return { attempt: correctionAttemptFromRow(updated), recovered: true }
+      }
+      throw new LedgerFailure(
+        "recovery_evidence_missing",
+        "the correction round was closed concurrently; recovery was not applied",
+      )
     })
   }
 

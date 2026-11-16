@@ -1121,6 +1121,20 @@ describeCorrection("correction ledger", () => {
       const attempt = attemptOf(ledger.correction(task.taskID))[0]
       expect(attempt).toMatchObject({ phase: "receipted", closedReason: "task-completed" })
       expect(attempt?.recoveredAt).toBeUndefined()
+      const direct = ledger.recordCorrectionRecovery({
+        taskId: task.taskID,
+        reservationId: "res-complete-new",
+        callerSessionId: "ses_a",
+        progressReportId: "missing-after-complete",
+        resultReference: "late-recovery",
+        generation: task.generation,
+        at: clock.value + 1,
+      })
+      expect(direct).toMatchObject({ ok: false, code: "recovery_evidence_missing" })
+      expect(attemptOf(ledger.correction(task.taskID))[0]).toMatchObject({
+        phase: "receipted",
+        closedReason: "task-completed",
+      })
       const next = enroll(ledger, "ses_a", "req-after-complete", "activation-a")
       const granted = grant(ledger, next.taskID, next.version, clock).task
       const allowed = reserve(ledger, next.taskID, granted.version, granted.generation, "res-after-complete", clock)
@@ -1233,6 +1247,20 @@ describeCorrection("correction ledger", () => {
         },
       })
       expect(fresh.ok).toBe(true)
+      expect(attemptOf(ledger.correction(task.taskID))[0]).toMatchObject({
+        phase: "receipted",
+        closedReason: "normal-wait",
+      })
+      const direct = ledger.recordCorrectionRecovery({
+        taskId: task.taskID,
+        reservationId: "res-wait-reuse",
+        callerSessionId: "ses_a",
+        progressReportId: "missing-after-wait",
+        resultReference: "late-recovery",
+        generation: task.generation,
+        at: clock.value + 1,
+      })
+      expect(direct).toMatchObject({ ok: false, code: "recovery_evidence_missing" })
       expect(attemptOf(ledger.correction(task.taskID))[0]).toMatchObject({
         phase: "receipted",
         closedReason: "normal-wait",

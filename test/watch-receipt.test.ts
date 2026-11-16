@@ -200,6 +200,90 @@ function receipt(host: FakeHost, seeded: Seeded, sessionID = CALLER_SESSION_ID, 
   )
 }
 
+async function currentPermit(host: FakeHost, state: string, attemptID: string): Promise<Seeded> {
+  const enrolled = (await host.call("peers", {
+    action: "watch",
+    watch: { operation: "enroll", requestId: `${attemptID}-enroll`, goal: "receipt task" },
+  }, CALLER_SESSION_ID)).details as { watch: { task: { taskID: string; version: number } } }
+  const task = enrolled.watch.task
+  const began = await host.call("peers", {
+    action: "watch",
+    watch: {
+      operation: "report",
+      taskID: task.taskID,
+      expectedVersion: task.version,
+      reportId: `${attemptID}-begin`,
+      kind: "begin",
+      evidence: {},
+    },
+  }, CALLER_SESSION_ID)
+  const beganTask = (began.details as { watch: { task: { version: number } } }).watch.task
+  const rpc = host.rpcs[0]
+  if (rpc === undefined) throw new Error("no RPC surface")
+  const prepared = readWatchGrantPayload(
+    await rpc.call("watchGrant", {
+      operation: "prepare",
+      sessionID: CALLER_SESSION_ID,
+      taskID: task.taskID,
+      expectedVersion: beganTask.version,
+      deployment: "single-host-same-location",
+    }),
+  )
+  if (prepared?.challenge === null || prepared?.challenge === undefined) throw new Error("no grant challenge")
+  const confirmed = readWatchGrantPayload(
+    await rpc.call("watchGrant", {
+      operation: "confirm",
+      sessionID: CALLER_SESSION_ID,
+      taskID: task.taskID,
+      expectedVersion: prepared.challenge.expectedVersion,
+      generation: prepared.challenge.generation,
+      termsDigest: prepared.challenge.termsDigest,
+      challenge: prepared.challenge.challenge,
+      deployment: "single-host-same-location",
+    }),
+  )
+  expect(confirmed?.ok).toBe(true)
+  const notice = (await host.modelContext(CALLER_SESSION_ID)).join("\n")
+  expect(notice).toContain("Authorization: limited-correction")
+  expect(notice).toContain("Automatic correction: unavailable")
+  expect(notice).toContain("gate is closed")
+  expect(notice).not.toContain("alert-only")
+
+  const opened = openWatchLedger({
+    path: join(state, "watch-ledger.sqlite3"),
+    busyTimeoutMs: 2_000,
+    openAttempts: 20,
+  })
+  if (!opened.ok) throw new Error(opened.code)
+  const ledger = opened.ledger
+  try {
+    const shown = ledger.show({ taskID: task.taskID, sessionID: CALLER_SESSION_ID })
+    if (!shown.ok || shown.value === null) throw new Error("task missing")
+    const reserved = ledger.reserveCorrection({
+      taskId: task.taskID,
+      callerSessionId: CALLER_SESSION_ID,
+      ownerActivation: shown.value.ownerActivation,
+      expectedVersion: shown.value.version,
+      generation: shown.value.generation,
+      reservationId: attemptID,
+      at: host.now(),
+    })
+    if (!reserved.ok) throw new Error(`${reserved.code}: ${reserved.detail}`)
+    const claimed = ledger.claimCorrection({
+      taskId: task.taskID,
+      reservationId: attemptID,
+      ownerActivation: shown.value.ownerActivation,
+      expectedVersion: reserved.value.task.version,
+      generation: shown.value.generation,
+      at: host.now(),
+    })
+    if (!claimed.ok) throw new Error(`${claimed.code}: ${claimed.detail}`)
+    return { taskID: task.taskID, attemptID, correlation: claimed.value.correlation }
+  } finally {
+    ledger.close()
+  }
+}
+
 describeReceipt("correction receipt surface", () => {
   test("a reloaded activation records seen but never inherits a continue permit", async () => {
     const state = stateDirectory()
@@ -249,92 +333,7 @@ describeReceipt("correction receipt surface", () => {
     const state = stateDirectory()
     const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } }, state)
     try {
-      const taskID = (await host.call("peers", {
-        action: "watch",
-        watch: { operation: "enroll", requestId: "same-activation", goal: "receipt task" },
-      }, CALLER_SESSION_ID)).details as { watch: { task: { taskID: string; version: number } } }
-      const enrolled = taskID.watch.task
-      const began = await host.call("peers", {
-        action: "watch",
-        watch: {
-          operation: "report",
-          taskID: enrolled.taskID,
-          expectedVersion: enrolled.version,
-          reportId: "same-begin",
-          kind: "begin",
-          evidence: {},
-        },
-      }, CALLER_SESSION_ID)
-      const beganTask = (began.details as { watch: { task: { version: number } } }).watch.task
-      const rpc = host.rpcs[0]
-      if (rpc === undefined) throw new Error("no RPC surface")
-      const prepared = readWatchGrantPayload(
-        await rpc.call("watchGrant", {
-          operation: "prepare",
-          sessionID: CALLER_SESSION_ID,
-          taskID: enrolled.taskID,
-          expectedVersion: beganTask.version,
-          deployment: "single-host-same-location",
-        }),
-      )
-      if (prepared?.challenge === null || prepared?.challenge === undefined) throw new Error("no grant challenge")
-      const confirmed = readWatchGrantPayload(
-        await rpc.call("watchGrant", {
-          operation: "confirm",
-          sessionID: CALLER_SESSION_ID,
-          taskID: enrolled.taskID,
-          expectedVersion: prepared.challenge.expectedVersion,
-          generation: prepared.challenge.generation,
-          termsDigest: prepared.challenge.termsDigest,
-          challenge: prepared.challenge.challenge,
-          deployment: "single-host-same-location",
-        }),
-      )
-      expect(confirmed?.ok).toBe(true)
-      const notice = (await host.modelContext(CALLER_SESSION_ID)).join("\n")
-      expect(notice).toContain("Authorization: limited-correction")
-      expect(notice).toContain("Automatic correction: unavailable")
-      expect(notice).toContain("gate is closed")
-      expect(notice).not.toContain("alert-only")
-
-      const opened = openWatchLedger({
-        path: join(state, "watch-ledger.sqlite3"),
-        busyTimeoutMs: 2_000,
-        openAttempts: 20,
-      })
-      if (!opened.ok) throw new Error(opened.code)
-      const ledger = opened.ledger
-      let seededAttempt: { taskID: string; attemptID: string; correlation: string }
-      try {
-        const shown = ledger.show({ taskID: enrolled.taskID, sessionID: CALLER_SESSION_ID })
-        if (!shown.ok || shown.value === null) throw new Error("task missing")
-        const reserved = ledger.reserveCorrection({
-          taskId: enrolled.taskID,
-          callerSessionId: CALLER_SESSION_ID,
-          ownerActivation: shown.value.ownerActivation,
-          expectedVersion: shown.value.version,
-          generation: shown.value.generation,
-          reservationId: "same-attempt",
-          at: host.now(),
-        })
-        if (!reserved.ok) throw new Error(`${reserved.code}: ${reserved.detail}`)
-        const claimed = ledger.claimCorrection({
-          taskId: enrolled.taskID,
-          reservationId: "same-attempt",
-          ownerActivation: shown.value.ownerActivation,
-          expectedVersion: reserved.value.task.version,
-          generation: shown.value.generation,
-          at: host.now(),
-        })
-        if (!claimed.ok) throw new Error(`${claimed.code}: ${claimed.detail}`)
-        seededAttempt = {
-          taskID: enrolled.taskID,
-          attemptID: "same-attempt",
-          correlation: claimed.value.correlation,
-        }
-      } finally {
-        ledger.close()
-      }
+      const seededAttempt = await currentPermit(host, state, "same-attempt")
 
       const first = await receipt(host, seededAttempt)
       expect((first.details as { watch: Record<string, unknown> }).watch).toMatchObject({
@@ -497,6 +496,83 @@ describeReceipt("correction receipt surface", () => {
       const payload = await show(host)
       expect(payload.task?.pause).toMatchObject({ kind: "safety" })
       expect(payload.task?.pause?.reason).toContain("another activation")
+      expect(host.prompts).toEqual([])
+    } finally {
+      await unload()
+    }
+  })
+
+  test("a waiting closure is not overwritten by a later progress report", async () => {
+    const state = stateDirectory()
+    const { host, unload } = await loaded({ options: { watch: WATCH_OPTIONS } }, state)
+    try {
+      const seededAttempt = await currentPermit(host, state, "wait-attempt")
+      const first = await receipt(host, seededAttempt)
+      expect((first.details as { watch: Record<string, unknown> }).watch).toMatchObject({
+        ok: true,
+        continuePermit: true,
+      })
+      let shown = await show(host)
+      await host.advance(1_000)
+      const waiting = await host.call("peers", {
+        action: "watch",
+        watch: {
+          operation: "report",
+          taskID: seededAttempt.taskID,
+          expectedVersion: shown.task?.version,
+          reportId: "wait-closes-round",
+          kind: "waiting",
+          evidence: {
+            waitKind: "human",
+            waitFor: "reviewer",
+            reason: "normal wait",
+            reference: "wait-new-reference",
+            waitID: "wait-new-id",
+            waitUntil: host.now() + 60_000,
+          },
+        },
+      }, CALLER_SESSION_ID)
+      expect((waiting.details as { watch: { ok: boolean } }).watch.ok).toBe(true)
+      shown = await show(host)
+      expect(shown.task?.correction).toMatchObject({ phase: "receipted", pending: null })
+      expect(shown.task?.correction.stop?.reason).not.toBe("receipted-awaiting-recovery")
+
+      await host.advance(1_000)
+      const progress = await host.call("peers", {
+        action: "watch",
+        watch: {
+          operation: "report",
+          taskID: seededAttempt.taskID,
+          expectedVersion: shown.task?.version,
+          reportId: "progress-after-wait",
+          kind: "progress",
+          evidence: { summary: "new progress", reference: "progress-after-wait-ref" },
+        },
+      }, CALLER_SESSION_ID)
+      expect((progress.details as { watch: { ok: boolean } }).watch.ok).toBe(true)
+      const after = await show(host)
+      expect(after.task?.correction.history[0]).toMatchObject({
+        phase: "receipted",
+        recovery: null,
+      })
+      const opened = openWatchLedger({
+        path: join(state, "watch-ledger.sqlite3"),
+        busyTimeoutMs: 2_000,
+        openAttempts: 20,
+      })
+      if (!opened.ok) throw new Error(opened.code)
+      try {
+        const snapshot = opened.ledger.correction(seededAttempt.taskID)
+        expect(snapshot.ok).toBe(true)
+        if (snapshot.ok) {
+          expect(snapshot.value.attempts[0]).toMatchObject({
+            phase: "receipted",
+            closedReason: "normal-wait",
+          })
+        }
+      } finally {
+        opened.ledger.close()
+      }
       expect(host.prompts).toEqual([])
     } finally {
       await unload()
