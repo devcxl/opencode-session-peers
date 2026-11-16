@@ -78,8 +78,8 @@ ledger tables, server execution or backend database migrations.
     without waiting for the 60s background timer.
   - Route change fence in `stillCurrent` ensures late confirm/prepare calls immediately exit
     without toasting if the user navigates away.
-  - Controlled floor timer tests with short interval (`refreshMs: 25`) prove that advancing timers
-    past 60ms produces 0 reads after dialog close.
+  - Controlled short real interval tests (`refreshMs: 25`) with elapsed wait past
+    interval prove that timer produces 0 reads after dialog close.
 - **Graceful degradation:** if `port.watchDelegation` is omitted or unavailable, the
   view renders an explicit unavailable state and does not fail open.
 
@@ -95,17 +95,19 @@ Targeted tests cover:
   and revoke, fail-closed rejection of altered terms and `derivesCorrectionGrant` mismatch,
   sanitization of failure codes/reasons carrying nonces, feed rejection of wrong parent/session payloads,
   lifecycle isolation against late responses and route changes, and real host RPC bridge test via
-  `fakeHost` and SQLite ledger (verified passing on Bun 1.4.4).
+  `fakeHost` and SQLite ledger (with type-safe `fakePort` without unsafe casts; parent ran on Bun 1.4.4 and passed).
 - `test/tui-watch-command.test.ts`: `/peers-watch children` read-only opening (1 read, 0 writes),
   argument prefilling without write, `k` key navigation from the watch dialog, deferred read session
   switch isolation, transition from children to ordinary panel stopping old feed, parent version
-  advancement cancelling confirm stage, and zero reads after dialog close with real fake timers.
+  advancement cancelling confirm stage and refreshing to fresh version 4 for subsequent prepare/confirm,
+  parent task completion/disappearance cancelling confirm stage and warning on prepare, and zero reads
+  after dialog close with shortened real intervals.
 
 ### Test results
 ```bash
 bun test test/tui*
 ```
-Result: **210 pass, 1 skip (SQLite 3.51.3 guard on Bun 1.3; verified 100% pass on Bun 1.4.4), 0 fail (918 expect calls across 18 files)**
+Result: **211 pass, 1 skip (SQLite 3.51.3 guard on local Bun 1.3; bridge test verified passing on Bun 1.4.4 by parent), 0 fail (929 expect calls across 18 files)**
 
 ### Typecheck
 ```bash

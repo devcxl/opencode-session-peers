@@ -460,19 +460,16 @@ describe("real host delegation RPC bridge test", () => {
       const parentTaskID = parentTask["taskID"] as string
       const parentVersion = parentTask["version"] as number
 
-      // Bridge TuiPort to real registered RPC surface
-      const toasts: { message: string; variant?: string }[] = []
-      const bridgedPort = {
-        toast: (message: string, variant?: string) => toasts.push({ message, variant }),
-        watchDelegation: {
-          call: (req: unknown) => rpc.call("watchDelegation", req as Record<string, unknown>),
-          read: (req: unknown) => rpc.call("watchDelegationView", req as Record<string, unknown>),
-        },
-      }
+      // Bridge TuiPort to real registered RPC surface using type-safe fakePort
+      const fake = fakePort({
+        sessionID: PARENT_SESSION,
+        delegation: (req) => rpc.call("watchDelegation", req as unknown as Record<string, unknown>),
+        delegationView: (req) => rpc.call("watchDelegationView", req as unknown as Record<string, unknown>),
+      })
 
-      const feed = createWatchDelegationFeed(bridgedPort.watchDelegation as never)
+      const feed = createWatchDelegationFeed(fake.port.watchDelegation)
       const flow = createDelegationFlow({
-        port: bridgedPort as never,
+        port: fake.port,
         feed,
         isDisposed: () => false,
         panel: () => ({
@@ -492,7 +489,7 @@ describe("real host delegation RPC bridge test", () => {
 
       // 2. Confirm via real RPC
       await flow.confirm()
-      expect(toasts).toContainEqual({
+      expect(fake.toasts).toContainEqual({
         message: "Delegation grant recorded; authorization is not delivery. Check child status.",
         variant: "success",
       })

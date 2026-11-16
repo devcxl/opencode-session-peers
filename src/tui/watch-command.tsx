@@ -153,9 +153,11 @@ export function installWatch(port: TuiPort, options: WatchCommandOptions = {}): 
       } else {
         setDelegationParentPolicy(payload.task.correction.policy)
         const currentV = delegationParentVersion()
-        if (currentV !== undefined && payload.task.version !== currentV) {
+        if (currentV === undefined || payload.task.version !== currentV) {
           setDelegationParentVersion(payload.task.version)
-          delegation.cancel()
+          if (currentV !== undefined) {
+            delegation.cancel()
+          }
         }
       }
     }
@@ -247,7 +249,7 @@ export function installWatch(port: TuiPort, options: WatchCommandOptions = {}): 
           state={delegationFeed.state}
           sessionID={sessionID}
           parentTaskID={task.taskID}
-          parentVersion={() => delegationParentVersion() ?? task.version}
+          parentVersion={() => delegationParentVersion()}
           parentPolicy={() => delegationParentPolicy()}
           palette={port.palette}
           initialTargetSessionID={initialTargetSessionID}
@@ -262,19 +264,27 @@ export function installWatch(port: TuiPort, options: WatchCommandOptions = {}): 
               if (port.currentSession().sessionID !== sessionID) return undefined
               const freshPayload = readWatchPayload(answer)
               if (
-                freshPayload !== undefined &&
-                freshPayload.task !== null &&
-                freshPayload.task.initiatorSessionID === sessionID &&
-                freshPayload.task.targetSessionID === sessionID
+                freshPayload === undefined ||
+                freshPayload.task === null ||
+                freshPayload.failure !== null ||
+                !freshPayload.ledger.available ||
+                freshPayload.task.watchState !== "active" ||
+                freshPayload.task.initiatorSessionID !== sessionID ||
+                freshPayload.task.targetSessionID !== sessionID
               ) {
-                feed.apply(freshPayload)
-                setDelegationParentVersion(freshPayload.task.version)
-                setDelegationParentPolicy(freshPayload.task.correction.policy)
-              } else {
+                setDelegationParentVersion(undefined)
+                delegation.cancel()
+                port.toast("Parent task is not active; delegation operations are unavailable.", "warning")
                 return undefined
               }
+              feed.apply(freshPayload)
+              setDelegationParentVersion(freshPayload.task.version)
+              setDelegationParentPolicy(freshPayload.task.correction.policy)
             } catch {
-              // fall through
+              setDelegationParentVersion(undefined)
+              delegation.cancel()
+              port.toast("Could not read the fresh parent task: request failed.", "error")
+              return undefined
             }
             return delegation.prepare(target, mode)
           }}
@@ -293,19 +303,27 @@ export function installWatch(port: TuiPort, options: WatchCommandOptions = {}): 
               if (port.currentSession().sessionID !== sessionID) return
               const freshPayload = readWatchPayload(answer)
               if (
-                freshPayload !== undefined &&
-                freshPayload.task !== null &&
-                freshPayload.task.initiatorSessionID === sessionID &&
-                freshPayload.task.targetSessionID === sessionID
+                freshPayload === undefined ||
+                freshPayload.task === null ||
+                freshPayload.failure !== null ||
+                !freshPayload.ledger.available ||
+                freshPayload.task.watchState !== "active" ||
+                freshPayload.task.initiatorSessionID !== sessionID ||
+                freshPayload.task.targetSessionID !== sessionID
               ) {
-                feed.apply(freshPayload)
-                setDelegationParentVersion(freshPayload.task.version)
-                setDelegationParentPolicy(freshPayload.task.correction.policy)
-              } else {
+                setDelegationParentVersion(undefined)
+                delegation.cancel()
+                port.toast("Parent task is not active; delegation operations are unavailable.", "warning")
                 return
               }
+              feed.apply(freshPayload)
+              setDelegationParentVersion(freshPayload.task.version)
+              setDelegationParentPolicy(freshPayload.task.correction.policy)
             } catch {
-              // fall through
+              setDelegationParentVersion(undefined)
+              delegation.cancel()
+              port.toast("Could not read the fresh parent task: request failed.", "error")
+              return
             }
             await delegation.revoke(target)
           }}

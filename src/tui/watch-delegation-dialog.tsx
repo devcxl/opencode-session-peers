@@ -25,7 +25,7 @@ export interface WatchDelegationDialogProps {
   readonly state: () => DelegationPaneState
   readonly sessionID: string
   readonly parentTaskID: string
-  readonly parentVersion: number | (() => number)
+  readonly parentVersion: number | undefined | (() => number | undefined)
   readonly parentPolicy?: () => { readonly observationMs: number; readonly windowMs: number } | undefined
   readonly palette: () => TuiPalette
   readonly initialTargetSessionID?: string
@@ -57,7 +57,7 @@ export function WatchDelegationDialog(props: WatchDelegationDialogProps): JSX.El
   const [reviewedParentVersion, setReviewedParentVersion] = createSignal<number | undefined>()
   const [busy, setBusy] = createSignal(false)
 
-  const currentParentVersion = (): number =>
+  const currentParentVersion = (): number | undefined =>
     typeof props.parentVersion === "function" ? props.parentVersion() : props.parentVersion
 
   const colour = (tone: "base" | "muted" | "error") => colourFor(tone, props.palette())
@@ -68,11 +68,11 @@ export function WatchDelegationDialog(props: WatchDelegationDialogProps): JSX.El
     return s.payload.grants.filter((g) => g.state === "granted")
   })
 
-  // Watch for parent task version changes: if parent advances, cancel confirm
+  // Watch for parent task version changes: if parent advances or is cleared, cancel confirm
   createEffect(() => {
     const v = currentParentVersion()
     const reviewedV = reviewedParentVersion()
-    if (reviewedV !== undefined && v !== reviewedV) {
+    if (v === undefined || (reviewedV !== undefined && v !== reviewedV)) {
       setStage(undefined)
       setPreparedView(undefined)
       setReviewedParentVersion(undefined)
@@ -87,7 +87,11 @@ export function WatchDelegationDialog(props: WatchDelegationDialogProps): JSX.El
     const versionAtPrepare = currentParentVersion()
     try {
       const prepared = await props.onPrepare(target, mode())
-      if (prepared !== undefined) {
+      if (
+        prepared !== undefined &&
+        versionAtPrepare !== undefined &&
+        currentParentVersion() === versionAtPrepare
+      ) {
         setPreparedView(prepared)
         setReviewedParentVersion(versionAtPrepare)
         setStage("confirm")
