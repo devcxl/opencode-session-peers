@@ -338,6 +338,77 @@ describeLedger("delegation ledger", () => {
     }
   })
 
+  test("a revoke preserves accepted and unknown delivery facts", () => {
+    for (const outcome of ["accepted", "unknown"] as const) {
+      const clock = { value: 1_000 }
+      const ledger = open(clock)
+      try {
+        const parent = enrollParent(ledger)
+        const confirmed = grant(ledger, parent, CHILD_A).grant
+        const child = enrollChild(ledger, parent, confirmed, CHILD_A)
+        if (!child.ok) throw new Error(child.code)
+        const began = ledger.report({
+          taskId: child.value.task.taskID,
+          callerSessionId: CHILD_A,
+          expectedVersion: child.value.task.version,
+          reportId: `outcome-begin-${outcome}`,
+          kind: "begin",
+          evidence: {},
+        })
+        if (!began.ok) throw new Error(began.code)
+        const reservationID = `outcome-reservation-${outcome}`
+        const reserved = ledger.reserveCorrection({
+          taskId: child.value.task.taskID,
+          callerSessionId: PARENT,
+          ownerActivation: OWNER,
+          expectedVersion: began.value.task.version,
+          generation: child.value.task.generation,
+          reservationId: reservationID,
+          at: clock.value + 5,
+        })
+        if (!reserved.ok) throw new Error(reserved.code)
+        const claimed = ledger.claimCorrection({
+          taskId: child.value.task.taskID,
+          reservationId: reservationID,
+          ownerActivation: OWNER,
+          expectedVersion: reserved.value.task.version,
+          generation: child.value.task.generation,
+          at: clock.value + 6,
+        })
+        if (!claimed.ok) throw new Error(claimed.code)
+        const recorded = ledger.recordCorrectionOutcome({
+          taskId: child.value.task.taskID,
+          reservationId: reservationID,
+          ownerActivation: OWNER,
+          outcome,
+          ...(outcome === "accepted" ? { admissionID: `admission-${outcome}` } : {}),
+          at: clock.value + 7,
+        })
+        if (!recorded.ok) throw new Error(recorded.code)
+
+        const revoked = ledger.revokeDelegationGrant({
+          parentTaskId: parent.taskID,
+          targetSessionId: CHILD_A,
+          callerSessionId: PARENT,
+          ownerActivation: OWNER,
+          expectedVersion: parent.version,
+          at: clock.value + 8,
+        })
+        expect(revoked.ok).toBe(true)
+        const correction = ledger.correction(child.value.task.taskID)
+        expect(correction.ok).toBe(true)
+        if (!correction.ok) return
+        expect(correction.value.attempts[0]).toMatchObject(
+          outcome === "accepted"
+            ? { phase: "accepted", admissionID: "admission-accepted" }
+            : { phase: "unknown" },
+        )
+      } finally {
+        ledger.close()
+      }
+    }
+  })
+
   test("a parent pause between claim and receipt records seen but no permit", () => {
     const clock = { value: 1_000 }
     const ledger = open(clock)

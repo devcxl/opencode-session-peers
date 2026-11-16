@@ -183,9 +183,10 @@ Targeted red/green:
 - `test/watch-delegation-policy.test.ts`: 22 pass (direct child, wrong/absent
   parent, grandchild, cross-location/scope, revoked, mode cap, recursion,
   owner/version, completed/late/busy child, closing, digest text/owner/version).
-- `test/watch-delegation-ledger.test.ts`: 8 pass (real SQLite, derived grant,
+- `test/watch-delegation-ledger.test.ts`: 9 pass (real SQLite, derived grant,
   independent children, idempotent request, revoked source, reserve/claim
-  refusal with attempt facts retained, pause-before-receipt seen/no permit).
+  refusal with attempt facts retained, accepted/unknown facts retained, and
+  pause-before-receipt seen/no permit).
 - `test/watch-delegation-authority.test.ts`: 9 pass (self task, fresh allow,
   revoke/pause/scope/parentID/child deletion, configured-scope source,
   revoke-during-read, closing-during-read).
