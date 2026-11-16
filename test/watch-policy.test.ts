@@ -227,3 +227,110 @@ describePolicy("bounded policy through the plugin entry", () => {
     }
   })
 })
+
+const PATCHED_APP_VERSION = "2.3.0-watchdog-location.1"
+const CORRECTION_PREFIX = "[session-peers correction]"
+
+async function pump(host: FakeHost, ms: number): Promise<void> {
+  const step = ms >= 60_000 ? 60_000 : 1_000
+  for (let elapsed = 0; elapsed < ms; elapsed += step) {
+    await host.advance(step)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+}
+
+function correctionIDs(text: string): { readonly attemptID: string; readonly correlation: string } {
+  const match = /attemptID ([^;]+); correlation ([^.\s]+)\./.exec(text)
+  const attemptID = match?.[1]
+  const correlation = match?.[2]
+  if (attemptID === undefined || correlation === undefined) throw new Error("missing correction ids")
+  return { attemptID, correlation }
+}
+
+describePolicy("public automatic correction through the plugin entry", () => {
+  test("the real queue is used three times and never a fourth", async () => {
+    const state = stateDirectory()
+    const { host, unload } = await loaded(
+      {
+        appVersion: PATCHED_APP_VERSION,
+        options: { watch: { ...WATCH_OPTIONS } },
+      },
+      state,
+    )
+    try {
+      const at = host.now()
+      host.emit("session.created", { sessionID: CALLER_SESSION_ID }, at)
+      host.emit("session.execution.started", { sessionID: CALLER_SESSION_ID }, at)
+      host.emit("session.execution.succeeded", { sessionID: CALLER_SESSION_ID }, at)
+      host.setBusy(CALLER_SESSION_ID, at)
+      host.setIdle(CALLER_SESSION_ID, at)
+      const task = await currentTask(host, "public-policy")
+      const corrections = () => host.prompts.filter((prompt) => prompt.text.startsWith(CORRECTION_PREFIX))
+      expect(corrections()).toHaveLength(0)
+
+      await pump(host, 6_000)
+      expect(corrections()).toHaveLength(1)
+      expect(corrections()[0]?.delivery).toBe("queue")
+
+      for (let round = 1; round <= 3; round += 1) {
+        const prompt = corrections().at(-1)
+        if (prompt === undefined) throw new Error("missing correction prompt")
+        const { attemptID, correlation } = correctionIDs(prompt.text)
+        const receipt = await host.call("peers", {
+          action: "watch",
+          watch: { operation: "receipt", taskID: task.taskID, attemptID, correlation },
+        }, CALLER_SESSION_ID)
+        expect((receipt.details as { watch: { ok: boolean; continuePermit: boolean } }).watch).toMatchObject({
+          ok: true,
+          continuePermit: true,
+        })
+
+        const shown = await show(host, task.taskID)
+        const version = shown.task?.version
+        if (version === undefined) throw new Error("missing task version")
+        const progress = await host.call("peers", {
+          action: "watch",
+          watch: {
+            operation: "report",
+            taskID: task.taskID,
+            expectedVersion: version,
+            reportId: `public-progress-${round}`,
+            kind: "progress",
+            evidence: { summary: `real public result ${round}`, reference: `public-result-${round}` },
+          },
+        }, CALLER_SESSION_ID)
+        expect((progress.details as { watch: { ok: boolean } }).watch.ok).toBe(true)
+        const recovered = await show(host, task.taskID)
+        expect(recovered.task?.correction.last).toMatchObject({
+          phase: "recovered",
+          recovery: { resultReference: `public-result-${round}` },
+        })
+
+        host.setIdle(CALLER_SESSION_ID, host.now())
+        await pump(host, 300_000)
+        if (round < 3) {
+          expect(corrections()).toHaveLength(round + 1)
+        } else {
+          expect(corrections()).toHaveLength(3)
+        }
+      }
+
+      const final = await show(host, task.taskID)
+      expect(final.task?.correction.attempts).toMatchObject({ used: 3, limit: 3 })
+      expect(final.task?.correction.stop?.reason).toBe("attempt-limit")
+      expect(final.task?.correction.history.map((attempt) => attempt.phase)).toEqual([
+        "recovered",
+        "recovered",
+        "recovered",
+      ])
+      host.setIdle(CALLER_SESSION_ID, host.now())
+      await pump(host, 300_000)
+      expect(corrections()).toHaveLength(3)
+      expect(corrections().every((prompt) => prompt.delivery === "queue")).toBe(true)
+      expect(host.generations).toHaveLength(0)
+      expect(host.interrupts).toHaveLength(0)
+    } finally {
+      await unload()
+    }
+  })
+})

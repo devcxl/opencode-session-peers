@@ -207,14 +207,17 @@ function policyText(correction: Correction): string {
   const policy = correction.policy
   const parts = [
     `up to ${correction.attempts.limit} automatic attempts`,
-    `observe ${durationText(policy.observationMs)}`,
-    `problem ${durationText(policy.windowMs)}`,
+    `observe ${policyDurationText(policy.observationMs)}`,
+    `problem ${policyDurationText(policy.windowMs)}`,
   ]
   if (policy.windowEndsAt !== null) parts.push(`window ends ${formatWatchTime(policy.windowEndsAt)}`)
+  if (policy.nextAttemptAt !== null && correction.attempts.used < correction.attempts.limit) {
+    parts.push(`next attempt after ${formatWatchTime(policy.nextAttemptAt)}`)
+  }
   return parts.join(" · ")
 }
 
-function durationText(ms: number): string {
+export function policyDurationText(ms: number): string {
   if (ms % 60_000 === 0) return `${ms / 60_000}m`
   if (ms % 1_000 === 0) return `${ms / 1_000}s`
   return `${ms}ms`

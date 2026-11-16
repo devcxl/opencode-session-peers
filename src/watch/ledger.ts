@@ -46,6 +46,7 @@ import {
   WATCH_CORRECTION_TERMS,
   WATCH_LIMITS,
   WATCH_MIN_SQLITE,
+  watchCorrectionAttemptAnchor,
   type WatchAlertKind,
   type WatchAlertRecord,
   type WatchAlertState,
@@ -1992,6 +1993,32 @@ class SqliteWatchLedger implements WatchLedger {
       ) {
         throw new LedgerFailure("corrupt", "the stored correction episode budget is invalid")
       }
+      if (previous !== null && !correctionEpisodeEnded(previous)) {
+        if (input.at < episode.startedAt) {
+          throw new LedgerFailure("invalid_input", "at precedes the fixed start of this correction episode")
+        }
+        if (input.at >= episode.deadlineAt) {
+          throw new LedgerFailure("invalid_input", "the fixed correction episode deadline has passed")
+        }
+      }
+      if (previous !== null) {
+        const observationEndsAt =
+          watchCorrectionAttemptAnchor({
+            reservedAt: previous.reserved_at,
+            claimedAt: previous.claimed_at,
+            acceptedAt: previous.accepted_at,
+            rejectedAt: previous.rejected_at,
+            unknownAt: previous.unknown_at,
+            abortedAt: previous.aborted_at,
+            receiptAt: previous.receipt_at,
+            lastSeenAt: previous.last_seen_at,
+            recoveredAt: previous.recovered_at,
+            closedAt: previous.closed_at,
+          }) + previous.episode_observation_ms
+        if (input.at < observationEndsAt) {
+          throw new LedgerFailure("invalid_input", "the post-attempt observation window has not completed")
+        }
+      }
       const ordinal = counts.highest + 1
       try {
         this.db
@@ -2090,7 +2117,13 @@ class SqliteWatchLedger implements WatchLedger {
       if (row.state !== "reserved" || row.claimed_at !== null) {
         throw new LedgerFailure("claim_taken", "the one send slot for this reservation is already claimed")
       }
-      if (!Number.isSafeInteger(input.at) || input.at < row.reserved_at) {
+      if (!Number.isSafeInteger(input.at) || input.at < row.episode_started_at) {
+        throw new LedgerFailure("invalid_input", "at precedes the fixed start of this correction episode")
+      }
+      if (input.at >= row.episode_deadline_at) {
+        throw new LedgerFailure("invalid_input", "the fixed correction episode deadline has passed; the send slot is not claimable")
+      }
+      if (input.at < row.reserved_at) {
         throw new LedgerFailure("invalid_input", "at must be a non-negative, non-decreasing time")
       }
       const changed = this.db
@@ -2444,6 +2477,13 @@ class SqliteWatchLedger implements WatchLedger {
             : {
                 startedAt: previous.episode_started_at,
                 deadlineAt: previous.episode_deadline_at,
+                observationMs: previous.episode_observation_ms,
+                windowMs: previous.episode_window_ms,
+              },
+        lastAttemptPolicy:
+          previous === null
+            ? null
+            : {
                 observationMs: previous.episode_observation_ms,
                 windowMs: previous.episode_window_ms,
               },

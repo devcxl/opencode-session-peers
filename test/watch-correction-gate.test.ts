@@ -49,6 +49,7 @@ const snapshot: WatchCorrectionSnapshot = {
   },
   attempts: [],
   episode: null,
+  lastAttemptPolicy: null,
   sessionUnresolved: false,
 }
 
@@ -388,6 +389,60 @@ describe("bounded automatic-attempt policy", () => {
     const invalid = correctionGate(eligibleInput({ snapshot: bounded, now: Number.NaN }))
     expect(invalid.eligible).toBe(false)
     expect(invalid.stopReason).toBe("post-attempt-observation")
+  })
+
+  test("a closed episode keeps the last attempt's persisted observation even after a config downchange", () => {
+    for (const closedReason of ["recovered", "normal-wait"] as const) {
+      const closed = attempt({
+        reservationID: "attempt-1",
+        ordinal: 1,
+        phase: closedReason === "recovered" ? "recovered" : "receipted",
+        receiptAt: 1_010,
+        receiptPermitAt: 1_010,
+        ...(closedReason === "recovered"
+          ? {
+              recoveredAt: 1_020,
+              recoveryReportID: "report-1",
+              recoveryReference: "result-1",
+            }
+          : {}),
+        closedAt: 1_020,
+        closedReason,
+      })
+      const closedAt = closed.closedAt ?? 1_020
+      const snapshotAfterClose = {
+        ...snapshot,
+        attempts: [closed],
+        episode: null,
+        lastAttemptPolicy: { observationMs: 600_000, windowMs: 1_200_000 },
+      }
+      const tooSoon = correctionGate(
+        eligibleInput({
+          snapshot: snapshotAfterClose,
+          now: closedAt + 300_000 + 1,
+          policy: { observationMs: 300_000, windowMs: 2_400_000 },
+        }),
+      )
+      expect(tooSoon.eligible).toBe(false)
+      expect(tooSoon.stopReason).toBe("post-attempt-observation")
+      expect(tooSoon.policy).toMatchObject({
+        observationMs: 600_000,
+        windowMs: 2_400_000,
+        observationEndsAt: 601_020,
+        windowStartedAt: null,
+        windowEndsAt: null,
+      })
+
+      const atPersistedBoundary = correctionGate(
+        eligibleInput({
+          snapshot: snapshotAfterClose,
+          now: closedAt + 600_000,
+          policy: { observationMs: 300_000, windowMs: 2_400_000 },
+        }),
+      )
+      expect(atPersistedBoundary.eligible).toBe(true)
+      expect(atPersistedBoundary.policy.observationEndsAt).toBe(601_020)
+    }
   })
 
   test("a normal-wait closure ends the episode; a cleared wait may start a new one with remaining quota", () => {

@@ -21,7 +21,7 @@ import {
   alertPageSizeFor,
   selectedAlert,
 } from "./watch-alerts.ts"
-import { GRANT_TERMS, gatePageOf, gatePageSizeFor } from "./watch-correction.ts"
+import { GRANT_TERMS, gatePageOf, gatePageSizeFor, policyDurationText } from "./watch-correction.ts"
 import { waitPageOf, waitPageSizeFor } from "./watch-observation.ts"
 import { formatWatchTime } from "./watch-format.ts"
 import { watchContent, type WatchContent, type WatchPane, type WatchState } from "./watch-view.ts"
@@ -402,8 +402,16 @@ export function WatchDialog(props: WatchDialogProps) {
   const confirmation = createMemo(() => {
     if (busy()) return "Working…"
     switch (grantStage()) {
-      case "review":
-        return `${GRANT_TERMS}\ny: declare + prepare challenge · n: cancel`
+      case "review": {
+        const state = props.state()
+        const policy =
+          state.kind === "payload" ? state.payload.task?.correction.policy : undefined
+        const effective =
+          policy === undefined
+            ? undefined
+            : `Effective this round: observe ${policyDurationText(policy.observationMs)} · problem ${policyDurationText(policy.windowMs)}`
+        return `${GRANT_TERMS}${effective === undefined ? "" : `\n${effective}`}\ny: declare + prepare challenge · n: cancel`
+      }
       case "confirm": {
         const summary = grantSummary()
         const expires = grantExpiresAt()

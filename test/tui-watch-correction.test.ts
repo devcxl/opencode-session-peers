@@ -398,3 +398,28 @@ describe("bounded attempt display", () => {
     expect(blocks.notes.join("\n")).toContain("recovery is unconfirmed until new progress")
   })
 })
+
+describe("persisted cooldown display", () => {
+  test("shows the next-attempt time from the last attempt's persisted observation", () => {
+    const blocks = content(
+      state({
+        task: task({
+          mode: "limited-correction",
+          correction: correction({
+            attempts: { used: 1, limit: 3 },
+            policy: {
+              observationMs: 600_000,
+              windowMs: 2_400_000,
+              windowStartedAt: null,
+              windowEndsAt: null,
+              nextAttemptAt: Date.UTC(2026, 10, 16, 4, 40, 0),
+            },
+          }),
+        }),
+      }),
+    )
+    expect(valueOf(blocks, "Policy")).toContain("observe 10m")
+    expect(valueOf(blocks, "Policy")).toContain("problem 40m")
+    expect(valueOf(blocks, "Policy")).toContain("next attempt after")
+  })
+})

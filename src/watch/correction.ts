@@ -11,7 +11,7 @@ import {
   WATCH_CORRECTION_LIMIT,
   WATCH_MIN_SQLITE,
   isCorrectionAttemptOpen,
-  type WatchCorrectionAttemptRecord,
+  watchCorrectionAttemptAnchor,
   type WatchCorrectionGateView,
   type WatchCorrectionPolicy,
   type WatchCorrectionSnapshot,
@@ -98,13 +98,14 @@ function evaluate(input: CorrectionGateInput, verified: readonly string[]): Corr
   const used = history.length
   const lastAttemptAt = history.reduce<number | null>(
     (latest, attempt) => {
-      const anchor = correctionAttemptAnchor(attempt)
+      const anchor = watchCorrectionAttemptAnchor(attempt)
       return latest === null || anchor > latest ? anchor : latest
     },
     null,
   )
   const episode = snapshot.episode
-  const observationMs = episode?.observationMs ?? policy.observationMs
+  const observationMs =
+    episode?.observationMs ?? snapshot.lastAttemptPolicy?.observationMs ?? policy.observationMs
   const windowMs = episode?.windowMs ?? policy.windowMs
   const observationEndsAt = lastAttemptAt === null ? null : lastAttemptAt + observationMs
   const windowStartedAt = episode?.startedAt ?? null
@@ -263,22 +264,6 @@ function result(
   policy: CorrectionPolicyFacts,
 ): CorrectionGateResult {
   return { eligible: false, stopReason: stop.reason, missingEvidence: stop.missingEvidence, gates, policy }
-}
-
-/** The latest persisted event of one permanent attempt, used as its observation anchor. */
-function correctionAttemptAnchor(attempt: WatchCorrectionAttemptRecord): number {
-  return Math.max(
-    attempt.reservedAt,
-    attempt.claimedAt ?? 0,
-    attempt.acceptedAt ?? 0,
-    attempt.rejectedAt ?? 0,
-    attempt.unknownAt ?? 0,
-    attempt.abortedAt ?? 0,
-    attempt.receiptAt ?? 0,
-    attempt.lastSeenAt ?? 0,
-    attempt.recoveredAt ?? 0,
-    attempt.closedAt ?? 0,
-  )
 }
 
 function stopForGate(

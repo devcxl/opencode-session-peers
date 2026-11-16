@@ -234,11 +234,13 @@ describeCorrection("correction ledger", () => {
       task = granted.task
       expect(granted.grant).toMatchObject({ mode: "limited-correction", state: "granted", version: 1 })
       expect(WATCH_CORRECTION_TERMS).toContain("3 permanent auto attempts")
-      expect(WATCH_CORRECTION_TERMS).toContain("5 min observation after each")
-      expect(WATCH_CORRECTION_TERMS).toContain("same OS user/location")
-      expect(WATCH_CORRECTION_TERMS).toContain("not human authentication")
-      expect(WATCH_CORRECTION_TERMS).toContain("never reset quota or window")
-      expect(WATCH_CORRECTION_TERMS).toContain("Unknown/unsupported = alert-only")
+      expect(WATCH_CORRECTION_TERMS).toContain("Defaults 5m post-attempt, 20m/problem")
+      expect(WATCH_CORRECTION_TERMS).toContain("round fixes configured values, next round current")
+      expect(WATCH_CORRECTION_TERMS).toContain("same OS/user/location")
+      expect(WATCH_CORRECTION_TERMS).toContain("not human auth")
+      expect(WATCH_CORRECTION_TERMS).toContain("never reset quota or live window")
+      expect(WATCH_CORRECTION_TERMS).toContain("matched clear when a wait existed")
+      expect(WATCH_CORRECTION_TERMS).toContain("Unknown alert-only")
       expect(WATCH_CORRECTION_TERMS.length).toBeLessThanOrEqual(500)
     } finally {
       ledger.close()
@@ -253,7 +255,15 @@ describeCorrection("correction ledger", () => {
       task = grant(ledger, task.taskID, task.version, clock).task
       for (let ordinal = 1; ordinal <= 3; ordinal += 1) {
         clock.value += 1_000
-        const reserved = reserve(ledger, task.taskID, task.version, task.generation, `res-${ordinal}`, clock)
+        const reserved = reserve(
+          ledger,
+          task.taskID,
+          task.version,
+          task.generation,
+          `res-${ordinal}`,
+          clock,
+          { observationMs: 1, windowMs: 60_000 },
+        )
         expect(reserved.ok).toBe(true)
         if (!reserved.ok) return
         expect(reserved.value.attempt).toMatchObject({ ordinal, phase: "reserved" })
@@ -1006,6 +1016,7 @@ describeCorrection("correction ledger", () => {
         at: clock.value + 1,
       })
       expect(recovered).toMatchObject({ ok: true, value: { recovered: true } })
+      clock.value += 300_001
       const afterRecovery = ledger.show({ taskID: task.taskID, sessionID: "ses_a" })
       if (!afterRecovery.ok || afterRecovery.value === null) throw new Error("task missing")
       const third = reserve(
@@ -1517,7 +1528,7 @@ describeCorrection("correction ledger", () => {
       let task = enroll(ledger)
       task = grant(ledger, task.taskID, task.version, clock).task
       for (let ordinal = 1; ordinal <= 3; ordinal += 1) {
-        clock.value += 1_000
+        clock.value += 300_000
         const prefix = `limit-${ordinal}`
         const results = await Promise.all(
           Array.from({ length: 4 }, (_, index) =>
@@ -1678,6 +1689,7 @@ describeCorrection("correction ledger", () => {
       })
       expect(aborted).toMatchObject({ ok: true, value: { aborted: true, attempt: { phase: "aborted" } } })
       if (aborted.ok) expect(aborted.value.attempt.abortedAt).toBe(clock.value + 5)
+      clock.value += 5 + 300_000
       const current = ledger.show({ taskID: task.taskID, sessionID: "ses_a" })
       if (!current.ok || current.value === null) throw new Error("task missing")
       const next = reserve(ledger, task.taskID, current.value.version, task.generation, "res-after-abort", clock)
@@ -1782,7 +1794,7 @@ describeCorrection("correction ledger", () => {
       ledger.close()
     }
 
-    clock.value = 2_000
+    clock.value = 301_000
     const reopened = openWatchLedger({ path, busyTimeoutMs: 2_000, openAttempts: 20, now: () => clock.value })
     if (!reopened.ok) throw new Error(`${reopened.code}: ${reopened.detail}`)
     try {
@@ -1827,7 +1839,7 @@ describeCorrection("correction ledger", () => {
         task.generation,
         "res-wait-episode",
         clock,
-        { observationMs: 300_000, windowMs: 1_200_000 },
+        { observationMs: 600_000, windowMs: 1_200_000 },
       )
       if (!reserved.ok) throw new Error(`${reserved.code}: ${reserved.detail}`)
       const correlation = claimCorrelation(
@@ -1868,6 +1880,10 @@ describeCorrection("correction ledger", () => {
       expect(waiting.ok).toBe(true)
       const closed = ledger.correction(task.taskID)
       expect(closed.ok && closed.value.episode).toBeNull()
+      expect(closed.ok && closed.value.lastAttemptPolicy).toEqual({
+        observationMs: 600_000,
+        windowMs: 1_200_000,
+      })
       expect(attemptOf(closed)[0]).toMatchObject({
         phase: "receipted",
         closedAt: 1_020,
@@ -1876,7 +1892,18 @@ describeCorrection("correction ledger", () => {
 
       const current = ledger.show({ taskID: task.taskID, sessionID: "ses_a" })
       if (!current.ok || current.value === null) throw new Error("task missing")
-      clock.value += 300_000
+      clock.value += 300_001
+      const tooSoon = reserve(
+        ledger,
+        task.taskID,
+        current.value.version,
+        task.generation,
+        "res-wait-too-soon",
+        clock,
+        { observationMs: 300_000, windowMs: 2_400_000 },
+      )
+      expect(tooSoon).toMatchObject({ ok: false, code: "invalid_input" })
+      clock.value += 299_999
       const next = reserve(
         ledger,
         task.taskID,
@@ -1884,14 +1911,18 @@ describeCorrection("correction ledger", () => {
         task.generation,
         "res-wait-episode-2",
         clock,
-        { observationMs: 600_000, windowMs: 2_400_000 },
+        { observationMs: 300_000, windowMs: 2_400_000 },
       )
       if (!next.ok) throw new Error(`${next.code}: ${next.detail}`)
       const fresh = ledger.correction(task.taskID)
       expect(fresh.ok && fresh.value.episode).toEqual({
         startedAt: clock.value,
         deadlineAt: clock.value + 2_400_000,
-        observationMs: 600_000,
+        observationMs: 300_000,
+        windowMs: 2_400_000,
+      })
+      expect(fresh.ok && fresh.value.lastAttemptPolicy).toEqual({
+        observationMs: 300_000,
         windowMs: 2_400_000,
       })
       expect(attemptOf(fresh)).toHaveLength(2)
@@ -1913,7 +1944,7 @@ describeCorrection("correction ledger", () => {
         task.generation,
         "res-recover-episode",
         clock,
-        { observationMs: 300_000, windowMs: 1_200_000 },
+        { observationMs: 600_000, windowMs: 1_200_000 },
       )
       if (!reserved.ok) throw new Error(`${reserved.code}: ${reserved.detail}`)
       const correlation = claimCorrelation(
@@ -1947,6 +1978,10 @@ describeCorrection("correction ledger", () => {
       expect(progress.ok).toBe(true)
       const recovered = ledger.correction(task.taskID)
       expect(recovered.ok && recovered.value.episode).toBeNull()
+      expect(recovered.ok && recovered.value.lastAttemptPolicy).toEqual({
+        observationMs: 600_000,
+        windowMs: 1_200_000,
+      })
       expect(attemptOf(recovered)[0]).toMatchObject({
         phase: "recovered",
         recoveredAt: 1_020,
@@ -1955,7 +1990,18 @@ describeCorrection("correction ledger", () => {
 
       const current = ledger.show({ taskID: task.taskID, sessionID: "ses_a" })
       if (!current.ok || current.value === null) throw new Error("task missing")
-      clock.value += 300_000
+      clock.value += 300_001
+      const tooSoon = reserve(
+        ledger,
+        task.taskID,
+        current.value.version,
+        task.generation,
+        "res-recover-too-soon",
+        clock,
+        { observationMs: 300_000, windowMs: 2_400_000 },
+      )
+      expect(tooSoon).toMatchObject({ ok: false, code: "invalid_input" })
+      clock.value += 299_999
       const next = reserve(
         ledger,
         task.taskID,
@@ -1963,17 +2009,63 @@ describeCorrection("correction ledger", () => {
         task.generation,
         "res-recover-episode-2",
         clock,
-        { observationMs: 600_000, windowMs: 2_400_000 },
+        { observationMs: 300_000, windowMs: 2_400_000 },
       )
       if (!next.ok) throw new Error(`${next.code}: ${next.detail}`)
       const fresh = ledger.correction(task.taskID)
       expect(fresh.ok && fresh.value.episode).toEqual({
         startedAt: clock.value,
         deadlineAt: clock.value + 2_400_000,
-        observationMs: 600_000,
+        observationMs: 300_000,
+        windowMs: 2_400_000,
+      })
+      expect(fresh.ok && fresh.value.lastAttemptPolicy).toEqual({
+        observationMs: 300_000,
         windowMs: 2_400_000,
       })
       expect(attemptOf(fresh)).toHaveLength(2)
+    } finally {
+      ledger.close()
+    }
+  })
+
+  test("reserve and claim reject the stored episode deadline atomically", () => {
+    const clock = { value: 1_000 }
+    const ledger = open(clock)
+    try {
+      let task = enroll(ledger)
+      task = grant(ledger, task.taskID, task.version, clock).task
+      const policy = { observationMs: 300_000, windowMs: 1_000 }
+      const reserved = reserve(ledger, task.taskID, task.version, task.generation, "res-deadline", clock, policy)
+      if (!reserved.ok) throw new Error(`${reserved.code}: ${reserved.detail}`)
+
+      clock.value = 2_000
+      const lateClaim = ledger.claimCorrection({
+        taskId: task.taskID,
+        reservationId: "res-deadline",
+        ownerActivation: "activation-a",
+        expectedVersion: reserved.value.task.version,
+        generation: task.generation,
+        at: clock.value,
+      })
+      expect(lateClaim).toMatchObject({ ok: false, code: "invalid_input" })
+      expect(attemptOf(ledger.correction(task.taskID))[0]).toMatchObject({ phase: "reserved" })
+
+      clock.value = 1_999
+      const aborted = ledger.abortCorrection({
+        taskId: task.taskID,
+        reservationId: "res-deadline",
+        ownerActivation: "activation-a",
+        expectedVersion: reserved.value.task.version,
+        generation: task.generation,
+        at: clock.value,
+      })
+      expect(aborted.ok).toBe(true)
+
+      clock.value = 2_000
+      const lateReserve = reserve(ledger, task.taskID, reserved.value.task.version, task.generation, "res-deadline-2", clock, policy)
+      expect(lateReserve).toMatchObject({ ok: false, code: "invalid_input" })
+      expect(attemptOf(ledger.correction(task.taskID))).toHaveLength(1)
     } finally {
       ledger.close()
     }

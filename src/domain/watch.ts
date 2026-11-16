@@ -241,6 +241,36 @@ export interface WatchCorrectionAttemptRecord {
   readonly stopReason?: WatchCorrectionStopReason
 }
 
+/** The persisted timestamps that make one attempt's latest observation anchor. */
+export interface WatchCorrectionAttemptTiming {
+  readonly reservedAt: number
+  readonly claimedAt?: number | null
+  readonly acceptedAt?: number | null
+  readonly rejectedAt?: number | null
+  readonly unknownAt?: number | null
+  readonly abortedAt?: number | null
+  readonly receiptAt?: number | null
+  readonly lastSeenAt?: number | null
+  readonly recoveredAt?: number | null
+  readonly closedAt?: number | null
+}
+
+/** The latest persisted event of one permanent attempt, used as its observation anchor. */
+export function watchCorrectionAttemptAnchor(attempt: WatchCorrectionAttemptTiming): number {
+  return Math.max(
+    attempt.reservedAt,
+    attempt.claimedAt ?? 0,
+    attempt.acceptedAt ?? 0,
+    attempt.rejectedAt ?? 0,
+    attempt.unknownAt ?? 0,
+    attempt.abortedAt ?? 0,
+    attempt.receiptAt ?? 0,
+    attempt.lastSeenAt ?? 0,
+    attempt.recoveredAt ?? 0,
+    attempt.closedAt ?? 0,
+  )
+}
+
 /**
  * One unresolved attempt: any in-flight phase, or a receipted attempt whose
  * permit has not been closed by a verified current-target report.
@@ -265,11 +295,14 @@ export function isCorrectionAttemptOpen(attempt: {
 }
 
 /** The fixed budget of one continuous correction problem, persisted at its first reserve. */
-export interface WatchCorrectionEpisodeSnapshot {
-  readonly startedAt: number
-  readonly deadlineAt: number
+export interface WatchCorrectionPolicySnapshot {
   readonly observationMs: number
   readonly windowMs: number
+}
+
+export interface WatchCorrectionEpisodeSnapshot extends WatchCorrectionPolicySnapshot {
+  readonly startedAt: number
+  readonly deadlineAt: number
 }
 
 export interface WatchCorrectionSnapshot {
@@ -277,12 +310,17 @@ export interface WatchCorrectionSnapshot {
   readonly attempts: readonly WatchCorrectionAttemptRecord[]
   /** The active problem budget, or null before it starts or after it ended. */
   readonly episode: WatchCorrectionEpisodeSnapshot | null
+  /**
+   * The latest attempt's persisted policy, even after its episode ended. The
+   * post-attempt observation uses this snapshot until it completes.
+   */
+  readonly lastAttemptPolicy: WatchCorrectionPolicySnapshot | null
   /** An older task for the same target still has an unresolved attempt. */
   readonly sessionUnresolved: boolean
 }
 
 export const WATCH_CORRECTION_TERMS =
-  "Correction grant: 3 permanent auto attempts; 5 min observation after each; problem max 20 min. Reload/reconfirm/regrant/activity never reset quota or window; normal wait/recovery ends a round; new round needs a cleared wait and all gates. One OpenCode service, same OS user/location; single-host declaration is not proof; channel not human authentication. Unknown/unsupported = alert-only. Safety pause stops auto correction, not business work. Queue admission is not consumption and is irreversible."
+  "Correction grant: 3 permanent auto attempts/task. Defaults 5m post-attempt, 20m/problem; round fixes configured values, next round current. Reload/reconfirm/regrant never reset quota or live window. Normal wait or recovery ends round; next needs all gates, plus a matched clear when a wait existed. One OpenCode service, same OS/user/location; single-host declaration not proof; not human auth. Unknown alert-only; safety pause stops auto, not business. Queue admission not consumption, irreversible."
 
 /**
  * A short-lived challenge returned only to the controlled TUI surface by the

@@ -451,6 +451,7 @@ describeObserver("bounded policy through the observer and executor", () => {
             generation: shown.value.generation,
             reservationId: `spent-${ordinal}`,
             at: host.now(),
+            policy: { observationMs: 1, windowMs: 60_000 },
           })
           if (!reserved.ok) throw new Error(`${reserved.code}: ${reserved.detail}`)
           const aborted = opened.ledger.abortCorrection({
@@ -462,6 +463,7 @@ describeObserver("bounded policy through the observer and executor", () => {
             at: host.now(),
           })
           expect(aborted.ok).toBe(true)
+          await host.advance(1)
         }
       } finally {
         opened.ledger.close()

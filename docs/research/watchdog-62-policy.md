@@ -33,6 +33,16 @@ three permanent attempt rows.
 - After each attempt, another attempt is allowed only at or after the persisted
   observation boundary. The next attempt still needs a trusted continuous idle
   candidate and all existing gates; the one-open constraint prevents overlap.
+  The observation uses the latest attempt's persisted `episode_observation_ms`
+  even after its episode was closed by recovery or normal wait, so a later
+  config downchange cannot shorten the promised cooldown. A new episode's
+  deadline and observation use the then-current config only after that cooldown.
+- The ledger enforces the time facts atomically with the reservation and the
+  send claim: a continuing episode rejects a reserve before its fixed start or
+  at/after its fixed deadline, rejects a reserve before the latest attempt's
+  persisted observation completes, and rejects a claim at/after the stored
+  deadline or before the fixed start. The gate remains an early decision, not
+  the only freshness check.
 - A first reservation is included in the episode deadline. The executor's final
   recheck therefore sees an expired episode even when the fresh lookup after the
   first reservation took longer than the window, and aborts the spent attempt
@@ -66,20 +76,26 @@ final schema-10 union with the delegation tables is parent-owned. A schema-9
 database or identity anchor is rejected (`unsupported_schema`), with no shim.
 
 `WatchCorrectionSnapshot.episode` carries the active fixed snapshot to the
-policy gate. The view exposes the effective policy and the fixed window; the
-attempt history exposes `normal-wait` / `task-completed` closure through the
-existing stop-reason field, and recovery through the existing recovery view.
+policy gate. `WatchCorrectionSnapshot.lastAttemptPolicy` carries the latest
+attempt's persisted observation/window values even after the episode ends, so
+the post-attempt cooldown and the view's `nextAttemptAt` do not fall back to a
+newly changed config. The view exposes the effective policy and the fixed
+window; the attempt history exposes `normal-wait` / `task-completed` closure
+through the existing stop-reason field, and recovery through the existing
+recovery view.
 
 ## Configuration
 
 `watch.correctionObservationMs` defaults to 300000 ms and accepts 300000..
 3600000. `watch.correctionWindowMs` defaults to 1200000 ms and accepts
-300000..7200000. Invalid values (zero, negative, fractional, NaN, infinite,
-non-number, or out of range) are rejected as that value and fall back to the
-safe default with a load warning; they are not coerced, truncated, or treated as
-a runtime disable switch. A window shorter than the observation window is
-allowed: the episode can expire after one attempt, and the UI reports the fixed
-deadline instead of extending it.
+300000..7200000. The defaults are defaults, not a hard maximum: a round fixes
+the configured values it starts with, and the next round uses the then-current
+values. Invalid values (zero, negative, fractional, NaN, infinite, non-number,
+or out of range) are rejected as that value and fall back to the safe default
+with a load warning; they are not coerced, truncated, or treated as a runtime
+disable switch. A window shorter than the observation window is allowed: the
+episode can expire after one attempt, and the UI reports the fixed deadline
+instead of extending it.
 
 ## Contract and UI
 
@@ -89,23 +105,34 @@ was added (`observationMs`, `windowMs`, `windowStartedAt`, `windowEndsAt`,
 `nextAttemptAt`), and stop reasons `correction-window` and
 `post-attempt-observation` were added. Watch operation request DTOs, delegation
 views and the shared panel skeleton are untouched. The correction pane shows the
-configured policy, used/remaining permanent attempts, fixed window end, attempt
-closure reasons, unconfirmed recovery, and the third-success explanation.
+effective policy, used/remaining permanent attempts, fixed window end,
+next-attempt time, attempt closure reasons, unconfirmed recovery, and the
+third-success explanation. The focused grant review adds only a display line
+with the current effective observation/window values from the existing
+correction policy view; it does not add a DTO or change the grant challenge.
 
-`WATCH_CORRECTION_TERMS` is the canonical 500-character text. It no longer says
-“first automatic attempt only”; it states the three-attempt permanent budget,
-the five-minute observation, the twenty-minute continuous-problem cap, the
-no-reset rule, the normal-wait/recovery round boundary, the single-service /
-single-host declaration limits, unknown=alert-only, safety pause semantics and
-the non-consumption/irreversible admission. The grant digest changed, so grants
-created under the old text fail closed at the existing prepare/confirm/reserve/
-claim/receipt checks. The UI imports the canonical value; no copy exists.
+`WATCH_CORRECTION_TERMS` is the canonical 500-character text. It states the
+three-attempt permanent budget, the five-minute / twenty-minute **defaults**,
+that a round fixes its configured values and the next round uses current values,
+the no-reset rule, the normal-wait/recovery round boundary, that a matched clear
+is required only when a wait existed, the single-service / same OS user/location
+limit, that the single-host declaration is not proof and the channel is not
+human authentication, unknown=alert-only, safety pause not stopping business
+work, and that queue admission is not consumption and is irreversible. The
+review shows the current effective values next to these defaults, so a custom
+40-minute window is not hidden behind the default text. The digest remains
+bound to the terms text, not to the process config: the plugin does not hot-swap
+an owner activation's config, the effective values are shown at review, and
+binding the digest to config would require a coordinated grant/schema change
+without changing the owner/authorization boundary. Old-term grants still fail
+closed at the existing prepare/confirm/reserve/claim/receipt checks. The UI
+imports the canonical value; no copy exists.
 
 ## Tests and evidence
 
 Targeted run (Bun 1.4.4):
 
-- 22 watch/config/TUI files: 298 pass, 0 fail, 1722 expectations.
+- 22 watch/config/TUI files: 303 pass, 0 fail, 1776 expectations.
 - `entry`, `rpc`, `boundaries`: 33 pass, 0 fail, 180 expectations.
 - Overall `tsc --noEmit` and `git diff --check`: clean.
 
@@ -113,8 +140,12 @@ New coverage includes real SQLite/ledger tests for the persisted episode and
 config reload, the normal-wait round and remaining quota, the recovery round,
 schema-10 columns and schema-9 rejection, executor tests for three actual sends
 and no fourth, first-reservation deadline expiry before claim, abort-then-full-
-observation, concurrent kicks, and observer+executor tests for normal-wait
-clear → new idle episode and for three spent attempts → idle alert only.
+observation, concurrent kicks, reserve/claim fixed-deadline rejection, and
+observer+executor tests for normal-wait clear → new idle episode and for three
+spent attempts → idle alert only. `test/watch-policy.test.ts` also drives the
+full plugin entry with a test-only supported app-version fixture (real ledger,
+real runtime facts, real queue, tool receipts/progress, controlled clock): three
+automatic queue sends and no fourth.
 
 Red evidence while developing (temporary reversions, then restored):
 
@@ -122,6 +153,12 @@ Red evidence while developing (temporary reversions, then restored):
   deadline, and first-reservation recheck tests fail with `eligible: true`.
 - Treating `normal-wait` as non-terminal made the ledger new-episode test fail.
 - Removing the attempt-limit success note made the TUI third-success test fail.
+- Removing the `lastAttemptPolicy` fallback made the closed-episode cooldown
+  gate test fail.
+- Removing the reserve cooldown check made the normal-wait cooldown test fail;
+  removing the claim deadline check made the boundary test fail.
+- Removing the grant-review effective line made the custom-policy review test
+  fail.
 
 ## Not verified here
 
