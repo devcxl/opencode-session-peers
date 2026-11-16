@@ -265,6 +265,9 @@ describePolicy("public automatic correction through the plugin entry", () => {
       host.setBusy(CALLER_SESSION_ID, at)
       host.setIdle(CALLER_SESSION_ID, at)
       const task = await currentTask(host, "public-policy")
+      const notice = (await host.modelContext(CALLER_SESSION_ID)).join("\n")
+      expect(notice).toContain("Automatic policy: up to three permanent attempts for this task")
+      expect(notice).not.toContain("Only the first permanent attempt")
       const corrections = () => host.prompts.filter((prompt) => prompt.text.startsWith(CORRECTION_PREFIX))
       expect(corrections()).toHaveLength(0)
 
