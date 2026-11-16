@@ -256,6 +256,30 @@ describeExecutor("delegated executor guard", () => {
     }
   })
 
+  test("a child scope change during the authority await sends nothing", async () => {
+    const h = harness()
+    try {
+      const { childTaskID } = await seed(h)
+      const sent: CorrectionDeliveryRequest[] = []
+      let calls = 0
+      const run = executor(h, sent, async (taskID) => {
+        calls += 1
+        if (calls === 1) h.scopes.set(CHILD, { scope: "project-b", source: "recorded" })
+        return h.app.checkDelegatedAuthority(taskID)
+      })
+      run.kick(childTaskID)
+      await run.settle()
+      expect(sent).toHaveLength(0)
+      const correction = h.ledger.correction(childTaskID)
+      expect(correction.ok).toBe(true)
+      if (!correction.ok) return
+      expect(correction.value.attempts).toHaveLength(0)
+      await run.close()
+    } finally {
+      h.close()
+    }
+  })
+
   test("a source revoke after reserve aborts before claim and sends nothing", async () => {
     const h = harness()
     try {

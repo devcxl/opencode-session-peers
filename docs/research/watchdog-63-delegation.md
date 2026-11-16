@@ -225,9 +225,9 @@ Targeted red/green:
   controlled grant, public delegate, child begin/waiting, parent view, revoke,
   only-child report/receipt, model grant refusal, non-self reserved fields,
   one real queue and child receipt permit, revoke-before-receipt no permit).
-- `test/watch-delegation-executor.test.ts`: 3 pass (source revoke during
-  pre-reserve authority await, revoke after reserve before claim, unknown
-  delivery retained and not replayed after revoke).
+- `test/watch-delegation-executor.test.ts`: 4 pass (scope change and source
+  revoke during the pre-reserve authority await, revoke after reserve before
+  claim, unknown delivery retained and not replayed after revoke).
 - `test/tui-watch-delegation.test.ts`: 4 pass (authorized rows, unauthorized
   redaction, revoked grant notes, failure tone).
 - `test/watch-delegation-policy.test.ts` and `test/watch-delegation-ledger.test.ts`
