@@ -513,6 +513,7 @@ export function confirmDelegationGrant(
     row.target_session_id !== target ||
     row.scope_directory !== scopeDirectory ||
     row.scope_peer_scope !== scopePeerScope ||
+    row.review_summary !== WATCH_DELEGATION_TERMS ||
     rowDeployment !== (input.deployment ?? null)
   ) {
     throw new LedgerDelegationFailure("grant_expired", "the delegation challenge does not match this task, target, mode, scope or terms")
@@ -937,6 +938,16 @@ export function assertDelegationIntegrity(db: Database): void {
     .get() as { n: number }
   if (orphanGrant.n !== 0) {
     throw new LedgerDelegationFailure("corrupt", "a correction grant carries a delegation source without a link")
+  }
+  const missingSource = db
+    .query(
+      `SELECT COUNT(*) AS n FROM watch_correction_grants cg
+       LEFT JOIN watch_delegation_grants dg ON dg.grant_id = cg.source_delegation_grant_id
+       WHERE cg.source_delegation_grant_id IS NOT NULL AND dg.grant_id IS NULL`,
+    )
+    .get() as { n: number }
+  if (missingSource.n !== 0) {
+    throw new LedgerDelegationFailure("corrupt", "a correction grant names a missing delegation source")
   }
 }
 
