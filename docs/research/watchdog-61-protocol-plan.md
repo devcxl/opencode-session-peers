@@ -1,6 +1,7 @@
 # #61 positive protocol plan (real host, candidate build)
 
-Status: executed by the parent; **the real-host positive protocol failed**.
+Status: executed by the parent; stock-host runs failed, while the first
+version-distinct repaired-host candidate passed the positive protocol.
 The parent owns the verification worktree and its static candidate tuple.
 The production whitelist remains empty. No live binary or live session was
 modified.
@@ -100,7 +101,7 @@ No runner direct tool invocation or forged tool context is used for receipt.
 
 ## Evidence split
 
-- **Required real-host evidence (not yet all passed):** full plugin load, target begin report, controlled
+- **Real-host evidence passed on the repaired candidate below:** full plugin load, target begin report, controlled
   grant RPC, trusted idle sample, one automatic queue, target tool receipt,
   duplicate receipt, wrong-caller receipt, progress/new-reference recovery,
   stop/port/registry isolation.
@@ -144,8 +145,8 @@ Each run stopped its own service and stub, verified both ports closed, and
 preserved the live service registry digest. Failure scratch was retained.
 No normal-user authentication was copied and no paid provider was called.
 
-The positive protocol is **not accepted**. Do not add the candidate tuple to the
-production whitelist, synthesize missing event locations, or reinterpret the
+The stock-host positive protocol is **not accepted**. Do not add the stock tuple
+to the production whitelist, synthesize missing event locations, or reinterpret the
 single-host declaration as source proof. An equivalent trusted public signal
 needs separate review; otherwise the host must supply the missing provenance.
 The ticket remains incomplete while that support condition is unmet.
@@ -192,3 +193,33 @@ digest stayed `fe79ebf3151c4a3fdb132d6b3193fca2`.
 Evidence: `/tmp/opencode/watchdog-61-smoke-XzDmQD/`.
 This is runtime evidence, **not a positive protocol pass**. The production
 tuple remains empty pending the full candidate protocol.
+
+### First repaired-host positive result
+
+The parent ran the full runner with the same artifact, explicit
+`WATCH61_OPENCODE_BIN`, `WATCH61_DATABASE_CHANNEL=watchdog-location`,
+`WATCH61_KEEP_SCRATCH=1` and metadata-only tracing enabled. The separate plugin
+worktree `watchdog-61-patched-verification` was based on `e7e83c5`; its only
+production-source difference was the static candidate tuple
+`2.3.0-watchdog-location.1/linux/x64`.
+
+Result: **passed**. Real target `begin`, controlled grant, one automatic queue,
+real target receipt with one continue permit, and new progress/reference recovery
+all passed. Duplicate receipt returned no second permit; a different session was
+refused with `E_WATCH_CALLER_MISMATCH`. Normal show contained no dispatch
+correlation. The parent separately read the scratch ledger read-only: exactly
+one permanent attempt, `recovered`, with one permit and `closed_reason=recovered`;
+the business task remained `in-progress`, not falsely completed.
+
+The parent also read `event-shapes.jsonl`: execution started/succeeded and usage
+events now carried the actual scratch Session location. No plugin backfill was
+used. Child `3990136` and the stub stopped, both ports closed, and the live
+registry digest stayed `fe79ebf3151c4a3fdb132d6b3193fca2`.
+Evidence: `/tmp/opencode/watchdog-61-positive-95uBPb/`.
+
+This removes the measured host-interface blocker **for this exact candidate**,
+not for stock `2.3.0`. It does not yet accept #61: the final closed-at recovery
+guard, canonical UI terms, final full suite and two-axis review must finish,
+followed by a candidate rerun. The production tuple remains empty meanwhile.
+Real host SIGKILL, receipt-before-accepted race, stale-generation and power-loss
+durability are not claimed by this run.
