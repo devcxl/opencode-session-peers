@@ -257,8 +257,18 @@ Targeted red/green:
   under SQLite 3.51.2.
 - `bun run typecheck` passes.
 
-Not claimed/verified in this lane: the full plugin entry delegation flow (the
-parent wires the public action/RPC/panel), the full suite, real host execution,
-a live TUI render, executor wiring, schema union, and #64 handover. No full
-suite, serve, TUI or live host was started; no credentials or private host
-database were read.
+The implementation lane itself started no full suite, serve, live TUI or host,
+and read no credentials or private host database.
+
+Parent integration `2343425` includes the public action/RPC, executor, schema-10
+union, controlled UI and truthful `direct-child` capability. The parent full
+suite passed **779 tests / 0 failures** (66 files, 3644 expectations), including
+the real registered-RPC/SQLite UI bridge without a runtime skip; typecheck and
+diff check were clean. The isolated real-host positive, revoke-before-first-
+receipt and scope-change-before-first-receipt runs passed. Native host
+child-completion reports do wake the parent; they were separately attributed,
+not mistaken for watchdog alerts. Queue delivery mode remains entry-test
+evidence because the host did not retain consumed inbox metadata. See
+`watchdog-63-realhost-plan.md` for exact artifact, scratch paths and limitations.
+Live interactive TUI, real-host SIGKILL/early-receipt/stale-generation,
+power-loss durability and #64 handover remain unverified or out of scope.

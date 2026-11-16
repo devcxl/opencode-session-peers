@@ -261,6 +261,8 @@ controlled delegation grant; enrollment then derives the child's correction gran
 transaction, without bypassing runtime or observation gates. No grant or enrollment creates a
 child, replays work or starts an extra turn. Only the actual child may report or receipt its task.
 The parent may read authorized child state and persistent alerts; these do not prompt the parent.
+The host's own child-completion reports can still wake the parent; watchdog monitoring does not
+suppress or replace that native behavior.
 Revocation or changed parent/scope facts blocks future admission, preserves attempts and cannot
 retract an accepted message. Repeating an identical enrollment request returns its history; a new
 explicit request is a new supervision decision, not a quota or unresolved-attempt bypass.

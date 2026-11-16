@@ -1,9 +1,55 @@
-# #63 real-host no-extra-wakeup plan (runner implemented, not executed)
+# #63 real-host protocol and no-extra-wakeup evidence
 
-Status: runner and pure stub tests implemented; not executed. This lane did not
-start a real host, TUI, service or live API. The parent owns the isolated
-real-host run after review; the runner reuses the existing #61 harness safety
-pattern rather than inventing a second one.
+Status: the parent reviewed the runner and executed **positive, revoke and
+scope successfully** against integration `2343425`. The implementation lane
+itself started no host. All runs used the existing #61 isolation harness and
+the complete production plugin, not a runtime-gate override.
+
+## Recorded parent execution
+
+The approved artifact SHA-256 was independently checked:
+`93c16b937359c226eb77691c7453c5fdadb2b716e1b6da7434d7cc8fc6c5cb7a`.
+All three runs read these facts from the real plugin RPC:
+`2.3.0-watchdog-location.1/linux/x64`, embedded SQLite `3.53.4`,
+WAL, synchronous `2` (FULL), busy timeout `500` ms.
+
+| Scenario | Scratch root under `/tmp/opencode/` | Result |
+| --- | --- | --- |
+| positive | `watchdog-63-realhost-aApzjw/session-peers-harness-realhost` | One correction prompt, one spent attempt, target permit, new-result recovery; duplicate gets no second permit, parent caller refused |
+| revoke | `watchdog-63-realhost-6BKKWu/session-peers-harness-realhost` | Revoke before first receipt: seen, not duplicate, no permit; source-delegation refusal; unauthorized child task/alerts redacted |
+| scope | `watchdog-63-realhost-L16MRN/session-peers-harness-realhost` | Public scope change before first receipt: seen, not duplicate, no permit; scope refusal; unauthorized child task/alerts redacted |
+
+In each run, enrollment and grant prepare/confirm/view left transcript and inbox
+counts unchanged. Public delegation added only its explicit parent driver turn,
+not a child prompt. Each accepted correction remained spent. Raw final show
+responses contained no dispatch correlation; unauthorized views exposed no goal.
+The owned service and stub stopped, both ports closed and the live service
+registry digest was unchanged.
+
+This is **not zero parent generation**. The host natively sends a child
+completion report after each child turn and wakes the parent. Public
+`metadata.source=subagent`, matching `childID` and matching text tag attributed
+three such reports in positive and two in each negative variant after delegation.
+No other synthetic report, parent correction or unexplained parent user turn
+was observed. These native host reports were neither suppressed nor counted as
+watchdog alerts.
+
+Consumed inbox deliveries were not retained: all three reports correctly say
+`queueEvidence: entry-delivery-queue-only`, not runtime delivery-mode proof.
+The entry implementation/tests prove `delivery: "queue"`; the real runs prove
+one correction prompt and no observed correction steer.
+
+An earlier run at `84df96d` stopped on an overly strict parent-generation
+assertion (scratch `watchdog-63-realhost-kwk9Th/session-peers-harness-realhost`).
+It is not a passing protocol run. The native-report classification correction,
+not a production/host change or a broad count exemption, preceded the three
+successful runs.
+
+Parent final integration tests on `2343425`: Bun 1.4.4 **779 pass, 0 fail,
+3644 expectations, 66 files**; overall typecheck and diff check clean.
+The existing OpenTUI headless listener warnings remain. Live interactive TUI,
+real-host SIGKILL, early-receipt race, stale-generation and power-loss durability
+were not verified.
 
 ## What this must prove, and what it must not claim
 
@@ -64,7 +110,8 @@ any other platform/arch. A config/env/model override must not lower the gate.
    subagent delegation through the stub as the original business step, then
    snapshot both transcripts and assert the delegation flow below adds no
    further user message.
-3. Enroll the parent's own task through the real `peers` tool (alert-only).
+3. Enroll the parent's own task through the real `watch` RPC (alert-only),
+   then report `begin` through its real `peers` tool.
    Snapshot parent/child user-message counts, generations and interrupts.
 4. Call the controlled sibling `watchDelegation` prepare with
    `deployment: "single-host-same-location"` and `mode: "limited-correction"`;
@@ -83,24 +130,26 @@ any other platform/arch. A config/env/model override must not lower the gate.
    `peers({action:"watch",watch:{operation:"report",kind:"begin",...}})`. Then
    let the child become normally idle with a bounded scratch `idleMs` (e.g.
    2s) and `tickMs` (e.g. 250ms). Do not fake host timestamps.
-7. Assert exactly one correction queue: one user message beginning
-   `[session-peers correction]`, one permanent attempt, delivery `queue`; no
-   steer, generation or interrupt. The stub parses the prompt's concrete
+7. Assert one automatic user message beginning `[session-peers correction]`
+   and one permanent attempt; use the entry tests for `delivery: "queue"` if
+   consumed inbox metadata is absent. The target naturally generates to process
+   the correction; no interruption or correction steer is observed.
+   The stub parses the prompt's concrete
    `taskID`/`attemptID`/`correlation` and calls the real child receipt tool:
    exactly one `continuePermit=true`; a second duplicate receipt has
    `continuePermit=false`.
-8. Without reading `watch` or `watchDelegationView`, revoke the source
-   delegation through the controlled RPC. A further child receipt must record
-   seen with no permit. If a new attempt is eligible, the executor must not
-   send; the ledger's durable source check must refuse.
+8. In a fresh negative scenario, latch the first correction response, revoke
+   the source delegation through the controlled RPC without a watch/view read,
+   then release the first receipt. It must record seen with no permit, not
+   duplicate. Fresh executor send-refusal races use the targeted ledger tests.
 9. Scope-change variant: in a fresh scratch task, move the child to another
    scope through the existing roster/`setScope` path (or another controlled
    scope fact) and do not open the panel. The next receipt and any executor
    round must refuse; assert no goal/report/alert leaks into the parent's
    context.
-10. Confirm the parent's normal model context was not started by delegation or
-    alert creation: no prompt request, no generation and no interrupt; a
-    context hook may add text only on the next normal request.
+10. Distinguish explicit drivers and native host child-completion reports from
+    watchdog activity. Delegation and alert creation add no extra parent
+    prompt; native reports do wake it, as recorded above.
 11. Stop the child and stub; verify both ports closed and the live registry
     digest unchanged. Keep failure scratch without secrets if a step fails.
 

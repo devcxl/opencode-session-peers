@@ -174,5 +174,15 @@ Red evidence while developing (temporary reversions, then restored):
   push, or #63 delegation behavior was attempted.
 - Real host SIGKILL, stale-generation and schema-10 union with #63 are parent
   integration checks.
-- README, skill text, CONTEXT and shared ADRs remain parent-owned; `src/skill.ts`
-  still contains the old first-attempt wording.
+- README, skill text, CONTEXT and shared ADRs remained parent-owned in this lane.
+
+## Parent integration evidence
+
+Integration `2343425` combines schema 10 with #63, the public entry, UI and
+accurate bounded-policy model/user text. Parent Bun 1.4.4 full suite:
+**779 pass, 0 fail, 3644 expectations across 66 files**; overall typecheck
+and diff check clean. The controlled-clock three-attempt evidence above is not
+a real five-minute host wait. The #63 real-host positive and two negative
+protocols passed on the exact supported artifact; see
+`watchdog-63-realhost-plan.md` for evidence and limitations. Real-host SIGKILL,
+early-receipt race, stale-generation and power-loss durability remain unverified.
