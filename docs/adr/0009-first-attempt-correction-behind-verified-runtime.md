@@ -1,6 +1,6 @@
 # One first automatic correction, behind a controlled grant and verified runtime
 
-Status: proposed (repaired-host protocol passed; final implementation review pending)
+Status: accepted (2026-11-16; #61, repaired-host protocol and two-axis review passed)
 
 The watchdog now has a real side-effect path, but it must not become an
 unbounded wakeup mechanism. This ADR records the chosen boundary for #61.

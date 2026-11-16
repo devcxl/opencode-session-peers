@@ -260,4 +260,9 @@ diff check passed. Subsequent model-skill wording and two fixture comments were
 aligned to the accepted exact tuple; the focused skills/gate tests passed
 **13 / 0**, 76 expectations, with typecheck and diff check again clean.
 Existing headless OpenTUI listener warnings remain; this is not live TUI evidence.
-Final Standards/Spec confirmation is tracked separately from these test results.
+Final Standards/Spec confirmation is separate from these test results: both
+original reviewers confirmed no remaining blocker after the closed-round and
+canonical-terms fixes, and the stale-whitelist documentation was corrected in
+`e28328c`. ADR-0009 and #61 are accepted; this is not acceptance of #62–64 or the
+parent specification as a whole. The unverified real-host races and durability
+limitations above remain.
