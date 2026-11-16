@@ -210,13 +210,14 @@ Targeted red/green:
 - `test/watch-delegation-authority.test.ts`: 9 pass (self task, fresh allow,
   revoke/pause/scope/parentID/child deletion, configured-scope source,
   revoke-during-read, closing-during-read).
-- `test/watch-delegation-service.test.ts`: 16 pass (prepare/confirm/delegate/
+- `test/watch-delegation-service.test.ts`: 17 pass (prepare/confirm/delegate/
   view/revoke, wrong parent/scope, confirm fresh parentID/scope/deletion
   refuses without consuming the nonce, revoke before delegate, own-show
   preference, parent-as-child report/receipt refusal, redacted control,
   completed-child read, completed repeat idempotency, parent correction grant
-  not a delegation, receipt after revoke and scope change with no permit,
-  missing guard fail-closed, self-task receipt permit regression).
+  not a delegation, downgrade retaining spent facts, receipt after revoke and
+  scope change with no permit, missing guard fail-closed, self-task receipt
+  permit regression).
 - `test/watch-delegation-contract.test.ts`: 9 pass (strict readers, no
   consent/checked/nonce in normal view, no content on unauthorized view, RPC
   parse/deployment/revoke shape).

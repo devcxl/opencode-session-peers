@@ -547,6 +547,49 @@ describeService("delegation application", () => {
     }
   })
 
+  test("downgrading a delegated child's correction keeps its spent attempt facts", async () => {
+    const h = harness({ withAuthority: true })
+    try {
+      const parent = enrollParent(h.app)
+      await prepareAndConfirm(h.app, parent.taskID, parent.version)
+      const child = await enrollChild(h.app, parent.taskID, parent.version)
+      const began = h.ledger.report({
+        taskId: child.taskID,
+        callerSessionId: CHILD,
+        expectedVersion: child.version,
+        reportId: "downgrade-begin",
+        kind: "begin",
+        evidence: {},
+      })
+      if (!began.ok) throw new Error(began.code)
+      const reserved = h.ledger.reserveCorrection({
+        taskId: child.taskID,
+        callerSessionId: PARENT,
+        ownerActivation: OWNER,
+        expectedVersion: began.value.task.version,
+        generation: child.generation,
+        reservationId: "downgrade-reservation",
+        at: 2_000,
+      })
+      if (!reserved.ok) throw new Error(reserved.code)
+
+      const downgraded = h.app.downgradeGrant({
+        callerSessionID: PARENT,
+        taskID: child.taskID,
+        expectedVersion: reserved.value.task.version,
+      })
+      expect(downgraded.ok).toBe(true)
+      const correction = h.ledger.correction(child.taskID)
+      expect(correction.ok).toBe(true)
+      if (!correction.ok) return
+      expect(correction.value.grant?.state).toBe("revoked")
+      expect(correction.value.attempts).toHaveLength(1)
+      expect(correction.value.attempts[0]).toMatchObject({ phase: "reserved" })
+    } finally {
+      h.close()
+    }
+  })
+
   test("a receipt after revoke is recorded as seen with no permit", async () => {
     const h = harness({ withAuthority: true })
     try {
