@@ -10,6 +10,7 @@
 import { RGBA } from "@opentui/core"
 import { testRender } from "@opentui/solid"
 
+import { WATCH_CORRECTION_TERMS } from "../src/domain/watch.ts"
 import type { WatchGrantChallengeView, WatchGrantPayload, WatchPayload } from "../src/rpc.ts"
 import type {
   TuiCommand,
@@ -269,7 +270,7 @@ export function grantChallenge(
     expectedVersion: 3,
     generation: 1,
     termsDigest: "terms-digest",
-    reviewSummary: "Reviewed limited correction terms.",
+    reviewSummary: WATCH_CORRECTION_TERMS,
     deployment: "single-host-same-location",
     expiresAt: Date.UTC(2026, 10, 16, 4, 45, 0),
     ...overrides,

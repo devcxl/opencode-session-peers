@@ -7,6 +7,7 @@
 import { describe, expect, test } from "bun:test"
 
 import type { WatchPayload } from "../src/rpc.ts"
+import { WATCH_CORRECTION_TERMS } from "../src/domain/watch.ts"
 import { installWatch } from "../src/tui/watch-command.tsx"
 import {
   SELF,
@@ -56,9 +57,34 @@ describe("controlled correction grant", () => {
     panel.mockInput.pressKey("g")
     await panel.flush()
 
-    expect(panelText(panel)).toContain("3 permanent attempts")
+    expect(panelText(panel)).toContain("three permanent attempts")
+    expect(panelText(panel)).toContain("only the first automatic one")
+    expect(panelText(panel)).toContain("same OS user and location")
+    expect(panelText(panel)).toContain("single-host declaration is not proof of uniqueness")
+    expect(panelText(panel)).toContain("controlled channel is not human authentication")
+    expect(panelText(panel)).toContain("stops automatic correction, not business work, and never resets spent attempts")
+    expect(panelText(panel)).toContain("Queue admission is not consumption and cannot be retracted")
     expect(fake.grantCalls).toEqual([])
     expect(fake.calls).toEqual([])
+    dispose()
+    panel.renderer.destroy()
+  })
+
+  test("review displays the exact canonical WATCH_CORRECTION_TERMS before preparing", async () => {
+    const fake = fakePort({ read: async () => grantableView() })
+    const dispose = installWatch(fake.port, { now: () => 1_000 })
+    commandOf(fake).run()
+    await tick(0)
+
+    const panel = await mountPanel(fake)
+    panel.mockInput.pressKey("c")
+    panel.mockInput.pressKey("g")
+    await panel.flush()
+
+    const text = panelText(panel)
+    expect(text).toContain(WATCH_CORRECTION_TERMS)
+    expect(text).toContain("y: declare + prepare challenge · n: cancel")
+    expect(fake.grantCalls).toEqual([])
     dispose()
     panel.renderer.destroy()
   })
@@ -84,7 +110,7 @@ describe("controlled correction grant", () => {
 
     expect(prepares).toBe(0)
     expect(fake.grantCalls).toEqual([])
-    expect(panelText(panel)).not.toContain("3 permanent attempts")
+    expect(panelText(panel)).not.toContain("three permanent attempts")
     dispose()
     panel.renderer.destroy()
   })
@@ -401,6 +427,60 @@ describe("late grant work", () => {
 })
 
 describe("grant changes and stale challenges", () => {
+  test("a challenge with mismatched reviewSummary is rejected fail-closed, does not confirm, does not display challenge, and toasts a generic error", async () => {
+    const secretNonce = "secret-mismatched-nonce-999"
+    const mismatchedTerms = "Altered terms: arbitrary send permitted without limits."
+    const fake = fakePort({
+      read: async () => grantableView(),
+      grant: async (request) => {
+        if (request.operation === "prepare") {
+          return grantPayload({
+            challenge: grantChallenge({
+              challenge: secretNonce,
+              reviewSummary: mismatchedTerms,
+            }),
+          })
+        }
+        return grantPayload()
+      },
+    })
+    const dispose = installWatch(fake.port, { now: () => 1_000 })
+    commandOf(fake).run()
+    await tick(0)
+
+    const panel = await mountPanel(fake)
+    panel.mockInput.pressKey("c")
+    panel.mockInput.pressKey("g")
+    panel.mockInput.pressKey("y")
+    await panel.flush()
+    await tick(0)
+    await panel.flush()
+
+    // 1. Prepare was called, but challenge was rejected fail-closed
+    expect(fake.grantCalls.map((c) => c.operation)).toEqual(["prepare"])
+    // 2. Generic nonce-safe error toasted without echoing nonce, payload text or canonical terms
+    expect(fake.toasts).toHaveLength(1)
+    expect(fake.toasts[0]?.variant).toBe("error")
+    expect(fake.toasts[0]?.message).toBe(
+      "Could not prepare the correction grant: the challenge terms summary did not match the canonical terms.",
+    )
+    expect(fake.toasts[0]?.message).not.toContain(secretNonce)
+    expect(fake.toasts[0]?.message).not.toContain(mismatchedTerms)
+    expect(fake.toasts[0]?.message).not.toContain(WATCH_CORRECTION_TERMS)
+    // 3. Screen does not enter confirm stage ("Challenge prepared" not shown) and does not show nonce
+    expect(panelText(panel)).not.toContain("Challenge prepared")
+    expect(panelText(panel)).not.toContain(secretNonce)
+
+    // 4. Pressing y does not confirm
+    panel.mockInput.pressKey("y")
+    await panel.flush()
+    await tick(0)
+    expect(fake.grantCalls.map((c) => c.operation)).toEqual(["prepare"])
+
+    dispose()
+    panel.renderer.destroy()
+  })
+
   test("a challenge for another task version is refused and not confirmed", async () => {
     const fake = fakePort({
       read: async () => grantableView(),

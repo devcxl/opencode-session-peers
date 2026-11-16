@@ -3,6 +3,7 @@ import { createSignal } from "solid-js"
 import { testRender } from "@opentui/solid"
 
 import { WatchDialog } from "../src/tui/watch-dialog.tsx"
+import { WATCH_CORRECTION_TERMS } from "../src/domain/watch.ts"
 import type { WatchState } from "../src/tui/watch-view.ts"
 import {
   SELF,
@@ -627,7 +628,7 @@ describe("the correction pane and controlled grant review", () => {
       {
         onGrantPrepare: async () => {
           prepares += 1
-          return { reviewSummary: "Reviewed terms.", expiresAt: 10_000 }
+          return { reviewSummary: WATCH_CORRECTION_TERMS, expiresAt: 10_000 }
         },
         onGrantCancel: () => {
           cancels += 1
@@ -638,20 +639,21 @@ describe("the correction pane and controlled grant review", () => {
     setup.mockInput.pressKey("g")
     await setup.flush()
     const review = text()
-    expect(review).toContain("3 permanent attempts")
-    expect(review).toContain("only the first attempt")
+    expect(review).toContain("three permanent attempts")
+    expect(review).toContain("first automatic one")
     expect(review).toContain("same OS user and location")
-    expect(review).toContain("controlled panel confirmation channel")
-    expect(review).toContain("not same-OS-user authentication")
-    expect(review).toContain("not proof that no other service is running")
-    expect(review).toContain("does not stop business work or reset used attempts")
+    expect(review).toContain("single-host declaration is not proof of uniqueness")
+    expect(review).toContain("controlled channel is not human authentication")
+    expect(review).toContain("Any unknown or unsupported condition means alert-only")
+    expect(review).toContain("stops automatic correction, not business work, and never resets spent attempts")
+    expect(review).toContain("Queue admission is not consumption and cannot be retracted")
     expect(prepares).toBe(0)
 
     setup.mockInput.pressKey("n")
     await setup.flush()
     expect(prepares).toBe(0)
     expect(cancels).toBeGreaterThan(0)
-    expect(text()).not.toContain("3 permanent attempts")
+    expect(text()).not.toContain("three permanent attempts")
   })
 
   test("y prepares a challenge, y confirms it, and the nonce never reaches the screen", async () => {
@@ -662,7 +664,7 @@ describe("the correction pane and controlled grant review", () => {
       {
         onGrantPrepare: async () => {
           prepares += 1
-          return { reviewSummary: "Reviewed terms.", expiresAt: 10_000 }
+          return { reviewSummary: WATCH_CORRECTION_TERMS, expiresAt: 10_000 }
         },
         onGrantConfirm: async () => {
           confirms += 1
@@ -675,7 +677,7 @@ describe("the correction pane and controlled grant review", () => {
     await setup.flush()
     expect(prepares).toBe(1)
     expect(text()).toContain("Challenge prepared")
-    expect(text()).toContain("Reviewed terms.")
+    expect(text()).toContain("three permanent attempts")
     expect(text()).not.toContain("challenge-once")
 
     setup.mockInput.pressKey("y")
@@ -712,7 +714,7 @@ describe("the correction pane and controlled grant review", () => {
     await setup.flush()
     expect(prepares).toBe(0)
     expect(text()).toContain("Correction grant unavailable: the current activation does not own this task")
-    expect(text()).not.toContain("3 permanent attempts")
+    expect(text()).not.toContain("three permanent attempts")
   })
 
   test("downgrade asks first and only y calls the server", async () => {
@@ -754,7 +756,7 @@ describe("the correction pane and controlled grant review", () => {
     const { setup, text, setState } = await rendered(
       { kind: "payload", payload: payload() },
       {
-        onGrantPrepare: async () => ({ reviewSummary: "Reviewed terms.", expiresAt: 10_000 }),
+        onGrantPrepare: async () => ({ reviewSummary: WATCH_CORRECTION_TERMS, expiresAt: 10_000 }),
         onGrantConfirm: async () => {},
         onGrantCancel: () => {
           cancels += 1
@@ -833,12 +835,13 @@ describe("the focused grant review on a short terminal", () => {
 
     const review = text()
     expect(review).toContain("Session watch — grant review")
-    expect(review).toContain("3 permanent attempts")
-    expect(review).toContain("only the first attempt")
+    expect(review).toContain("three permanent attempts")
+    expect(review).toContain("first automatic one")
     expect(review).toContain("same OS user and location")
-    expect(review).toContain("controlled panel confirmation channel")
-    expect(review).toContain("not proof that no other service is running")
-    expect(review).toContain("does not stop business work or reset used attempts")
+    expect(review).toContain("single-host declaration is not proof of uniqueness")
+    expect(review).toContain("controlled channel is not human authentication")
+    expect(review).toContain("stops automatic correction, not business work, and never resets spent attempts")
+    expect(review).toContain("Queue admission is not consumption and cannot be retracted")
     expect(review).toContain("y: declare + prepare challenge")
     expect(review).toContain("n: cancel")
     // The focused review must not be buried under the normal correction table.

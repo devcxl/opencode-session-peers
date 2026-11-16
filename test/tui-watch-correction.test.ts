@@ -6,6 +6,8 @@
 import { describe, expect, test } from "bun:test"
 
 import type { WatchPayload } from "../src/rpc.ts"
+import { WATCH_CORRECTION_TERMS } from "../src/domain/watch.ts"
+import { GRANT_TERMS } from "../src/tui/watch-correction.ts"
 import { watchContent, type WatchContent } from "../src/tui/watch-view.ts"
 import {
   SELF,
@@ -28,6 +30,12 @@ function content(payload: WatchPayload): WatchContent {
 function valueOf(blocks: WatchContent, field: string): string | undefined {
   return blocks.rows.find((row) => row[0]?.text === field)?.[1]?.text
 }
+
+describe("correction grant terms re-export", () => {
+  test("re-exports canonical WATCH_CORRECTION_TERMS as GRANT_TERMS without duplicating string", () => {
+    expect(GRANT_TERMS).toBe(WATCH_CORRECTION_TERMS)
+  })
+})
 
 describe("the correction pane", () => {
   test("separates authorization, actual capability, attempts, receipt, recovery and completion", () => {
@@ -62,7 +70,7 @@ describe("the correction pane", () => {
               state: "granted",
               deployment: "single-host-same-location",
               version: 2,
-              reviewSummary: "Reviewed limited correction terms.",
+              reviewSummary: WATCH_CORRECTION_TERMS,
               grantedAt: Date.UTC(2026, 10, 16, 4, 20, 0),
             },
             actual: "unavailable",

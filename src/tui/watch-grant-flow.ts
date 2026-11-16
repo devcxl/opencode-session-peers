@@ -9,6 +9,7 @@
  */
 
 import type { TuiPort } from "../host/tui.ts"
+import { WATCH_CORRECTION_TERMS } from "../domain/watch.ts"
 import {
   readWatchGrantPayload,
   type WatchGrantChallengeView,
@@ -124,6 +125,15 @@ export function createGrantFlow(deps: GrantFlowDeps): GrantFlow {
       feed.refresh()
       return undefined
     }
+    if (payload.challenge.reviewSummary !== WATCH_CORRECTION_TERMS) {
+      port.toast(
+        "Could not prepare the correction grant: the challenge terms summary did not match the canonical terms.",
+        "error",
+      )
+      pending = undefined
+      feed.refresh()
+      return undefined
+    }
     pending = payload.challenge
     return {
       reviewSummary: payload.challenge.reviewSummary,
@@ -135,6 +145,15 @@ export function createGrantFlow(deps: GrantFlowDeps): GrantFlow {
     const challenge = pending
     const panel = deps.panel()
     if (challenge === undefined || deps.isDisposed() || !panel.open || panel.sessionID === undefined) {
+      return
+    }
+    if (challenge.reviewSummary !== WATCH_CORRECTION_TERMS) {
+      pending = undefined
+      port.toast(
+        "Could not confirm the correction grant: the challenge terms summary did not match the canonical terms.",
+        "error",
+      )
+      feed.refresh()
       return
     }
     const startedEpoch = deps.epoch()
