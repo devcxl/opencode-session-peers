@@ -130,7 +130,7 @@ function childRow(child: DelegatedChildView): readonly TableCell[] {
     cell(
       join(
         `${child.authorization.mode ?? "unknown"} grant v${child.authorization.grantVersion ?? "?"}`,
-        `scope ${child.authorization.scopePeerScope ?? "unknown"}`,
+        `scope ${child.authorization.scopePeerScope ?? "unknown"} (${child.authorization.scopeSource})`,
         `correction ${correction.actual}`,
         `checked ${formatWatchTime(child.authorization.checkedAt)}`,
       ),

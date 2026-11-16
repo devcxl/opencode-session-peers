@@ -497,6 +497,7 @@ function readChild(value: unknown): DelegatedChildView | undefined {
       "mode",
       "scopeDirectory",
       "scopePeerScope",
+      "scopeSource",
       "checkedAt",
     ])
   ) {
@@ -519,6 +520,7 @@ function readChild(value: unknown): DelegatedChildView | undefined {
   const mode = authorization["mode"]
   const scopeDirectory = authorization["scopeDirectory"]
   const scopePeerScope = authorization["scopePeerScope"]
+  const scopeSource = authorization["scopeSource"]
   const checkedAt = authorization["checkedAt"]
   if (
     typeof allowed !== "boolean" ||
@@ -528,6 +530,7 @@ function readChild(value: unknown): DelegatedChildView | undefined {
     (mode !== null && mode !== "alert" && mode !== "limited-correction") ||
     (scopeDirectory !== null && typeof scopeDirectory !== "string") ||
     (scopePeerScope !== null && typeof scopePeerScope !== "string") ||
+    (scopeSource !== "recorded" && scopeSource !== "configured" && scopeSource !== "unknown") ||
     !isTimestamp(checkedAt)
   ) {
     return undefined
@@ -550,6 +553,7 @@ function readChild(value: unknown): DelegatedChildView | undefined {
       mode,
       scopeDirectory,
       scopePeerScope,
+      scopeSource,
       checkedAt,
     },
     task,

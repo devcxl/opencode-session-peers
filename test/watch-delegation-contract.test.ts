@@ -112,6 +112,7 @@ function viewPayload(overrides: Record<string, unknown> = {}) {
           mode: "limited-correction",
           scopeDirectory: "/tmp/opencode/project",
           scopePeerScope: "project-a",
+          scopeSource: "recorded",
           checkedAt: 1_800,
         },
         task,

@@ -37,6 +37,8 @@ export interface DelegatedChildAuthorization {
   readonly mode: WatchMode | null
   readonly scopeDirectory: string | null
   readonly scopePeerScope: string | null
+  /** Whether the scope came from a roster record, this instance's config, or was unknown. */
+  readonly scopeSource: "recorded" | "configured" | "unknown"
   readonly checkedAt: number
 }
 
@@ -114,6 +116,7 @@ export function delegatedChildView(input: {
       mode: input.grant?.mode ?? null,
       scopeDirectory: input.grant?.scopeDirectory ?? null,
       scopePeerScope: input.grant?.scopePeerScope ?? null,
+      scopeSource: input.checked.scopeSource,
       checkedAt: input.checked.checkedAt,
     },
     task: authorized ? input.task : null,
