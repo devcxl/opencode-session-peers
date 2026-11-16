@@ -939,6 +939,7 @@ export function assertDelegationIntegrity(db: Database): void {
        WHERE mode NOT IN ('alert','limited-correction')
           OR state NOT IN ('granted','revoked')
           OR version < 1 OR generation < 1 OR parent_task_version < 1
+          OR length(owner_activation) = 0
           OR (mode = 'limited-correction' AND deployment_statement IS NOT 'single-host-same-location')
           OR (mode = 'alert' AND deployment_statement IS NOT NULL)`,
     )
