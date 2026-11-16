@@ -154,7 +154,11 @@ touching the shared panel skeleton.
 ## Wiring seams for the parent
 
 - `createDelegationAuthority({ ledger, sessions, scopeOf, activationID,
-  closing, now })` returns `check(taskID)` and `facts(sessionID)`.
+  closing, now })` returns `check(taskID)` and `facts(sessionID)`. The watch
+  application accepts either that object or a factory
+  `(ledger) => createDelegationAuthority({ ledger, ... })`, so the parent wires
+  the application's own ledger handle instead of opening a second authority
+  database.
 - `createScopeFactReader({ configScope, directory, sessions, peers })` is the
   recorded/configured scope source.
 - `WatchApplication.delegate`, `prepareDelegationGrant`,
@@ -185,8 +189,9 @@ Targeted red/green:
 - `test/watch-delegation-authority.test.ts`: 9 pass (self task, fresh allow,
   revoke/pause/scope/parentID/child deletion, configured-scope source,
   revoke-during-read, closing-during-read).
-- `test/watch-delegation-service.test.ts`: 8 pass (prepare/confirm/delegate/
+- `test/watch-delegation-service.test.ts`: 11 pass (prepare/confirm/delegate/
   view/revoke, wrong parent/scope, revoke before delegate, own-show preference,
+  parent-as-child refusal, redacted control, completed-child read,
   receipt after revoke and scope change with no permit, missing guard
   fail-closed, self-task receipt permit regression).
 - `test/watch-delegation-contract.test.ts`: 9 pass (strict readers, no

@@ -277,8 +277,14 @@ export interface WatchApplicationOptions {
   readonly sessionAtLocation?: (sessionID: string) => Promise<boolean>
   /** The observer's current reading for the gate; absent before the observer starts. */
   readonly observationFor?: (taskID: string) => WatchObservationView | null
-  /** Fresh delegated-child checks; absent means a delegated action is refused. */
-  readonly delegation?: DelegationAuthority
+  /**
+   * Fresh delegated-child checks; absent means a delegated action is refused.
+   * A factory receives the application's own ledger handle, so a caller does
+   * not open a second authority database or pass a stale handle.
+   */
+  readonly delegation?:
+    | DelegationAuthority
+    | ((ledger: Pick<WatchLedger, "delegatedAuthority">) => DelegationAuthority)
 }
 
 interface LedgerState {
@@ -406,6 +412,14 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
     }
   }
 
+  let delegationInstance: DelegationAuthority | undefined
+  const delegationFor = (ledger: WatchLedger): DelegationAuthority | undefined => {
+    if (options.delegation === undefined) return undefined
+    if (typeof options.delegation !== "function") return options.delegation
+    delegationInstance ??= options.delegation(ledger)
+    return delegationInstance
+  }
+
   const checkDelegated = async (taskID: string): Promise<DelegatedAuthorityVerdict> => {
     const current = ensure()
     if (current.ledger === undefined) {
@@ -424,11 +438,12 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
       return { required: false, allowed: true, reason: null, check: null }
     }
     if (closing) return { required: true, allowed: false, reason: "closing", check: null }
-    if (options.delegation === undefined) {
+    const delegation = delegationFor(current.ledger)
+    if (delegation === undefined) {
       return { required: true, allowed: false, reason: "delegation-guard-unavailable", check: null }
     }
     try {
-      const check = await options.delegation.check(taskID)
+      const check = await delegation.check(taskID)
       return {
         required: check.required,
         allowed: check.allowed,
@@ -590,12 +605,13 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
       if (!Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 1) {
         return failureOutcome(invalid("expectedVersion must be a positive integer"))
       }
-      if (options.delegation === undefined) {
-        return failureOutcome(unsupported("The delegated-authority guard is not wired at this location; no child was enrolled."))
-      }
       const current = ensure()
       if (current.ledger === undefined) {
         return failureOutcome(mapLedgerFailure(current.failure?.code ?? "ledger_error", current.failure?.detail ?? "unknown"))
+      }
+      const delegation = delegationFor(current.ledger)
+      if (delegation === undefined) {
+        return failureOutcome(unsupported("The delegated-authority guard is not wired at this location; no child was enrolled."))
       }
       const parentShown = current.ledger.show({ sessionID: caller.value, taskID: parentTaskID.value })
       if (!parentShown.ok) return failureOutcome(mapLedgerFailure(parentShown.code, parentShown.detail))
@@ -621,8 +637,8 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
             }
 
       const [parentFacts, childFacts] = await Promise.all([
-        options.delegation.facts(parentTask.targetSessionID),
-        options.delegation.facts(target.value),
+        delegation.facts(parentTask.targetSessionID),
+        delegation.facts(target.value),
       ])
       if (closing) return failureOutcome(closingFailure())
       const gate = delegationEnrollmentGate(
@@ -692,12 +708,13 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
       if (closing) return delegationGrantFailure(closingFailure())
       const validation = readDelegationGrantRequest(input)
       if (!validation.ok) return delegationGrantFailure(invalid(validation.reason))
-      if (options.delegation === undefined) {
-        return delegationGrantFailure(unsupported("The delegated-authority guard is not wired at this location; no challenge was prepared."))
-      }
       const current = ensure()
       if (current.ledger === undefined) {
         return delegationGrantFailure(mapLedgerFailure(current.failure?.code ?? "ledger_error", current.failure?.detail ?? "unknown"))
+      }
+      const delegation = delegationFor(current.ledger)
+      if (delegation === undefined) {
+        return delegationGrantFailure(unsupported("The delegated-authority guard is not wired at this location; no challenge was prepared."))
       }
       const parent = current.ledger.show({ sessionID: validation.value.callerSessionID, taskID: validation.value.parentTaskID })
       if (!parent.ok) return delegationGrantFailure(mapLedgerFailure(parent.code, parent.detail))
@@ -710,8 +727,8 @@ export function createWatchApplication(options: WatchApplicationOptions): WatchA
       })
       if (!existing.ok) return delegationGrantFailure(mapLedgerFailure(existing.code, existing.detail))
       const [parentFacts, childFacts] = await Promise.all([
-        options.delegation.facts(parent.value.targetSessionID),
-        options.delegation.facts(validation.value.targetSessionID),
+        delegation.facts(parent.value.targetSessionID),
+        delegation.facts(validation.value.targetSessionID),
       ])
       if (closing) return delegationGrantFailure(closingFailure())
       const gate = delegationGrantGate({
