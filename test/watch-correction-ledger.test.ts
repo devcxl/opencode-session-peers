@@ -449,6 +449,66 @@ describeCorrection("correction ledger", () => {
     }
   })
 
+  test("a backward report time does not close a permit; a later forward report can", () => {
+    const clock = { value: 1_000 }
+    const ledger = open(clock)
+    try {
+      let task = enroll(ledger)
+      task = grant(ledger, task.taskID, task.version, clock).task
+      const reserved = reserve(ledger, task.taskID, task.version, task.generation, "res-clock", clock)
+      if (!reserved.ok) return
+      const correlation = claimCorrelation(
+        ledger,
+        task.taskID,
+        "res-clock",
+        reserved.value.task.version,
+        task.generation,
+        clock,
+      )
+      clock.value += 10
+      ledger.recordCorrectionReceipt({
+        taskId: task.taskID,
+        reservationId: "res-clock",
+        callerSessionId: "ses_a",
+        currentActivationId: "activation-a",
+        correlation,
+        at: clock.value,
+      })
+      const shown = ledger.show({ taskID: task.taskID, sessionID: "ses_a" })
+      if (!shown.ok || shown.value === null) throw new Error("task missing")
+      clock.value -= 100
+      const backward = ledger.report({
+        taskId: task.taskID,
+        callerSessionId: "ses_a",
+        expectedVersion: shown.value.version,
+        reportId: "backward-report",
+        kind: "progress",
+        evidence: { summary: "backward", reference: "backward-ref" },
+      })
+      expect(backward.ok).toBe(true)
+      expect(attemptOf(ledger.correction(task.taskID))[0]?.closedAt).toBeUndefined()
+
+      const current = ledger.show({ taskID: task.taskID, sessionID: "ses_a" })
+      if (!current.ok || current.value === null) throw new Error("task missing")
+      clock.value += 1_000
+      const forward = ledger.report({
+        taskId: task.taskID,
+        callerSessionId: "ses_a",
+        expectedVersion: current.value.version,
+        reportId: "forward-report",
+        kind: "progress",
+        evidence: { summary: "forward", reference: "forward-ref" },
+      })
+      expect(forward.ok).toBe(true)
+      expect(attemptOf(ledger.correction(task.taskID))[0]).toMatchObject({
+        phase: "recovered",
+        closedReason: "recovered",
+      })
+    } finally {
+      ledger.close()
+    }
+  })
+
   test("an old reservation cannot be revived by downgrade, regrant or a newer task version", () => {
     const clock = { value: 1_000 }
     const ledger = open(clock)
@@ -1065,6 +1125,118 @@ describeCorrection("correction ledger", () => {
       const granted = grant(ledger, next.taskID, next.version, clock).task
       const allowed = reserve(ledger, next.taskID, granted.version, granted.generation, "res-after-complete", clock)
       expect(allowed.ok).toBe(true)
+    } finally {
+      ledger.close()
+    }
+  })
+
+  test("a waiting report reusing a pre-receipt wait id or reference does not close the permit", () => {
+    const clock = { value: 1_000 }
+    const ledger = open(clock)
+    try {
+      let task = enroll(ledger)
+      task = grant(ledger, task.taskID, task.version, clock).task
+      const reserved = reserve(ledger, task.taskID, task.version, task.generation, "res-wait-reuse", clock)
+      if (!reserved.ok) return
+      const correlation = claimCorrelation(
+        ledger,
+        task.taskID,
+        "res-wait-reuse",
+        reserved.value.task.version,
+        task.generation,
+        clock,
+      )
+      const beforeReceipt = ledger.show({ taskID: task.taskID, sessionID: "ses_a" })
+      if (!beforeReceipt.ok || beforeReceipt.value === null) throw new Error("task missing")
+      clock.value += 1
+      const oldWait = ledger.report({
+        taskId: task.taskID,
+        callerSessionId: "ses_a",
+        expectedVersion: beforeReceipt.value.version,
+        reportId: "old-wait-before",
+        kind: "waiting",
+        evidence: {
+          waitKind: "human",
+          waitFor: "old reviewer",
+          reason: "old wait",
+          reference: "old-wait-ref",
+          waitID: "old-wait",
+          waitUntil: clock.value + 60_000,
+        },
+      })
+      expect(oldWait.ok).toBe(true)
+      clock.value += 10
+      ledger.recordCorrectionReceipt({
+        taskId: task.taskID,
+        reservationId: "res-wait-reuse",
+        callerSessionId: "ses_a",
+        currentActivationId: "activation-a",
+        correlation,
+        at: clock.value,
+      })
+      const afterReceipt = ledger.show({ taskID: task.taskID, sessionID: "ses_a" })
+      if (!afterReceipt.ok || afterReceipt.value === null) throw new Error("task missing")
+      clock.value += 10
+      const reusedID = ledger.report({
+        taskId: task.taskID,
+        callerSessionId: "ses_a",
+        expectedVersion: afterReceipt.value.version,
+        reportId: "reused-wait-id",
+        kind: "waiting",
+        evidence: {
+          waitKind: "human",
+          waitFor: "new reviewer",
+          reason: "new report",
+          reference: "new-wait-ref",
+          waitID: "old-wait",
+          waitUntil: clock.value + 60_000,
+        },
+      })
+      expect(reusedID.ok).toBe(true)
+      expect(attemptOf(ledger.correction(task.taskID))[0]?.closedAt).toBeUndefined()
+
+      const current = ledger.show({ taskID: task.taskID, sessionID: "ses_a" })
+      if (!current.ok || current.value === null) throw new Error("task missing")
+      const reusedReference = ledger.report({
+        taskId: task.taskID,
+        callerSessionId: "ses_a",
+        expectedVersion: current.value.version,
+        reportId: "reused-wait-reference",
+        kind: "waiting",
+        evidence: {
+          waitKind: "human",
+          waitFor: "new reviewer",
+          reason: "new report",
+          reference: "old-wait-ref",
+          waitID: "fresh-wait-id",
+          waitUntil: clock.value + 60_000,
+        },
+      })
+      expect(reusedReference.ok).toBe(true)
+      expect(attemptOf(ledger.correction(task.taskID))[0]?.closedAt).toBeUndefined()
+
+      const latest = ledger.show({ taskID: task.taskID, sessionID: "ses_a" })
+      if (!latest.ok || latest.value === null) throw new Error("task missing")
+      const fresh = ledger.report({
+        taskId: task.taskID,
+        callerSessionId: "ses_a",
+        expectedVersion: latest.value.version,
+        reportId: "fresh-wait",
+        kind: "waiting",
+        evidence: {
+          waitKind: "human",
+          waitFor: "new reviewer",
+          reason: "new report",
+          reference: "fresh-wait-ref",
+          waitID: "fresh-wait-id-2",
+          waitUntil: clock.value + 60_000,
+        },
+      })
+      expect(fresh.ok).toBe(true)
+      expect(attemptOf(ledger.correction(task.taskID))[0]).toMatchObject({
+        phase: "receipted",
+        closedReason: "normal-wait",
+      })
     } finally {
       ledger.close()
     }

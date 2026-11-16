@@ -1375,8 +1375,10 @@ class SqliteWatchLedger implements WatchLedger {
       const version = task.version + 1
       const encoded = canonicalJson(evidence.value)
       const completedAt = next.value === "completed" ? at : task.completed_at
+      const waitingID = kind.value === "waiting" ? (evidence.value.waitID ?? reportID) : null
+      const priorWaitAt = waitingID === null ? null : this.reportedWaitAt(taskID, waitingID)
       this.recordReportedWrites(taskID, kind.value, evidence.value, reportID, at)
-      this.closeReceiptedForReport(taskID, kind.value, evidence.value, reportID, at)
+      this.closeReceiptedForReport(taskID, kind.value, evidence.value, reportID, at, priorWaitAt)
       // Completion ends supervision: the business goal is done, so the live
       // slot is released. The task row and its reports remain as history; this
       // is not a manual "end", which is what must not be read as success.
@@ -2364,12 +2366,20 @@ class SqliteWatchLedger implements WatchLedger {
       .get(reservationID) as CorrectionAttemptRow | null
   }
 
+  private reportedWaitAt(taskID: string, waitID: string): number | null {
+    const row = this.db
+      .query("SELECT wait_at FROM watch_reported_waits WHERE task_id = ? AND wait_id = ?")
+      .get(taskID, waitID) as { wait_at: number } | null
+    return row === null ? null : row.wait_at
+  }
+
   private closeReceiptedForReport(
     taskID: string,
     kind: WatchReportKind,
     evidence: WatchEvidence,
     reportID: string,
     at: number,
+    priorWaitAt: number | null,
   ): void {
     const open = this.db
       .query(
@@ -2379,13 +2389,14 @@ class SqliteWatchLedger implements WatchLedger {
       )
       .get(taskID) as CorrectionAttemptRow | null
     if (open === null) return
+    if (open.receipt_permit_at === null || at < open.receipt_permit_at) return
+    const reference = evidence.reference
+    if (reference === undefined) return
+    const earlier = this.db
+      .query("SELECT evidence FROM watch_reports WHERE task_id = ? AND report_id <> ?")
+      .all(taskID, reportID) as Array<{ readonly evidence: string }>
+    if (earlier.some((report) => parseEvidence(report.evidence).reference === reference)) return
     if (kind === "progress" || kind === "completed") {
-      const reference = evidence.reference
-      if (reference === undefined) return
-      const earlier = this.db
-        .query("SELECT evidence FROM watch_reports WHERE task_id = ? AND report_id <> ?")
-        .all(taskID, reportID) as Array<{ readonly evidence: string }>
-      if (earlier.some((report) => parseEvidence(report.evidence).reference === reference)) return
       if (kind === "progress") {
         this.db
           .query(
@@ -2405,6 +2416,7 @@ class SqliteWatchLedger implements WatchLedger {
       return
     }
     if (kind === "waiting") {
+      if (priorWaitAt !== null) return
       const waitID = evidence.waitID ?? reportID
       const wait = this.db
         .query("SELECT wait_until FROM watch_reported_waits WHERE task_id = ? AND wait_id = ?")
