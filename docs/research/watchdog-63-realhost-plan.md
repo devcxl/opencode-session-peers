@@ -136,18 +136,37 @@ and the runner reads the child back through the public session list/get API and
 asserts `parentID === parent.id`. It does not use the experimental import, does
 not fake a lookup and does not write the host database. The subagent's first
 turn is idle; it never reports a task begin before the parent task is enrolled.
+The reviewed host source requires `agent` on the subagent input, so the exact
+args are `prompt=WATCH63_CHILD_IDLE`, `description=...`, `agent=general`
+(the default subagent agent with no model override, inheriting the parent's
+stub model); this version always backgrounds and has no background input, so
+the runner does not send one.
 
 ### Count baseline
 
-Immediately before the explicit public `delegate` driver turn, the runner
-snapshots parent and child user/assistant counts, correction user messages,
-inbox counts/deliveries and the last outcomes. The explicit delegate driver may
-add one parent user message and its own driver generation; the child user count,
-child generation count, correction prompt count and parent/child inbox counts
-must not change. A bounded settle after the driver turn must show no further
-user/inbox/correction growth. Enroll, reads, grant prepare/confirm/revoke and
-view reads add no prompt. The explicit parent/child driver turns are reported
-separately; they are not called plugin extra wakes.
+The child creation and its initial subagent turn are allowed to settle before
+the first baseline. The host's initial `<subagent ...>` completion notice is
+counted as a normal host notification before the baseline, not a plugin wake.
+Then:
+
+- RPC enroll is compared before/after: parent/child user, assistant, correction,
+  synthetic, subagent-notification and inbox counts must not change.
+- The explicit parent begin tool turn is a fresh baseline (one parent driver
+  user; child unchanged).
+- `watchDelegation` prepare, confirm and the read-only parent view are compared
+  before/after: all bounded counts and the assistant count must be unchanged.
+- The explicit public `delegate` driver may add one parent user message and its
+  own driver generation; child user/assistant/synthetic, correction and
+  parent/child inbox counts must not change. A bounded settle must show no
+  further user, assistant, correction, synthetic or inbox growth.
+- The explicit child begin driver adds one child user turn and no parent change.
+- Final versus after-delegate: positive adds exactly one explicit parent
+  wrong-caller driver user and zero negative add; parent correction/inbox and
+  synthetic counts do not grow; parent assistant grows only within that driver
+  (zero negative). The child adds its explicit begin (and duplicate in positive)
+  plus exactly one automatic correction user prompt; one spent attempt; no
+  steer and no interrupted outcome. All counts are settled twice; assistant is
+  compared too.
 
 ### Scenarios
 
@@ -166,6 +185,19 @@ separately; they are not called plugin extra wakes.
   after the public `setScope` RPC moves the child scope; the receipt gets no
   permit and the parent view is redacted. No watch/view is read while the
   receipt is latched.
+
+The runner keeps the raw RPC answers only in private locals. The positive final
+`watch` raw JSON is asserted not to contain the dispatch correlation before the
+loose bounded reader is used; the negative `watchDelegationView` raw JSON is
+asserted not to contain the parent goal before its fields are read. The final
+child `watch` raw answer is checked for correlation in both variants.
+
+Queue proof is honest: the runner records one correction user prompt and no
+observed steer. If the public inbox retains consumed delivery metadata, it
+records that the correction item was `queue`; if the host retains none, the
+report says `entry-delivery-queue-only` rather than claiming a runtime queue
+observation. The entry `correctionDelivery` source and its tests remain the
+queue evidence.
 
 The runner does not wait five minutes or try to spend all three attempts; the
 #62 controlled-clock public entry already proves the three-attempt limit. It
@@ -215,6 +247,6 @@ so a later integrated plugin is not rejected by an older strict reader.
   durability, multi-host uniqueness or a stop-proof.
 - `test/watch-delegation-research.test.ts` only exercises the pure scripted
   model/directive plan and the latch predicate; it starts no host or model.
-  Targeted result in this lane: 9 pass, 0 fail, 42 expectations; overall
+  Targeted result in this lane: 9 pass, 0 fail, 44 expectations; overall
   `tsc --noEmit` and `git diff --check` are clean. The runner itself was not
   executed.

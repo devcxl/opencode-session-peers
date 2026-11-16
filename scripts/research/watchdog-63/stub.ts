@@ -230,6 +230,7 @@ export function planWatch63(body: ChatBody): Reply {
     return tool("subagent", {
       prompt: CHILD_IDLE_MARKER,
       description: "watchdog-63 delegated child",
+      agent: "general",
     })
   }
 

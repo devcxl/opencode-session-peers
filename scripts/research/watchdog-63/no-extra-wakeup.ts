@@ -53,6 +53,7 @@ import {
   countMessages,
   parseCorrectionCall,
   scenarioFromValue,
+  type Scenario,
 } from "./protocol.ts"
 import { startWatch63Stub, type Watch63StubHandle } from "./stub.ts"
 
@@ -67,9 +68,13 @@ interface Counts {
   readonly user: number
   readonly assistant: number
   readonly correction: number
+  readonly synthetic: number
+  readonly subagentNotifications: number
   readonly inbox: number
   readonly inboxQueue: number
   readonly inboxSteer: number
+  readonly inboxCorrectionQueue: number
+  readonly inboxCorrectionSteer: number
   readonly outcome: string | null
 }
 
@@ -157,6 +162,7 @@ interface RawSession {
 interface RawInbox {
   readonly type?: string
   readonly delivery?: string
+  readonly payload?: { readonly text?: string }
 }
 
 async function main(): Promise<void> {
@@ -210,6 +216,10 @@ async function main(): Promise<void> {
   let instance: InstanceHandle | undefined
   let failure: string | undefined
   let runtime: Record<string, unknown> | undefined
+  let initialBaseline: Snapshot | undefined
+  let enrollBaseline: Snapshot | undefined
+  let beginBaseline: Snapshot | undefined
+  let grantBaseline: Snapshot | undefined
   let baseline: Snapshot | undefined
   let afterDelegate: Snapshot | undefined
   let finalSnapshot: Snapshot | undefined
@@ -316,8 +326,18 @@ async function main(): Promise<void> {
     assert(child.parentID === parent.id, "the public host did not report the subagent child's parentID")
     await waitForOutcome(client, options, child.id, "child initial idle turn")
     ids = { ...ids, childSessionID: child.id }
+    const running = instance
+    if (running === undefined) throw new RunnerFailure("the host instance handle disappeared")
+    const observe = () => snapshot(client, parent.id, child.id, running.url, running.password, layout.projectA)
+    initialBaseline = await settleSnapshot(observe)
+    assert(
+      initialBaseline.parent.subagentNotifications >= 1,
+      "the initial host subagent completion notice was not observed before baseline",
+    )
     evidence.push("real subagent child created; public host parentID matches")
+    evidence.push("initial host subagent completion notice settled before baseline; not a plugin wake")
 
+    const enrollBefore = initialBaseline
     const enrolled = await watch({
       operation: "enroll",
       sessionID: parent.id,
@@ -325,6 +345,8 @@ async function main(): Promise<void> {
       goal: GOAL_TOKEN,
     })
     if (enrolled.task === null) throw new RunnerFailure(`parent enroll failed: ${enrolled.failure?.code ?? "unknown"}`)
+    enrollBaseline = await observe()
+    assertNoChange(enrollBefore, enrollBaseline, "parent enroll")
     const parentTaskID = enrolled.task.taskID
     ids = { ...ids, parentTaskID }
     evidence.push("parent task enrolled through the real watch RPC without a prompt")
@@ -337,10 +359,12 @@ async function main(): Promise<void> {
       `${PARENT_BEGIN_MARKER} taskID=${parentTaskID} version=${enrolled.task.version} reportId=watch63-parent-begin`,
     )
     assert(beginCall.name === "peers" && watchMeta(beginCall)?.["ok"] === true, "the parent begin tool report failed")
-    await sleep(750)
+    beginBaseline = await settleSnapshot(observe)
+    assert(beginBaseline.parent.user === (enrollBaseline?.parent.user ?? 0) + 1, "parent begin did not add exactly one explicit driver turn")
+    assert(beginBaseline.child.user === (enrollBaseline?.child.user ?? 0), "parent begin woke the child")
     const parentShown = await watch({ operation: "show", sessionID: parent.id, taskID: parentTaskID })
     if (parentShown.task === null) throw new RunnerFailure("the parent task disappeared after begin")
-
+    const grantBefore = beginBaseline
     const prepared = readDelegationGrant(
       await rpc("watchDelegation", {
         operation: "prepare",
@@ -380,9 +404,15 @@ async function main(): Promise<void> {
       }),
     )
     assert(confirmed?.ok === true && confirmed.grant?.state === "granted", "controlled delegation confirm failed")
+    const grantViewRaw = await rpc("watchDelegationView", { sessionID: parent.id, parentTaskID })
+    const grantView = readDelegationView(grantViewRaw)
+    assert(grantView !== undefined && grantView.ok, "the parent delegation view was not readable after grant")
+    grantBaseline = await observe()
+    assertNoChange(grantBefore, grantBaseline, "grant prepare/confirm/view")
     evidence.push("controlled delegation grant prepared and confirmed; review texts exact")
+    evidence.push("prepare, confirm and the read-only parent view added no prompt, generation or inbox item")
 
-    baseline = await snapshot(client, parent.id, child.id, instance.url, instance.password, layout.projectA)
+    baseline = grantBaseline
     const delegateShown = await watch({ operation: "show", sessionID: parent.id, taskID: parentTaskID })
     if (delegateShown.task === null) throw new RunnerFailure("the parent task disappeared before delegate")
     explicit.parent += 1
@@ -397,20 +427,19 @@ async function main(): Promise<void> {
     if (delegatedTask?.taskID === undefined || !Number.isSafeInteger(delegatedTask.version)) {
       throw new RunnerFailure("the delegate tool result carried no child task")
     }
-    await sleep(1_500)
     const childTaskID = delegatedTask.taskID
     const childTaskVersion = delegatedTask.version
     ids = { ...ids, childTaskID }
-    afterDelegate = await snapshot(client, parent.id, child.id, instance.url, instance.password, layout.projectA)
+    afterDelegate = await settleSnapshot(observe)
     assertDelegateDeltas(baseline, afterDelegate)
     evidence.push("public delegate added only the explicit parent driver turn; child/inbox/queue unchanged")
-    await sleep(1_500)
-    const settled = await snapshot(client, parent.id, child.id, instance.url, instance.password, layout.projectA)
+    const settled = await settleSnapshot(observe)
     assertSameWakeFacts(afterDelegate, settled)
     assertNoInterrupted(afterDelegate)
     evidence.push("bounded settle after delegate produced no extra prompt, generation, steer or interrupt")
 
     explicit.child += 1
+    const childBeginBefore = settled
     const childBegin = await promptForResult(
       client,
       options,
@@ -418,8 +447,9 @@ async function main(): Promise<void> {
       `${CHILD_BEGIN_MARKER} taskID=${childTaskID} version=${childTaskVersion} reportId=watch63-child-begin`,
     )
     assert(childBegin.name === "peers" && watchMeta(childBegin)?.["ok"] === true, "the child begin tool report failed")
-    await sleep(750)
-    evidence.push("child reported begin in its own normal driver turn")
+    const childBeginAfter = await settleSnapshot(observe)
+    assertNoParentGrowthFromChild(childBeginBefore, childBeginAfter)
+    evidence.push("child reported begin in its own normal driver turn; the parent was not woken")
 
     const correctionText = await waitForCorrectionPrompt(client, child.id, 20_000)
     const correction = parseCorrectionCall(correctionText)
@@ -485,16 +515,27 @@ async function main(): Promise<void> {
         (watchMeta(parentReceipt)?.["failure"] as { code?: string } | undefined)?.code === "E_WATCH_CALLER_MISMATCH",
         "the parent receipt was not refused as a wrong caller",
       )
-      const final = await watch({ operation: "show", sessionID: child.id, taskID: childTaskID })
+      finalSnapshot = await settleSnapshot(observe)
+      const finalSettled = await settleSnapshot(observe)
+      assertSameWakeFacts(finalSnapshot, finalSettled)
+      if (afterDelegate === undefined) throw new RunnerFailure("the delegate baseline disappeared")
+      assertFinalDeltas(afterDelegate, finalSnapshot, scenario)
+      assertNoInterrupted(finalSnapshot)
+      const finalRaw = await rpc("watch", { operation: "show", sessionID: child.id, taskID: childTaskID })
+      assert(!JSON.stringify(finalRaw).includes(correction.correlation), "the raw show answer leaked the dispatch correlation")
+      const final = readWatchReply(finalRaw)
+      if (final === undefined) throw new RunnerFailure("the final child show was not understood")
       if (final.task === null) throw new RunnerFailure("the child task disappeared")
       assert(final.task.attempts?.used === 1, "the child did not spend exactly one permanent attempt")
       assert(final.task.correction?.history?.[0]?.phase === "recovered", "the child attempt was not recovered")
-      assert(!JSON.stringify(final).includes(correction.correlation), "show leaked the dispatch correlation")
       const childMessages = await client.context(child.id)
       const queued = childMessages.filter(
         (message) => message.type === "user" && messageText(message).includes(CORRECTION_PREFIX),
       )
       assert(queued.length === 1, `expected one correction queue prompt, got ${queued.length}`)
+      const queueObserved = finalSnapshot.child.inboxCorrectionQueue > 0
+      const steerObserved = finalSnapshot.child.inboxCorrectionSteer > 0
+      assert(!steerObserved, "a correction steer item was observed")
       scenarioFacts = {
         permit: true,
         duplicate: true,
@@ -502,11 +543,19 @@ async function main(): Promise<void> {
         recovered: true,
         attemptsUsed: 1,
         correctionPrompts: queued.length,
+        queueEvidence: queueObserved ? "public-inbox-delivery-queue" : "entry-delivery-queue-only",
+        queueObserved,
+        steerObserved,
         parentDriverTurns: explicit.parent,
         childDriverTurns: explicit.child,
       }
       evidence.push("child receipt issued exactly one permit; duplicate and parent receipts were refused")
       evidence.push("new progress and a new result reference produced recovery")
+      evidence.push(
+        queueObserved
+          ? "the public inbox retained the correction with delivery=queue"
+          : "one correction prompt observed; the inbox retained no consumed delivery, so queue remains entry-source evidence only",
+      )
     } else {
       const state = await waitForStubWait(stub, 15_000)
       assert(state.waiting && !state.timedOut, "the stub did not reach its bounded correction latch")
@@ -554,8 +603,17 @@ async function main(): Promise<void> {
         childView.authorized === false && childView.task === null && childView.alerts === null,
         "a revoked/scope-changed child still exposed task or alert content",
       )
-      assert(!JSON.stringify(view).includes(GOAL_TOKEN), "the delegation view leaked the parent goal")
-      const final = await watch({ operation: "show", sessionID: child.id, taskID: childTaskID })
+      assert(!JSON.stringify(viewRaw).includes(GOAL_TOKEN), "the delegation view leaked the parent goal")
+      finalSnapshot = await settleSnapshot(observe)
+      const finalSettled = await settleSnapshot(observe)
+      assertSameWakeFacts(finalSnapshot, finalSettled)
+      if (afterDelegate === undefined) throw new RunnerFailure("the delegate baseline disappeared")
+      assertFinalDeltas(afterDelegate, finalSnapshot, scenario)
+      assertNoInterrupted(finalSnapshot)
+      const finalRaw = await rpc("watch", { operation: "show", sessionID: child.id, taskID: childTaskID })
+      assert(!JSON.stringify(finalRaw).includes(correction.correlation), "the raw refused show leaked the dispatch correlation")
+      const final = readWatchReply(finalRaw)
+      if (final === undefined) throw new RunnerFailure("the final refused child show was not understood")
       assert(final.task !== null, "the child task disappeared before the final read")
       assert(final.task.attempts?.used === 1, "the refused round did not retain exactly one permanent attempt")
       const receiptView = final.task.correction?.history?.[0]?.receipt
@@ -563,6 +621,9 @@ async function main(): Promise<void> {
         receiptView !== undefined && receiptView !== null && receiptView.continuePermitIssuedAt === null,
         "the final view shows a permit",
       )
+      const queueObserved = finalSnapshot.child.inboxCorrectionQueue > 0
+      const steerObserved = finalSnapshot.child.inboxCorrectionSteer > 0
+      assert(!steerObserved, "a correction steer item was observed")
       scenarioFacts = {
         scenario,
         permit: false,
@@ -573,10 +634,17 @@ async function main(): Promise<void> {
         taskExposed: false,
         alertsExposed: false,
         attemptsUsed: final.task.attempts?.used ?? 0,
+        queueEvidence: queueObserved ? "public-inbox-delivery-queue" : "entry-delivery-queue-only",
+        queueObserved,
+        steerObserved,
       }
       evidence.push("the fresh refusal recorded seen without a permit and the parent view redacted the child")
+      evidence.push(
+        queueObserved
+          ? "the public inbox retained the correction with delivery=queue"
+          : "one correction prompt observed; the inbox retained no consumed delivery, so queue remains entry-source evidence only",
+      )
     }
-    finalSnapshot = await snapshot(client, parent.id, child.id, instance.url, instance.password, layout.projectA)
   } catch (error) {
     failure = safelyDescribe(error)
   } finally {
@@ -612,7 +680,15 @@ async function main(): Promise<void> {
       scenario,
       runtime: runtime ?? null,
       ids,
-      counts: { baseline: baseline ?? null, afterDelegate: afterDelegate ?? null, final: finalSnapshot ?? null },
+      counts: {
+        initial: initialBaseline ?? null,
+        afterEnroll: enrollBaseline ?? null,
+        afterBegin: beginBaseline ?? null,
+        afterGrant: grantBaseline ?? null,
+        beforeDelegate: baseline ?? null,
+        afterDelegate: afterDelegate ?? null,
+        final: finalSnapshot ?? null,
+      },
       explicitDriverTurns: explicit,
       scenarioFacts,
       evidence,
@@ -914,13 +990,20 @@ async function countOne(
   const counted = countMessages(messages.map((message) => ({ type: message.type, text: messageText(message) })))
   const inbox = await listInbox(baseUrl, password, sessionID, directory)
   const info = await getSessionInfo(baseUrl, password, sessionID, directory)
+  const correctionInbox = inbox.filter(
+    (item) => typeof item.payload?.text === "string" && item.payload.text.includes(CORRECTION_PREFIX),
+  )
   return {
     user: counted.user,
     assistant: counted.assistant,
     correction: counted.correctionUsers,
+    synthetic: counted.synthetic,
+    subagentNotifications: counted.subagentNotifications,
     inbox: inbox.length,
     inboxQueue: inbox.filter((item) => item.delivery === "queue").length,
     inboxSteer: inbox.filter((item) => item.delivery === "steer").length,
+    inboxCorrectionQueue: correctionInbox.filter((item) => item.delivery === "queue").length,
+    inboxCorrectionSteer: correctionInbox.filter((item) => item.delivery === "steer").length,
     outcome: info.outcome ?? null,
   }
 }
@@ -941,8 +1024,19 @@ async function snapshot(
 
 function assertDelegateDeltas(before: Snapshot, after: Snapshot): void {
   assert(after.parent.user === before.parent.user + 1, "delegate added more than the explicit parent driver user message")
+  assert(after.parent.assistant >= before.parent.assistant, "delegate lost a parent assistant message")
   assert(after.child.user === before.child.user, "delegate woke the child with a user message")
   assert(after.child.assistant === before.child.assistant, "delegate generated in the child")
+  assert(after.parent.synthetic === before.parent.synthetic, "delegate added a parent synthetic message")
+  assert(after.child.synthetic === before.child.synthetic, "delegate added a child synthetic message")
+  assert(
+    after.parent.subagentNotifications === before.parent.subagentNotifications,
+    "delegate added another parent subagent notification",
+  )
+  assert(
+    after.child.subagentNotifications === before.child.subagentNotifications,
+    "delegate added another child subagent notification",
+  )
   assert(after.parent.correction === before.parent.correction, "delegate queued a parent correction prompt")
   assert(after.child.correction === before.child.correction, "delegate queued a child correction prompt")
   assert(after.parent.inbox === before.parent.inbox, "delegate changed the parent inbox")
@@ -950,18 +1044,110 @@ function assertDelegateDeltas(before: Snapshot, after: Snapshot): void {
   assert(after.parent.inboxSteer === 0 && after.child.inboxSteer === 0, "delegate put a steer item in an inbox")
 }
 
+function sameCounts(left: Counts, right: Counts): boolean {
+  return (
+    left.user === right.user &&
+    left.assistant === right.assistant &&
+    left.correction === right.correction &&
+    left.synthetic === right.synthetic &&
+    left.subagentNotifications === right.subagentNotifications &&
+    left.inbox === right.inbox &&
+    left.inboxQueue === right.inboxQueue &&
+    left.inboxSteer === right.inboxSteer &&
+    left.inboxCorrectionQueue === right.inboxCorrectionQueue &&
+    left.inboxCorrectionSteer === right.inboxCorrectionSteer &&
+    left.outcome === right.outcome
+  )
+}
+
+function sameSnapshot(left: Snapshot, right: Snapshot): boolean {
+  return sameCounts(left.parent, right.parent) && sameCounts(left.child, right.child)
+}
+
+async function settleSnapshot(observe: () => Promise<Snapshot>): Promise<Snapshot> {
+  const deadline = Date.now() + 20_000
+  let last = await observe()
+  let stable = 0
+  while (Date.now() < deadline) {
+    await sleep(500)
+    const next = await observe()
+    if (sameSnapshot(last, next)) stable += 1
+    else stable = 0
+    last = next
+    if (stable >= 2) return last
+  }
+  throw new RunnerFailure("the parent/child wake counts did not settle")
+}
+
+function assertNoChange(before: Snapshot, after: Snapshot, phase: string): void {
+  assert(sameSnapshot(before, after), `${phase} changed a user, assistant, correction or inbox count`)
+}
+
 function assertSameWakeFacts(after: Snapshot, settled: Snapshot): void {
-  assert(settled.parent.user === after.parent.user, "the parent gained a user message after the driver turn")
-  assert(settled.child.user === after.child.user, "the child gained a user message after delegate")
-  assert(settled.parent.correction === after.parent.correction, "a parent correction prompt appeared after delegate")
-  assert(settled.child.correction === after.child.correction, "a child correction prompt appeared after delegate")
-  assert(settled.parent.inbox === after.parent.inbox, "the parent inbox changed after delegate")
-  assert(settled.child.inbox === after.child.inbox, "the child inbox changed after delegate")
+  assert(sameSnapshot(after, settled), "session wake counts kept growing after the driver turn")
 }
 
 function assertNoInterrupted(snapshot: Snapshot): void {
   assert(snapshot.parent.outcome !== "interrupted" && snapshot.child.outcome !== "interrupted", "a session was interrupted")
-  assert(snapshot.parent.inboxSteer === 0 && snapshot.child.inboxSteer === 0, "a steer item appeared in an inbox")
+  assert(
+    snapshot.parent.inboxSteer === 0 &&
+      snapshot.child.inboxSteer === 0 &&
+      snapshot.child.inboxCorrectionSteer === 0,
+    "a steer item appeared in an inbox",
+  )
+}
+
+function assertFinalDeltas(afterDelegate: Snapshot, final: Snapshot, scenario: Scenario): void {
+  const parentUserDelta = final.parent.user - afterDelegate.parent.user
+  const parentAssistantDelta = final.parent.assistant - afterDelegate.parent.assistant
+  const childUserDelta = final.child.user - afterDelegate.child.user
+  const childAssistantDelta = final.child.assistant - afterDelegate.child.assistant
+  const expectedParentUser = scenario === "positive" ? 1 : 0
+  const expectedChildUser = scenario === "positive" ? 3 : 2
+  assert(parentUserDelta === expectedParentUser, "the parent user count added an unexpected explicit or automatic turn")
+  assert(final.parent.correction === afterDelegate.parent.correction, "the parent gained a correction prompt")
+  assert(final.parent.inbox === afterDelegate.parent.inbox, "the parent inbox changed after delegate")
+  assert(childUserDelta === expectedChildUser, "the child user count did not match its explicit drivers plus one correction")
+  assert(final.child.correction === afterDelegate.child.correction + 1, "the child did not get exactly one correction prompt")
+  assert(final.parent.synthetic === afterDelegate.parent.synthetic, "the parent gained a synthetic message after delegate")
+  assert(
+    final.parent.subagentNotifications === afterDelegate.parent.subagentNotifications,
+    "the parent gained another subagent notification after delegate",
+  )
+  assert(final.child.synthetic === afterDelegate.child.synthetic, "the child gained a synthetic message after delegate")
+  assert(
+    final.child.subagentNotifications === afterDelegate.child.subagentNotifications,
+    "the child gained another subagent notification after delegate",
+  )
+  assert(
+    scenario === "positive"
+      ? parentAssistantDelta >= 1 && parentAssistantDelta <= 2
+      : parentAssistantDelta === 0,
+    "the parent assistant count moved outside its explicit driver",
+  )
+  assert(childAssistantDelta >= 1, "the child assistant did not run its explicit/correction turns")
+  assert(
+    final.parent.inboxSteer === 0 && final.child.inboxSteer === 0 && final.child.inboxCorrectionSteer === 0,
+    "an automatic steer item appeared",
+  )
+}
+
+function assertNoParentGrowthFromChild(before: Snapshot, after: Snapshot): void {
+  assert(after.parent.user === before.parent.user, "the child begin driver woke the parent")
+  assert(after.parent.assistant === before.parent.assistant, "the child begin driver generated in the parent")
+  assert(after.parent.correction === before.parent.correction, "the child begin driver queued a parent correction")
+  assert(after.parent.inbox === before.parent.inbox, "the child begin driver changed the parent inbox")
+  assert(after.parent.synthetic === before.parent.synthetic, "the child begin driver added a parent synthetic message")
+  assert(
+    after.parent.subagentNotifications === before.parent.subagentNotifications,
+    "the child begin driver added a parent subagent notification",
+  )
+  assert(after.child.synthetic === before.child.synthetic, "the child begin driver added a child synthetic message")
+  assert(
+    after.child.subagentNotifications === before.child.subagentNotifications,
+    "the child begin driver added a child subagent notification",
+  )
+  assert(after.child.user === before.child.user + 1, "the child begin driver did not add exactly one explicit turn")
 }
 
 async function waitForCorrectionPrompt(

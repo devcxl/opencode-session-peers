@@ -79,6 +79,9 @@ export interface SessionCounts {
   readonly user: number
   readonly assistant: number
   readonly correctionUsers: number
+  readonly synthetic: number
+  /** Host subagent completion notices such as `<subagent ...>`; not a plugin wake. */
+  readonly subagentNotifications: number
 }
 
 export interface CountableMessage {
@@ -90,6 +93,8 @@ export function countMessages(messages: readonly CountableMessage[]): SessionCou
   let user = 0
   let assistant = 0
   let correctionUsers = 0
+  let synthetic = 0
+  let subagentNotifications = 0
   for (const message of messages) {
     if (message.type === "user") {
       user += 1
@@ -97,8 +102,10 @@ export function countMessages(messages: readonly CountableMessage[]): SessionCou
     } else if (message.type === "assistant") {
       assistant += 1
     }
+    if (message.type === "synthetic") synthetic += 1
+    if (typeof message.text === "string" && message.text.includes("<subagent")) subagentNotifications += 1
   }
-  return { user, assistant, correctionUsers }
+  return { user, assistant, correctionUsers, synthetic, subagentNotifications }
 }
 
 export function isCorrectionUser(message: CountableMessage): boolean {

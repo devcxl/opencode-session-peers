@@ -68,7 +68,14 @@ describe("watchdog-63 scripted protocol", () => {
         { type: "user", text: CORRECTION_PREFIX },
         { type: "tool", text: "result" },
       ]),
-    ).toEqual({ user: 2, assistant: 1, correctionUsers: 1 })
+    ).toEqual({ user: 2, assistant: 1, correctionUsers: 1, synthetic: 0, subagentNotifications: 0 })
+    expect(countMessages([{ type: "synthetic", text: '<subagent state="completed">result</subagent>' }])).toEqual({
+      user: 0,
+      assistant: 0,
+      correctionUsers: 0,
+      synthetic: 1,
+      subagentNotifications: 1,
+    })
   })
 
   test("the parent subagent turn creates the child without a task begin", () => {
@@ -76,6 +83,7 @@ describe("watchdog-63 scripted protocol", () => {
     expect(reply).toMatchObject({ kind: "tool", name: "subagent" })
     if (reply.kind !== "tool") return
     expect(reply.arguments).toContain(CHILD_IDLE_MARKER)
+    expect(reply.arguments).toContain('"agent":"general"')
     expect(reply.arguments).not.toContain("taskID")
     const after = planWatch63({
       messages: [
